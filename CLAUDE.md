@@ -75,7 +75,7 @@ bible-cc-plugin/
 | Component | Role | Transport | Lifetime |
 |---|---|---|---|
 | **Daemon** | Buffer turns, detect key moments via LLM, flush to BiBLE, serve local context injection | HTTP `localhost:9777` | Persistent |
-| **MCP Server** | 7 BiBLE tools (memory search/save/get, knowledge search/list, skill search/get) | Stdio (MCP) | Per Claude Code session |
+| **MCP Server** | 7 BiBLE tools (memory search/save/get/delete, knowledge search/list, skill search/get) | Stdio (MCP) | Per Claude Code session |
 | **Hooks** | Glue — start daemon, inject context, feed turns | Shell → HTTP to daemon | Event-driven |
 | **Commands** | User-facing manual control (push, consult, status, review) | Shell → HTTP to daemon | On-demand |
 
@@ -92,6 +92,13 @@ bible-cc-plugin/
 - **Graceful degradation (BiBLE unreachable)**: If BiBLE Atlas is down, local operations continue uninterrupted. `/session/start` and `/context/inject` are pure local SQLite — no BiBLE dependency. Moment flush is deferred (moments stay `flushed=0` until BiBLE recovers). MCP tools (`bible_memory_search` etc.) return errors — the model is informed and can retry or continue without. BiBLE status is surfaced via CLI hint and `/bible-cc:status`. No automatic retry — mark, notify, move on. If the daemon itself is unreachable during UserPromptSubmit/PostToolUse hooks, hook scripts silently skip — Claude Code is never blocked.
 - **Session crash recovery**: If a session terminates abnormally (Claude Code killed, daemon crash, system restart), the Stop hook never fires. On next SessionStart, the daemon detects unclosed sessions and triggers a catch-up retrospective detection + flush. Buffered turns are never silently lost.
 - **Daemon lifetime**: Runs until system shutdown or manual stop (`POST /daemon/stop`). No idle timeout. The daemon is a persistent background process, not a per-session ephemeral server.
+- **Data collection (daemon feature, not command)**: The daemon collects token usage and performance metrics during normal operation. These are stored in local SQLite and included with push payloads to BiBLE Atlas. Server-side dashboards consume this data — no standalone commands needed in the plugin.
+- **Context recall scenarios**: SessionStart `/context/inject` has three branches based on local buffer state:
+  | Scenario | Buffer | Injected Content |
+  |----------|--------|-----------------|
+  | New session, no crash | Empty | Empty `<relevant-memories>` |
+  | `/clear` or compact | Current session turns + moments | Turns summary + unflushed moments |
+  | New session, crash recovery | Prior unclosed session's data | Crash recovery moments (fast path from SQLite) + turns summary |
 
 ### Hook → Daemon Flow
 
@@ -249,6 +256,74 @@ uv run python -m bible.test_mode.server --port 5555
 ```
 
 Other BiBLE plugins in this monorepo share the same architecture pattern (daemon + MCP + hooks + commands) but are independent consumers of the BiBLE Atlas API — none import from each other.
+
+## SW Design
+
+Software design 文档位于 `docs/sw-design/` 目录，采用三层结构。
+
+### 层级定义
+
+| 层级 | 角色 | 内容 | 约束力 |
+|------|------|------|--------|
+| **L1** | 全景 + 边界 | 组件模型、数据流向、所有跨组件接口协议 | 最高。L2/L3 不得违背 L1。 |
+| **L2** | 领域总览 + 约束 | 一个领域/模块的总览、子模块索引、对该领域内所有 L3 的全局约束和定义 | 高。L3 必须满足 L2 的约束。 |
+| **L3** | 单 feature 详细设计 | 一个具体功能的完整设计：流程、数据结构、边界条件、错误处理、测试要点 | 不可违背 L1/L2 约束。 |
+
+### 文件结构
+
+```
+docs/sw-design/
+├── 01-architecture-overview.md        # L1: 四组件模型、pull model、数据流、设计原则、模块索引
+├── 02-interfaces.md                   # L1: daemon HTTP API、BiBLE V4 API 契约、MCP tool schema、hook 约定
+│
+├── 03-daemon.md                       # L2: daemon 总览 + 约束 + 子模块索引
+│   ├── 03-daemon/startup.md           # L3: 启动序列（WAL、migration、crash recovery scan）
+│   ├── 03-daemon/sqlite-schema.md     # L3: 表结构、索引、PRAGMA、content_hash dedup
+│   ├── 03-daemon/port-conflict.md     # L3: 端口冲突检测、错误通知、auto_fallback
+│   └── 03-daemon/http-api.md          # L3: 每个端点的请求/响应 spec、错误码、时序约束
+│
+├── 04-config.md                       # L2: 配置总览 + 约束
+│   └── 04-config/schema.md            # L3: 每一项的 type、default、range、env override 规则
+│
+├── 05-capture-pipeline.md             # L2: 采集管线总览 + 约束（hook→buffer→detect→flush）
+│   ├── 05-capture/hook-flow.md        # L3: hook → buffer 数据流（turn/user、turn/tool、truncation LLM 摘要）
+│   ├── 05-capture/detection.md        # L3: Phase 1/2 检测 + prompt 设计 + 两层去重 + 阈值
+│   └── 05-capture/flush.md            # L3: push → BiBLE import + retry + mid_session_upload
+│
+├── 06-recall-pipeline.md              # L2: 回忆管线总览 + 约束（local injection + BiBLE pull）
+│   ├── 06-recall/local-injection.md   # L3: SessionStart 三个场景（新 session / clear / crash recovery）
+│   ├── 06-recall/consult.md           # L3: 用户主动跨域搜索（query/LLM summarize → BiBLE V4 → inject）
+│   └── 06-recall/mcp-tools.md         # L3: 模型驱动的 MCP 工具（7 tools schema + BiBLE V4 映射）
+│
+├── 07-commands.md                     # L2: 命令总览 + 设计约束
+│   └── 07-commands/specs.md           # L3: 38 命令完整 spec（参数、返回、daemon 端点、错误处理）
+│
+├── 08-operability.md                  # L2: 可运维性总览 + 约束
+│   ├── 08-operability/hint-system.md  # L3: 通知机制（moment hint + error hint、format、inject）
+│   ├── 08-operability/status.md       # L3: status / check-bible / context 命令逻辑
+│   └── 08-operability/failure-paths.md# L3: 故障场景（端口冲突、BiBLE 断、hook 失败）→ 诊断路径 → 恢复操作
+│
+├── 09-monitoring.md                   # L2: 监控总览 + KPI 定义
+│   └── 09-monitoring/data-collection.md # L3: 采集指标定义（token、perf）、push 带数据、server dashboard 约定
+│
+├── 10-deployment.md                   # L2: 部署总览 + 约束
+│   └── 10-deployment/upgrade.md       # L3: install / upgrade / uninstall / reload 流程
+│
+└── 11-testing.md                      # L2: 测试策略总览
+    ├── 11-testing/unit.md             # L3: buffer / detector / client 单元测试
+    ├── 11-testing/integration.md      # L3: daemon + BiBLE test server 集成测试
+    └── 11-testing/e2e.md              # L3: 完整 session 模拟 E2E
+```
+
+### 编写规则
+
+1. **自上而下**: 先写完 L1，再写 L2，再写 L3。不许先写 L3 再补 L2。
+2. **L2 必须先定义约束再索引子模块**: 每个 L2 文件先列出对该领域所有 L3 的全局约束，再列出子模块索引。
+3. **L3 不得重复 L2/L1**: L3 只写自己这个 feature 的详细设计，不重复上层约束。
+4. **L3 命名**: `{序号}-{domain}/{feature-name}.md`，全小写，连字符分隔。
+5. **交叉引用**: L3 引用其他领域时用相对路径链接到对应的 L2，不直接链 L3。
+6. **与 feasibility report 的关系**: SW design 是 feasibility report 的细化实现，不得与之矛盾。如有冲突，先更新 feasibility report 再改 SW design。
+7. **与 CLAUDE.md Key Rules 的关系**: SW design 必须满足本文件 Key Rules 中所有硬性约束（WAL mode、content-hash、graceful degradation 等）。
 
 ## Design Docs
 
