@@ -17,6 +17,7 @@ Before any edit/write, ask:
 3. Is this the simplest approach? (If over 3 steps, reconsider.)
 4. Will this change pass verification? (If not sure, flag it.)
 5. Never, ever change standard to get `Pass`
+6. If there are available tools or skills, use it.
 
 ## Build & Test
 

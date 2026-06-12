@@ -107,10 +107,10 @@ Daemon 是 bible-cc-plugin 的核心持久进程。它是一个基于 FastAPI + 
 
 | 文件 | 内容 | 状态 |
 |------|------|------|
-| `03-daemon/startup.md` | 启动序列：WAL PRAGMA → schema migration → crash recovery scan → uvicorn | 待编写 |
-| `03-daemon/sqlite-schema.md` | 表结构、索引、PRAGMA、content_hash UNIQUE、migration 策略 | 待编写 |
-| `03-daemon/port-conflict.md` | 端口冲突检测、错误通知、auto_fallback 逻辑 | 待编写 |
-| `03-daemon/http-api.md` | 每个端点的请求/响应 spec、时序约束、错误码 | 待编写 |
+| `03-daemon/startup.md` | 启动序列：WAL PRAGMA → schema migration → crash recovery scan → uvicorn | ✅ 已完成 |
+| `03-daemon/sqlite-schema.md` | 表结构、索引、PRAGMA、content_hash UNIQUE、migration 策略 | ✅ 已完成 |
+| `03-daemon/port-conflict.md` | 端口冲突检测、错误通知、auto_fallback 逻辑 | ✅ 已完成 |
+| `03-daemon/http-api.md` | 每个端点的请求/响应 spec、时序约束、错误码 | ✅ 已完成 |
 
 ---
 
