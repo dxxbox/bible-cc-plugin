@@ -83,7 +83,7 @@
 | 87 | `/bible-cc:gc` | command | 清理过期临时数据，释放 SQLite 空间 |
 | 89 | `/bible-cc:project-switch` | command | "切换到另一个项目的上下文" |
 | 90 | `/bible-cc:project-context` | command | "这个项目的整体上下文是什么？" |
-| 34 | `bible_memory_delete` | MCP tool | "这条记忆是错的，删掉"（已 flush 到 BiBLE 的） |
+| 34 | `bible_memory_delete` | MCP tool | "这条记忆是错的，删掉"（已 flush 到 BiBLE 的） | ❌ postponed — 待服务端确认 |
 
 ---
 
@@ -142,8 +142,8 @@
 | ✅ bible-cc command（高） | 10 | plugin 高优先级命令（含 MVP） |
 | ✅ bible-cc command（中） | 17 | plugin 中优先级命令（含 MVP） |
 | ✅ bible-cc command（低） | 10 | plugin 低优先级命令（含 MVP） |
-| ✅ bible-cc MCP tool | 1 | `bible_memory_delete` |
-| **plugin 采纳总计** | **38** | |
+| ✅ bible-cc MCP tool | 0 |（全部 MCP tool 待服务端确认或已覆盖） |
+| **plugin 采纳总计** | **37** |（含 2 postponed） |
 | 🔧 plugin 数据采集 | 3（多 # 归组） | daemon 采集 → server 展示 |
 | 🔧 server 侧能力 | 12 | 纯 server 侧分析报告 |
 | **候选总计** | **53** |（原 98 个，已删除 29 个真正不需要 + 16 个合并/改名/重分类） |

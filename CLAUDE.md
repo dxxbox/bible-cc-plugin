@@ -75,7 +75,7 @@ bible-cc-plugin/
 | Component | Role | Transport | Lifetime |
 |---|---|---|---|
 | **Daemon** | Buffer turns, detect key moments via LLM, flush to BiBLE, serve local context injection | HTTP `localhost:9777` | Persistent |
-| **MCP Server** | 7 BiBLE tools (memory search/save/get/delete, knowledge search/list, skill search/get) | Stdio (MCP) | Per Claude Code session |
+| **MCP Server** | 6 BiBLE tools (memory search/save/get, knowledge search, skill search/get) + 2 postponed (delete, list) | Stdio (MCP) | Per Claude Code session |
 | **Hooks** | Glue — start daemon, inject context, feed turns | Shell → HTTP to daemon | Event-driven |
 | **Commands** | User-facing manual control (push, consult, status, review) | Shell → HTTP to daemon | On-demand |
 
@@ -87,7 +87,7 @@ bible-cc-plugin/
 - **Config**: `~/.bible-cc/config.json` with env var overrides (`BIBLE_ATLAS_BASE_URL`, `BIBLE_ATLAS_TOKEN`, `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`)
 - **Moment detection**: Plugin-side LLM call (configurable model). Two-phase: async mid-session detection (last 2-3 turns, with CLI hint notification) + retrospective detection on session end (full session synthesis). See "Moment Detection Design" below.
 - **Capture taxonomy**: Three key moment types — session_start, decision, accomplishment. Intermediate bug fixes and unconfirmed discoveries are explicitly NOT captured.
-- **Command ↔ MCP tool separation**: Commands operate the **daemon** (user-initiated). MCP tools query **BiBLE Atlas** (model-initiated). The only overlap is `/bible-cc:consult` — a user-initiated BiBLE V4 hybrid search, complementing the model's automatic MCP tool searches. Both use the same BiBLE V4 search API.
+- **Command ↔ MCP tool separation**: Commands operate the **daemon** (user-initiated). MCP tools query **BiBLE Atlas** (model-initiated). The only overlap is `/bible-cc:consult` — a user-initiated BiBLE V4 hybrid search, complementing the model's automatic MCP tool searches. Both use BiBLE V4 domain search endpoints (consult makes parallel calls across domains).
 - **Hint notification**: When a key moment is detected mid-session, a hint is printed inline in the conversation transcript via hook stdout. Format is configurable (see `hint_format`). The hint carries enough context that the user doesn't need to scroll back.
 - **Graceful degradation (BiBLE unreachable)**: If BiBLE Atlas is down, local operations continue uninterrupted. `/session/start` and `/context/inject` are pure local SQLite — no BiBLE dependency. Moment flush is deferred (moments stay `flushed=0` until BiBLE recovers). MCP tools (`bible_memory_search` etc.) return errors — the model is informed and can retry or continue without. BiBLE status is surfaced via CLI hint and `/bible-cc:status`. No automatic retry — mark, notify, move on. If the daemon itself is unreachable during UserPromptSubmit/PostToolUse hooks, hook scripts silently skip — Claude Code is never blocked.
 - **Session crash recovery**: If a session terminates abnormally (Claude Code killed, daemon crash, system restart), the Stop hook never fires. On next SessionStart, the daemon detects unclosed sessions and triggers a catch-up retrospective detection + flush. Buffered turns are never silently lost.
