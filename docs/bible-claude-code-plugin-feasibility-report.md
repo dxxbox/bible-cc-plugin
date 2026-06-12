@@ -210,7 +210,7 @@ On `POST /daemon/start`, the daemon initializes in this order:
                                            or port+1 retry if port_auto_fallback=true
 ```
 
-**Port conflict handling**: If the configured port is occupied, the daemon fails to start. The SessionStart hook script detects the failure and outputs an error hint via stdout — the same mechanism used for key moment detection, but with error highlighting:
+**Port conflict handling**: If the configured port is occupied, the daemon fails to start. The SessionStart hook script detects the failure and outputs an error hint via stdout — the same mechanism used for key moment detection, but with error highlighting. The hint appears inline in the conversation transcript. With `inject: true`, the message also enters the system prompt so the model knows the daemon is down:
 ```
 ⎿ ❌ bible-cc daemon failed to start on port 9777 (address in use).
     Run /bible-cc:status for details.
@@ -236,6 +236,15 @@ POST /context/inject     — {session_id, user_message}
                            → returns "<relevant-memories>..." from local buffer only
                            → sources: recent turns summary, unflushed moments, crash-recovery moments
                            → does NOT call BiBLE Atlas (mid-session pull via MCP tools instead)
+
+POST /daemon/consult     — {session_id, query?}
+                           → if query empty: LLM summarizes conversation into query
+                           → calls BiBLE V4 hybrid search (memory + knowledge + skill)
+                           → returns "<relevant-memories>..." from BiBLE Atlas results
+
+GET  /daemon/moments?session_id=X   — list pending moments
+DELETE /daemon/moments/{id}          — discard a pending moment
+PUT  /daemon/moments/{id}            — edit title/abstract
 ```
 
 ### SQLite Schema
@@ -543,41 +552,79 @@ actions only the user can trigger on the daemon.
 Without commands, users rely entirely on automatic hooks and model-driven MCP tools.
 But some actions are inherently user-initiated:
 
-- "I just made an important decision — save this session NOW, don't wait for Stop."
-- "What's the daemon doing? Is capture working?"
-- "Refresh my context — I've changed direction and the old recall is stale."
-- "Set up BiBLE for the first time — where do I point it?"
+- "I just made an important decision — push this session NOW, don't wait for Stop."
+- "What's the daemon doing? Is capture working? Is BiBLE reachable?"
+- "The model's auto-search didn't find what I need — let me try myself."
+- "I want to check my pending moments before they get flushed."
 
-### Command Surface (4 commands)
+### Command Surface
+
+#### `/bible-cc:push`
+
+Force-push the current session's moments to BiBLE Atlas RIGHT NOW. Triggers moment
+detection on buffered turns and flushes key moments immediately. With `--title` and
+`--abstract`, bypasses auto-detection for precise user control.
+
+Different from the `bible_memory_save` MCP tool: this operates on the daemon's
+session buffer, not arbitrary user-provided messages.
 
 ```
-/bible-cc:setup
-    Interactive first-time setup wizard.
-    Prompts for BiBLE Atlas base URL, tests connectivity, writes ~/.bible-cc/config.json,
-    starts the daemon. Idempotent — re-run to change config.
-    Implemented as: uv run python -m bible_cc_plugin.scripts.setup
-
-/bible-cc:status
-    Show daemon health, uptime, active sessions, buffered turn count, pending moment
-    count, and BiBLE Atlas connectivity status.
-    Implemented as: curl GET /daemon/health (extended)
-
-/bible-cc:save [--title T] [--abstract A]
-    Force-save the current buffered session as a memory RIGHT NOW.
-    Triggers moment detection on buffered turns and flushes to BiBLE Atlas.
-    With --title/--abstract, bypasses auto-detection for precise user control.
-    Different from the bible_memory_save MCP tool: this operates on the daemon's
-    session buffer, not arbitrary user-provided messages.
-    Implemented as: curl POST /daemon/session/flush {session_id, title?, abstract?}
-
-/bible-cc:recall
-    Manually trigger a local context refresh mid-session.
-    Returns a fresh <relevant-memories> block from the local buffer (recent turns +
-    unflushed moments), same as the SessionStart injection.
-    Useful when the user wants to restore context without waiting for the next
-    SessionStart trigger.
-    Implemented as: curl POST /daemon/context/inject {session_id, user_message}
+Implementation: curl POST /daemon/session/flush {session_id, title?, abstract?}
 ```
+
+#### `/bible-cc:consult [query]`
+
+User-initiated cross-domain search against BiBLE Atlas V4 hybrid search endpoint.
+Searches across all domains (memory + knowledge + skill) in a single API call.
+
+- **With query**: searches BiBLE Atlas for the given query string.
+- **Without query (enter)**: the daemon calls an LLM to summarize the current
+  conversation into a search query, then searches BiBLE Atlas.
+
+| Actor | Trigger | Search Interface | Purpose |
+|-------|---------|-----------------|---------|
+| Model (MCP tools) | Automatic, mid-session | BiBLE V4 hybrid search | On-demand pull during conversation |
+| User (consult) | Manual, slash command | BiBLE V4 hybrid search | User suspects auto-search missed something |
+
+Both use the same BiBLE V4 hybrid search API. The only difference is who decides
+"now is the time to search." Consult gives the user agency when the model's
+auto-pull didn't surface what they want.
+
+Output is injected into the model's context (primary purpose). Display to user
+is secondary and not required for V1.
+
+```
+Implementation: curl POST /daemon/consult {session_id, query?}
+  → daemon: LLM summarize if no query → BiBLE V4 hybrid search → format as context block → return
+```
+
+#### `/bible-cc:status`
+
+Show daemon health, uptime, active sessions, buffered turn count, pending moment
+count, BiBLE Atlas connectivity, SQLite integrity, and schema version.
+
+```
+Implementation: curl GET /daemon/health (extended)
+```
+
+#### `/bible-cc:review`
+
+Browse, edit, or discard pending moments before they're flushed. The user owns
+their data — review gives them control over what gets persisted to BiBLE Atlas.
+
+```
+Implementation: curl GET /daemon/moments?session_id=X
+                curl DELETE /daemon/moments/{id}
+                curl PUT /daemon/moments/{id}
+```
+
+### Full Command Inventory
+
+The complete screened command inventory (37 accepted out of 98 candidates) is
+maintained in `docs/command-priority-table.md`. Key additions beyond the four
+above include: `check-bible`, `context`, `config`/`config-set`, `capture-pause`/`resume`,
+`recover`, `token-usage`, and memory management commands (`memory-duplicates`,
+`memory-merge`, `memory-tag`, `memory-timeline`, `memory-graph`, `memory-fork`).
 
 ### What about domain search/browse?
 
@@ -586,14 +633,9 @@ the model invokes them **mid-session, on demand**. The user expresses intent in 
 language ("find my memories about the auth refactor", "what knowledge bases do I have?"),
 and the model calls the appropriate tool. No slash commands needed.
 
-This is the primary mechanism for cross-session knowledge retrieval. Unlike speculative
-pre-injection at SessionStart, on-demand search is driven by the user's concrete input —
-every BiBLE query has real search intent behind it. This makes BiBLE Atlas a true
-knowledge broker: it stores years of accumulated memories, knowledge bases,
-specifications, and lessons learned, and surfaces them exactly when they're needed.
-
-This keeps the command surface small (4 commands) and the MCP tool surface
-comprehensive (8 tools across 3 domains).
+Consult (`/bible-cc:consult`) is the only user-initiated search command — it exists
+as a manual escape hatch for when the model's auto-pull doesn't surface what the user wants.
+Both MCP tools and consult call the same BiBLE V4 hybrid search API.
 
 ### Command Implementation
 
@@ -601,10 +643,10 @@ Commands are thin shell wrappers — no new backend logic. Each is a one-liner t
 either calls a Python script (for interactive flows) or curls the daemon (for status ops).
 
 ```
-/bible-cc:setup   → uv run python -m bible_cc_plugin.scripts.setup
-/bible-cc:status  → curl -s http://127.0.0.1:9777/daemon/health | python -m json.tool
-/bible-cc:save    → uv run python -m bible_cc_plugin.scripts.hook session-flush --session-id "$CLAUDE_SESSION_ID"
-/bible-cc:recall  → uv run python -m bible_cc_plugin.scripts.hook context-inject --session-id "$CLAUDE_SESSION_ID"
+/bible-cc:push     → uv run python -m bible_cc_plugin.scripts.hook session-flush --session-id "$CLAUDE_SESSION_ID"
+/bible-cc:consult  → curl -s -X POST http://127.0.0.1:9777/daemon/consult -d '{"session_id":"$CLAUDE_SESSION_ID","query":"..."}'
+/bible-cc:status   → curl -s http://127.0.0.1:9777/daemon/health | python -m json.tool
+/bible-cc:review   → curl -s http://127.0.0.1:9777/daemon/moments?session_id="$CLAUDE_SESSION_ID"
 ```
 
 ### commands/*.md (sketch)

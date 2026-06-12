@@ -186,198 +186,199 @@ SessionStart hook 触发
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 1 | `/bible-cc:setup` | 首次安装。配 URL、写 config、启动 daemon | ✅ P0 |
-| 2 | `/bible-cc:status` | daemon 跑着没？BiBLE 通不通？buffer 里多少数据？ | ✅ P0 |
-| 3 | `/bible-cc:start` | daemon 意外挂了，手动拉起来 | ❌ P3 |
-| 4 | `/bible-cc:stop` | 调试时想停 daemon | ❌ P3 |
-| 5 | `/bible-cc:restart` | 改完 config 想让它生效 | ❌ P3 |
-| 6 | `/bible-cc:logs` | "刚才发生了什么？hook 调成功了吗？" | ⚠️ P2 |
-| 7 | `/bible-cc:ping` | 快速确认 daemon 活着（比 status 轻量） | ❌ P3 |
-| 8 | `/bible-cc:doctor` | 全面自检：config、daemon、BiBLE、SQLite、schema 版本 | ⚠️ P1 |
+| 1 | `/bible-cc:setup` | 首次安装。配 URL、写 config、启动 daemon | ❌（marketplace + deploy 覆盖） |
+| 2 | `/bible-cc:status` | daemon 跑着没？BiBLE 通不通？buffer 统计？合入 SQLite 完整性 + schema 版本 | ✅ 高 |
+| 3 | `/bible-cc:start` | daemon 意外挂了，手动拉起来 | ❌（SessionStart hook 自动管理） |
+| 4 | `/bible-cc:stop` | 调试时想停 daemon | ❌（reload-plugin --force 已覆盖） |
+| 5 | `/bible-cc:restart` | 改完 config 想让它生效 | ❌ |
+| 6 | `/bible-cc:logs` | "hook 调成功了吗？" | ❌（CC 插件管理模块有日志，自己做好打印即可） |
+| 7 | `/bible-cc:check-bible` | "BiBLE Atlas 通不通？" 轻量心跳检查（原 ping，改为测 BiBLE） | ✅ 高 |
+| 8 | `/bible-cc:doctor` | 全面自检 | ❌（功能合入 status） |
 
 ### B. Session 管理
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 9 | `/bible-cc:save` | 刚做了重要决策，立刻 flush | ✅ P0 |
-| 10 | `/bible-cc:recall` | "我刚才在聊什么来着？" 手动注入 buffer | ⚠️ P1 |
-| 11 | `/bible-cc:review` | 浏览/编辑/删除 pending moments | ✅ P0 |
-| 12 | `/bible-cc:sessions` | daemon 里有哪些 session 还活着？ | ⚠️ P2 |
-| 13 | `/bible-cc:session-info` | 当前 session 的详细统计 | ❌ P3 |
-| 14 | `/bible-cc:context` | 调试：上次注入到模型的是什么东西？ | ⚠️ P2 |
+| 9 | `/bible-cc:push` | "刚做了重要决策，立刻推送到 BiBLE"（原 save） | ✅ 高 |
+| 10 | `/bible-cc:consult` | 用户主动向 BiBLE 跨域查询（memory + knowledge + skill），pull 上下文（原 recall） | ✅ 高 |
+| 11 | `/bible-cc:review` | 浏览/编辑/删除 pending moments | ✅ 高 |
+| 12 | `/bible-cc:sessions` | daemon 里有哪些 session 还活着？ | ✅ 低 |
+| 13 | `/bible-cc:session-info` | 当前 session 的详细统计 | ❌ |
+| 14 | `/bible-cc:context` | 调试：上次注入到模型的是什么东西？ | ✅ 中 |
 
 ### C. 配置管理
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 15 | `/bible-cc:config` | "BiBLE URL 配的什么？模型用的哪个？" | ⚠️ P2 |
-| 16 | `/bible-cc:config-set` | "换个 BiBLE 地址" 无需手改 JSON | ⚠️ P2 |
-| 17 | `/bible-cc:config-reset` | 改乱了想回到默认 | ❌ P3 |
+| 15 | `/bible-cc:config` | "BiBLE URL 配的什么？检测模型？" | ✅ 中 |
+| 16 | `/bible-cc:config-set` | "换个 BiBLE 地址 / 检测模型" 无需手改 JSON | ✅ 中 |
+| 17 | `/bible-cc:config-reset` | 改乱了想回到默认 | ❌（uninstall 重来） |
 
 ### D. 数据缓冲管理
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 18 | `/bible-cc:buffer` | "buffer 里现在有什么？" 显示当前 session 的 turns | ⚠️ P2 |
-| 19 | `/bible-cc:buffer-clear` | "刚才聊的太乱了，清掉 buffer 重新开始" | ❌ P3 |
-| 20 | `/bible-cc:sync-status` | "还有多少 moments 没 flush 到 BiBLE？" | ⚠️ P2 |
-| 21 | `/bible-cc:sync-force` | 全局 flush 所有 pending moments | ⚠️ P2 |
+| 18 | `/bible-cc:buffer` | "buffer 里现在有什么？" 显示当前 session 的 turns 摘要 | ✅ 低 |
+| 19 | `/bible-cc:buffer-clear` | "清掉 buffer 重新开始" | ❌（改为 SessionStart inline 交互: [k] keep [d] discard） |
+| 20 | `/bible-cc:sync-status` | "还有多少 moments 没 push 到 BiBLE？" | ✅ 低 |
+| 21 | `/bible-cc:push-all` | 全局 push 所有 pending moments（原 sync-force） | ✅ 低 |
 
 ### E. 采集控制
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 22 | `/bible-cc:capture-pause` | "下面聊的内容私人，别记录" | ⚠️ P1 |
-| 23 | `/bible-cc:capture-resume` | "可以继续记录了" | ⚠️ P1 |
-| 24 | `/bible-cc:capture-mode` | 切换采集模式（key_moments / full） | ❌ P3 |
-| 25 | `/bible-cc:bypass-add` | "这个项目永远不记录" | ⚠️ P2 |
-| 26 | `/bible-cc:bypass-list` | "哪些项目被跳过了？" | ❌ P3 |
+| 22 | `/bible-cc:capture-pause` | "下面聊的内容私人，别记录" | ✅ 中 |
+| 23 | `/bible-cc:capture-resume` | "可以继续记录了" | ✅ 中 |
+| 24 | `/bible-cc:capture-mode` | 临时切换采集模式（key_moments / full） | ✅ 低 |
+| 25 | `/bible-cc:bypass-add` | "这个项目永远不记录" | ✅ 低 |
+| 26 | `/bible-cc:bypass-list` | "哪些项目被跳过了？" | ❌ |
 
 ### F. 数据修复与恢复
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 27 | `/bible-cc:recover` | 手动触发 crash recovery | ⚠️ P1 |
-| 28 | `/bible-cc:retry-flush` | "上次 flush 失败了，重试" | ⚠️ P2 |
-| 29 | `/bible-cc:repair-db` | SQLite 损坏时尝试修复 | ❌ P3 |
+| 27 | `/bible-cc:recover` | 手动触发 crash recovery | ✅ 中 |
+| 28 | `/bible-cc:retry-push` | "上次 push 失败了，重试"（原 retry-flush） | ✅ 低 |
+| 29 | `/bible-cc:repair-db` | SQLite 损坏时尝试修复 | ❌（效果存疑） |
 
 ### G. 数据可移植性
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 30 | `/bible-cc:db-backup` | 备份 daemon.db | ❌ P3 |
-| 31 | `/bible-cc:db-stats` | "数据库多大了？多少行？" | ❌ P3 |
-| 32 | `/bible-cc:migrate-from` | 从 claude-mem 或其他工具迁移数据 | ❌ P3 |
-| 33 | `/bible-cc:export` | 把本地数据导出为可读格式 | ❌ P3 |
+| 30-33 | db-backup, db-stats, migrate-from, export | — | ❌ 全部不要 |
 
-### H. BiBLE 数据管理（建议做 MCP tool 而非 command）
+### H. BiBLE 数据管理（MCP 工具，非 command）
 
 | # | Tool | 场景 | 结论 |
 |---|------|------|------|
-| 34 | `bible_memory_delete` | "这条记忆是错的，删掉" | ⚠️ P1 |
-| 35 | `bible_memory_edit` | "这个 title 不够准确，改一下" | ⚠️ P2 |
-| 36 | `bible_knowledge_delete` | 删除过时的知识 | ❌ P3 |
-| 37 | `bible_knowledge_add` | 手动添加一条知识 | ❌ P3 |
+| 34 | `bible_memory_delete` | "这条记忆是错的，删掉" | ✅ 低 |
+| 35 | `bible_memory_edit` | 修改已 flush 的记忆 | ❌（不修改历史，review 管 pending） |
+| 36 | `bible_knowledge_delete` | 删除过时的知识 | ❌（knowledge 只读） |
+| 37 | `bible_knowledge_add` | 手动添加一条知识 | ❌（knowledge 只读） |
 
 ### I. 调试与开发
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 38 | `/bible-cc:version` | "装的哪个版本？" | ⚠️ P2 |
-| 39 | `/bible-cc:help` | "有哪些命令可用？" | ⚠️ P2 |
-| 40 | `/bible-cc:test-connectivity` | "BiBLE 到底通不通？" | ⚠️ P2 |
-| 41 | `/bible-cc:reset` | 核选项——清空所有本地状态 | ❌ P3 |
+| 38 | `/bible-cc:version` | "装的哪个版本？" | ✅ 低 |
+| 39 | `/bible-cc:help` | "有哪些命令可用？" | ✅ 高 |
+| 40 | `/bible-cc:test-connectivity` | "BiBLE 到底通不通？" | ❌（#7 check-bible 已覆盖） |
+| 41 | `/bible-cc:reset` | 核选项——清空所有本地状态 | ❌（uninstall 重来） |
 
 ### J. Token 统计
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 42 | `/bible-cc:token-usage` | "这个 session 用了多少 token？花了多少钱？" | ⚠️ P1 |
-| 43 | `/bible-cc:token-injection` | "注入的 memories 块占了多少 token？" | ⚠️ P2 |
-| 44 | `/bible-cc:token-cost` | "按当前模型价格，这个 session 花了多少钱？" | ⚠️ P1 |
-| 45 | `/bible-cc:token-summary` | 按 turn 拆解 token 消费明细 | ⚠️ P2 |
-| 46 | `/bible-cc:token-moment` | moment detection 的 LLM 调用花了多少 token？ | ⚠️ P2 |
-| 47 | `/bible-cc:token-project` | 这个项目总共花了多少 token？跨 session 汇总 | ⚠️ P2 |
-| 48 | `/bible-cc:token-peak` | 哪个 turn 的 token 消耗最高？ | ❌ P3 |
-| 49 | `/bible-cc:token-alert` | 设置 token 预警阈值 | ❌ P3 |
+| 42 | `/bible-cc:token-usage` | "这个 session 用了多少 token？"（含 injection 开销） | ✅ 中 |
+| 43-49 | injection, cost, summary, moment, project, peak, alert | — | ❌ 全部不要（token 数据在 Anthropic API 层，插件拿不到） |
 
 ### K. Memory 探索与导航
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 50 | `/bible-cc:memory-timeline` | "我这周做了什么？" 时间线浏览 | _待筛_ |
-| 51 | `/bible-cc:memory-graph` | 可视化记忆网络 | _待筛_ |
-| 52 | `/bible-cc:memory-top` | "我最近聊的最多的话题是什么？" | _待筛_ |
-| 53 | `/bible-cc:memory-gaps` | "哪些话题很久没碰了？" 发现知识盲区 | _待筛_ |
-| 54 | `/bible-cc:memory-duplicates` | "有没有重复的记忆？" | _待筛_ |
-| 55 | `/bible-cc:memory-tag` | "给这条记忆打标签" | _待筛_ |
-| 56 | `/bible-cc:memory-tags` | "我有哪些标签？" | _待筛_ |
-| 57 | `/bible-cc:memory-merge` | "这两条其实说的是同一件事，合并" | _待筛_ |
-| 58 | `/bible-cc:memory-fork` | "从一条记忆分支出一个新话题" | _待筛_ |
-| 59 | `/bible-cc:memory-bookmark` | "这条很重要，收藏" | _待筛_ |
-| 60 | `/bible-cc:memory-bookmarks` | "我收藏了哪些记忆？" | _待筛_ |
+| 50 | `/bible-cc:memory-timeline` | "我这周做了什么？" 时间线浏览 | ✅ 低 |
+| 51 | `/bible-cc:memory-graph` | 可视化记忆网络 | ✅ 中 |
+| 52 | `/bible-cc:memory-top` | "我最近聊的最多的话题是什么？" | ❌ |
+| 53 | `/bible-cc:memory-gaps` | "哪些话题很久没碰了？" 发现知识盲区 | ❌ |
+| 54 | `/bible-cc:memory-duplicates` | "有没有重复的记忆？" | ✅ 高 |
+| 55 | `/bible-cc:memory-tag` | "给这条记忆打标签" | ✅ 中 |
+| 56 | `/bible-cc:memory-tags` | "我有哪些标签？" | ✅ 中 |
+| 57 | `/bible-cc:memory-merge` | "这两条其实说的是同一件事，合并" | ✅ 高 |
+| 58 | `/bible-cc:memory-fork` | "从一条记忆分支出一个新话题" | ✅ 低 |
+| 59 | `/bible-cc:memory-bookmark` | "这条很重要，收藏" | ❌ |
+| 60 | `/bible-cc:memory-bookmarks` | "我收藏了哪些记忆？" | ❌ |
 
 ### L. 搜索与分析
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 61 | `/bible-cc:search-history` | "我之前搜过什么？" | _待筛_ |
-| 62 | `/bible-cc:search-suggest` | 搜索建议 | _待筛_ |
-| 63 | `/bible-cc:search-across` | 所有 domain 跨域搜索 | _待筛_ |
-| 64 | `/bible-cc:analyze` | "分析我的工作模式" | _待筛_ |
-| 65 | `/bible-cc:trends` | "这个月我在哪些话题上花的时间最多？" | _待筛_ |
+| 61 | `/bible-cc:search-history` | "我之前搜过什么？" | ❌ |
+| 62 | `/bible-cc:search-suggest` | 搜索建议 | ❌ |
+| 63 | `/bible-cc:search-across` | 所有 domain 跨域搜索 | ❌（#10 consult 已覆盖跨域查询） |
+| 64 | `/bible-cc:analyze` | "分析我的工作模式" | ❌ |
+| 65 | `/bible-cc:trends` | "这个月我在哪些话题上花的时间最多？" | ❌ |
 
 ### M. 协作与团队
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 66 | `/bible-cc:team-activity` | "团队成员最近在做什么？" | _待筛_ |
-| 67 | `/bible-cc:team-search` | "在团队的记忆中搜索" | _待筛_ |
-| 68 | `/bible-cc:share-memory` | "把这条记忆分享给团队成员" | _待筛_ |
-| 69 | `/bible-cc:handoff` | "把这个 session 的上下文打包给同事" | _待筛_ |
-| 70 | `/bible-cc:team-overlap` | "团队里有谁在做类似的事情？" | _待筛_ |
-| 71 | `/bible-cc:team-notes` | "给团队留一条笔记" | _待筛_ |
+| 66 | `/bible-cc:team-activity` | "团队成员最近在做什么？" | ✅ 中 |
+| 67 | `/bible-cc:team-search` | "在团队的记忆中搜索" | ✅ 高 |
+| 68 | `/bible-cc:share-memory` | "把这条记忆分享给团队成员" | ✅ 高 |
+| 69 | `/bible-cc:handoff` | "把这个 session 的上下文打包给同事" | ✅ 中 |
+| 70 | `/bible-cc:team-overlap` | "团队里有谁在做类似的事情？" | ✅ 低 |
+| 71 | `/bible-cc:team-notes` | "给团队留一条笔记" | ✅ 低 |
 
 ### N. 自动化与调度
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 72 | `/bible-cc:daily-digest` | "生成今天的工作摘要" | _待筛_ |
-| 73 | `/bible-cc:weekly-report` | "这周做了什么？导出报告" | _待筛_ |
-| 74 | `/bible-cc:digest-schedule` | "每天早上 9 点自动生成昨日摘要" | _待筛_ |
-| 75 | `/bible-cc:remind` | "下次聊到 X 话题时提醒我" | _待筛_ |
-| 76 | `/bible-cc:reminders` | "我设了哪些提醒？" | _待筛_ |
-| 77 | `/bible-cc:follow-up` | "上次提到的 X 还没跟进" | _待筛_ |
+| 72 | `/bible-cc:daily-digest` | "生成今天的工作摘要" | ❌ |
+| 73 | `/bible-cc:weekly-report` | "这周做了什么？导出报告" | ❌ |
+| 74 | `/bible-cc:digest-schedule` | "每天早上 9 点自动生成昨日摘要" | ❌ |
+| 75 | `/bible-cc:remind` | "下次聊到 X 话题时提醒我" | ❌ |
+| 76 | `/bible-cc:reminders` | "我设了哪些提醒？" | ❌ |
+| 77 | `/bible-cc:follow-up` | "上次提到的 X 还没跟进" | ❌ |
 
 ### O. 隐私与合规
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 78 | `/bible-cc:privacy-audit` | "有没有敏感信息被记录下来了？" | _待筛_ |
-| 79 | `/bible-cc:redact` | "把这条记忆中的密码/API key 删掉" | _待筛_ |
-| 80 | `/bible-cc:forget-project` | "忘掉这个项目的所有记忆" | _待筛_ |
-| 81 | `/bible-cc:forget-session` | "忘掉这个 session" | _待筛_ |
-| 82 | `/bible-cc:data-request` | "我的数据都在哪？导出全部个人数据" | _待筛_ |
+| 78 | `/bible-cc:privacy-audit` | "有没有敏感信息被记录下来了？" | ✅ 中 |
+| 79 | `/bible-cc:redact` | "把这条记忆中的密码/API key 删掉" | ✅ 中 |
+| 80 | `/bible-cc:forget-project` | "忘掉这个项目的所有记忆" | ✅ 中 |
+| 81 | `/bible-cc:forget-session` | "忘掉这个 session" | ✅ 中 |
+| 82 | `/bible-cc:data-request` | "我的数据都在哪？导出全部个人数据" | ✅ 低 |
 
 ### P. 性能与健康
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 83 | `/bible-cc:perf` | daemon 响应延迟监控 | _待筛_ |
-| 84 | `/bible-cc:slow-queries` | SQLite 慢查询 | _待筛_ |
-| 85 | `/bible-cc:memory-usage` | daemon 内存占用 | _待筛_ |
-| 86 | `/bible-cc:disk-usage` | daemon.db 大小和增长速度 | _待筛_ |
-| 87 | `/bible-cc:gc` | 清理 30 天前的临时数据 | _待筛_ |
+| 83 | `/bible-cc:perf` | daemon 响应延迟监控 | ❌ |
+| 84 | `/bible-cc:slow-queries` | SQLite 慢查询 | ❌ |
+| 85 | `/bible-cc:memory-usage` | daemon 内存占用 | ❌ |
+| 86 | `/bible-cc:disk-usage` | daemon.db 大小和增长速度 | ❌ |
+| 87 | `/bible-cc:gc` | 清理 30 天前的临时数据 | ✅ 低 |
 
 ### Q. 多项目 / 多工作空间
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 88 | `/bible-cc:projects` | "我在哪些项目里积累过记忆？" | _待筛_ |
-| 89 | `/bible-cc:project-switch` | "切换到另一个项目的上下文" | _待筛_ |
-| 90 | `/bible-cc:project-context` | "这个项目的整体上下文是什么？" | _待筛_ |
-| 91 | `/bible-cc:project-compare` | "对比两个项目的记忆" | _待筛_ |
+| 88 | `/bible-cc:projects` | "我在哪些项目里积累过记忆？" | ❌ |
+| 89 | `/bible-cc:project-switch` | "切换到另一个项目的上下文" | ✅ 低 |
+| 90 | `/bible-cc:project-context` | "这个项目的整体上下文是什么？" | ✅ 低 |
+| 91 | `/bible-cc:project-compare` | "对比两个项目的记忆" | ❌ |
 
 ### R. 插件升级与维护
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 92 | `/bible-cc:upgrade` | "有新版本吗？升级" | _待筛_ |
-| 93 | `/bible-cc:changelog` | "最近更新了什么？" | _待筛_ |
-| 94 | `/bible-cc:uninstall` | "我不想用了，完整卸载" | _待筛_ |
+| 92 | `/bible-cc:upgrade` | "有新版本吗？升级" | ✅ 中 |
+| 93 | `/bible-cc:changelog` | "最近更新了什么？" | ✅ 中 |
+| 94 | `/bible-cc:uninstall` | "我不想用了，完整卸载" | ✅ 中 |
 
 ### S. 实验 / 趣味
 
 | # | Command | 场景 | 结论 |
 |---|---------|------|------|
-| 95 | `/bible-cc:personality` | "分析我的工作风格" | _待筛_ |
-| 96 | `/bible-cc:wrapped` | "年度回顾——今年聊了什么" | _待筛_ |
-| 97 | `/bible-cc:quiz` | "从我的记忆出题考考我" | _待筛_ |
-| 98 | `/bible-cc:fortune` | "随机从历史记忆中抽一条给我看" | _待筛_ |
+| 95 | `/bible-cc:personality` | "分析我的工作风格" | ❌ |
+| 96 | `/bible-cc:wrapped` | "年度回顾——今年聊了什么" | ❌ |
+| 97 | `/bible-cc:quiz` | "从我的记忆出题考考我" | ❌ |
+| 98 | `/bible-cc:fortune` | "随机从历史记忆中抽一条给我看" | ❌ |
 
-**总计：98 个候选命令/工具，覆盖 19 个域。** 其中 A-E、I、J 域已给出初步优先级（P0/P1/P2/P3），K-S 域待筛选。
+---
 
-**状态**：展开讨论中，待明天筛选落定。
+### 筛选结果汇总
+
+**✅ 要：** memory-timeline, memory-graph, memory-duplicates, memory-tag, memory-tags, memory-merge, memory-fork, search-across, team-activity, team-search, share-memory, handoff, team-overlap, team-notes, privacy-audit, redact, forget-project, forget-session, data-request, gc, project-switch, project-context, upgrade, changelog, uninstall
+
+**❌ 不要：** memory-top, memory-gaps, memory-bookmark, memory-bookmarks, search-history, search-suggest, analyze, trends, daily-digest, weekly-report, digest-schedule, remind, reminders, follow-up, perf, slow-queries, memory-usage, disk-usage, projects, project-compare, personality, wrapped, quiz, fortune
+
+**⚠️ 单独讨论：** search-across
+
+**总计：98 个候选 → 筛选后 37 个采纳（36 command + 1 MCP tool），10 高 / 17 中 / 10 低。** 详见 `docs/command-priority-table.md`。
+
+**状态**：✅ Resolved
 
 ---
 
@@ -396,11 +397,11 @@ SessionStart hook 触发
    ⎿ ❌ bible-cc daemon failed to start on port 9777 (address in use).
        Run /bible-cc:status for details.
    ```
-   SessionStart hook 脚本检测到 daemon 启动失败后输出这条 hint，用户在下个 turn 看到。后续所有 turn hooks 静默跳过（graceful degradation）。
+   SessionStart hook 脚本检测到 daemon 启动失败后输出这条 hint。根据 Claude Code 源码研究确认：**hook stdout 是外部 hook 脚本唯一可用的用户可见通道**，显示位置是对话 transcript 内联（不是独立状态栏）。`inject: true` 同时将输出注入 system prompt，模型也会知道 daemon 不可用，从而不盲目调用 bible_* MCP 工具。后续所有 turn hooks 静默跳过（graceful degradation）。
 
-**状态**：设计方案已定，通知实现方式待确认
+> 研究来源：deep-dive-claude-code 源码分析。外部 hook 脚本通过 `syncHookResponseSchema` 返回结果，无 AppState 写入通道。statusLineText、sendOSNotification、addNotification 等均为内部 TypeScript API，插件 hook 不可用。
 
-> **TODO**: 确认 Claude Code 支持的故障通知方式（hook stdout hint 是否为最佳路径，是否有 status bar API、toast、notification 等替代方案），选择最合适的一种后再落地。
+**状态**：✅ Resolved（通知机制已确认）
 
 ---
 
@@ -416,5 +417,5 @@ SessionStart hook 触发
 | 6 | `.mcp.json` 内容与实际不匹配 | Major | ✅ resolved |
 | 7 | hook timeout 语义不清 | Minor | ✅ resolved |
 | 8 | tool result 截断过于激进 | Minor | ✅ resolved |
-| 9 | review 端点遗漏 | Minor | pending |
-| 10 | daemon 端口冲突静默失败 | Minor | 设计方案已定，通知机制 TODO |
+| 9 | 完整 Command 盘点（98→37） | Minor | ✅ resolved |
+| 10 | daemon 端口冲突静默失败 | Minor | ✅ resolved（通知机制: hook stdout inline in transcript） |
