@@ -125,10 +125,10 @@ During conversation, when the user mentions a topic, idea, or question that trig
 │       │    │                │                                │
 │  ┌────┴────┴────────────────┼────────────────────────────┐   │
 │  │  Commands (user-facing)  │                            │   │
-│  │  /bible-cc:setup         │  Plugin bootstrap          │   │
 │  │  /bible-cc:status        │  Daemon health             │   │
-│  │  /bible-cc:save          │  Force-save session        │   │
-│  │  /bible-cc:recall        │  Force context refresh     │   │
+│  │  /bible-cc:push          │  Force-push moments        │   │
+│  │  /bible-cc:consult       │  Search BiBLE Atlas        │   │
+│  │  /bible-cc:review        │  Manage pending moments    │   │
 │  └──────────┬───────────────┘                            │   │
 │  └----------|---------------┘----------------------------┘   |
 └─────────────┼───────────────────────────────────────────----─┘
@@ -157,9 +157,9 @@ During conversation, when the user mentions a topic, idea, or question that trig
 | Component | Role | Transport | Lifetime |
 |---|---|---|---|
 | **Daemon** (`bible-cc-daemon`) | Buffer turns, detect key moments via LLM, flush to BiBLE, serve local context injection (buffer-based) | HTTP on `localhost:9777` | Persistent (managed by hooks) |
-| **MCP Server** (`bible-cc-mcp`) | 6 BiBLE tools (memory search/save/get, knowledge search/list) + daemon status tool | Stdio (MCP protocol) | Per Claude Code session |
+| **MCP Server** (`bible-cc-mcp`) | 7 BiBLE tools (memory search/save/get, knowledge search/list, skill search/get) | Stdio (MCP protocol) | Per Claude Code session |
 | **Hooks** | Glue — start daemon, inject context, feed turns to daemon | Shell → HTTP calls to daemon | Event-driven |
-| **Commands** | User-facing slash commands for manual control — setup, status, save, recall (local injection) | Shell → HTTP calls to daemon | On-demand (user invoked) |
+| **Commands** | User-facing slash commands for manual control — push, consult, status, review | Shell → HTTP calls to daemon | On-demand (user invoked) |
 
 ### Key Design Decisions
 
@@ -167,9 +167,9 @@ During conversation, when the user mentions a topic, idea, or question that trig
 - SQLite at `~/.bible-cc/daemon.db` (per-user), using Python's stdlib `sqlite3`
 - BiBLE Atlas URL configured once, shared by all components
 - Skill tools excluded — Claude Code manages skills natively
-- **Commands operate the daemon** (setup, status, save, local recall). **MCP tools query BiBLE Atlas** (search, get, list across all three domains — the primary mechanism for cross-session knowledge retrieval). No overlap, no daemon-as-proxy.
+- **Commands operate the daemon** (push, consult, status, review). **MCP tools query BiBLE Atlas** (search, get, list across all three domains — the primary mechanism for cross-session knowledge retrieval). The only overlap is `/bible-cc:consult` — a user-initiated BiBLE V4 hybrid search, complementing the model's automatic MCP tool searches.
 - MCP tools: `bible_memory_search`, `bible_memory_save`, `bible_memory_get`, `bible_knowledge_search`, `bible_knowledge_list`, `bible_skill_search`, `bible_skill_get`
-- User commands: `/bible-cc:setup`, `/bible-cc:status`, `/bible-cc:save`, `/bible-cc:recall`
+- User commands: `/bible-cc:push`, `/bible-cc:consult`, `/bible-cc:status`, `/bible-cc:review`
 
 ### Capture Taxonomy (Key Moments)
 
@@ -652,14 +652,14 @@ either calls a Python script (for interactive flows) or curls the daemon (for st
 ### commands/*.md (sketch)
 
 ```markdown
-<!-- /bible-cc:save -->
-# Save current session as memory
+<!-- /bible-cc:push -->
+# Push current session moments to BiBLE Atlas
 
-Force-save the current conversation buffer as a memory in BiBLE Atlas.
+Force-push the current session buffer's key moments to BiBLE Atlas.
 Triggers moment detection on buffered turns and flushes key moments immediately.
 Use --title and --abstract to provide your own summary instead of auto-detection.
 
-Usage: /bible-cc:save [--title "Decision: use TypeScript"] [--abstract "We decided..."]
+Usage: /bible-cc:push [--title "Decision: use TypeScript"] [--abstract "We decided..."]
 ```
 
 ### Design rationale
@@ -774,11 +774,11 @@ bible-cc-plugin/
 ├── hooks/
 │   └── hooks.json                  ← hook definitions
 ├── commands/                       ← user-facing slash commands
-│   ├── setup.md                    ← /bible-cc:setup
 │   ├── status.md                   ← /bible-cc:status
-│   ├── save.md                     ← /bible-cc:save
-│   ├── recall.md                   ← /bible-cc:recall
-│   └── review.md                   ← /bible-cc:review
+│   ├── push.md                     ← /bible-cc:push
+│   ├── consult.md                  ← /bible-cc:consult
+│   ├── review.md                   ← /bible-cc:review
+│   └── help.md                     ← /bible-cc:help
 ├── src/bible_cc_plugin/
 │   ├── daemon/
 │   │   ├── server.py               ← FastAPI HTTP server (:9777)

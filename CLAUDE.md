@@ -40,7 +40,7 @@ Four components, all Python:
 bible-cc-plugin/
 ├── pyproject.toml            # deps, entry points, build config
 ├── plugin.json               # .claude-plugin manifest
-├── .mcp.json                 # MCP server discovery (bible-atlas server)
+├── .mcp.json                 # MCP server discovery (bible-cc mcp server)
 ├── hooks/hooks.json          # Hook → daemon HTTP mappings
 ├── commands/                 # User-facing slash commands
 │   ├── status.md             #   /bible-cc:status
@@ -77,7 +77,7 @@ bible-cc-plugin/
 | **Daemon** | Buffer turns, detect key moments via LLM, flush to BiBLE, serve local context injection | HTTP `localhost:9777` | Persistent |
 | **MCP Server** | 7 BiBLE tools (memory search/save/get, knowledge search/list, skill search/get) | Stdio (MCP) | Per Claude Code session |
 | **Hooks** | Glue — start daemon, inject context, feed turns | Shell → HTTP to daemon | Event-driven |
-| **Commands** | User-facing manual control (setup, status, save, recall, review) | Shell → HTTP to daemon | On-demand |
+| **Commands** | User-facing manual control (push, consult, status, review) | Shell → HTTP to daemon | On-demand |
 
 ### Key Design Decisions
 
@@ -88,7 +88,7 @@ bible-cc-plugin/
 - **Moment detection**: Plugin-side LLM call (configurable model). Two-phase: async mid-session detection (last 2-3 turns, with CLI hint notification) + retrospective detection on session end (full session synthesis). See "Moment Detection Design" below.
 - **Capture taxonomy**: Three key moment types — session_start, decision, accomplishment. Intermediate bug fixes and unconfirmed discoveries are explicitly NOT captured.
 - **Command ↔ MCP tool separation**: Commands operate the **daemon** (user-initiated). MCP tools query **BiBLE Atlas** (model-initiated). The only overlap is `/bible-cc:consult` — a user-initiated BiBLE V4 hybrid search, complementing the model's automatic MCP tool searches. Both use the same BiBLE V4 search API.
-- **Hint notification**: When a key moment is detected mid-session, a hint is printed to the CLI status line area via hook stdout. Format is configurable (see `hint_format`). The hint carries enough context that the user doesn't need to scroll back.
+- **Hint notification**: When a key moment is detected mid-session, a hint is printed inline in the conversation transcript via hook stdout. Format is configurable (see `hint_format`). The hint carries enough context that the user doesn't need to scroll back.
 - **Graceful degradation (BiBLE unreachable)**: If BiBLE Atlas is down, local operations continue uninterrupted. `/session/start` and `/context/inject` are pure local SQLite — no BiBLE dependency. Moment flush is deferred (moments stay `flushed=0` until BiBLE recovers). MCP tools (`bible_memory_search` etc.) return errors — the model is informed and can retry or continue without. BiBLE status is surfaced via CLI hint and `/bible-cc:status`. No automatic retry — mark, notify, move on. If the daemon itself is unreachable during UserPromptSubmit/PostToolUse hooks, hook scripts silently skip — Claude Code is never blocked.
 - **Session crash recovery**: If a session terminates abnormally (Claude Code killed, daemon crash, system restart), the Stop hook never fires. On next SessionStart, the daemon detects unclosed sessions and triggers a catch-up retrospective detection + flush. Buffered turns are never silently lost.
 - **Daemon lifetime**: Runs until system shutdown or manual stop (`POST /daemon/stop`). No idle timeout. The daemon is a persistent background process, not a per-session ephemeral server.
@@ -135,7 +135,7 @@ If moment found:
   → content-hash dedup: SHA-256(session_id + title + narrative), INSERT OR IGNORE
   → saves to SQLite moments table (flushed=0)
   → if config mid_session_upload enabled: POST to BiBLE (flushed=1)
-  → prints hint to CLI status line via hook stdout
+  → prints hint to conversation transcript via hook stdout
 ```
 
 **The hint arrives on a subsequent turn** (not the same turn) because detection is async. The hint carries its own context so the user doesn't need to scroll back to the original turn. Format is controlled by `capture.hint_format`:
@@ -197,7 +197,7 @@ The `moments` table has `content_hash TEXT UNIQUE NOT NULL`. Before inserting an
 - `mid_session_upload` (default `false`): if `true`, upload each moment to BiBLE immediately when detected. If `false`, moments accumulate as `flushed=0` and are uploaded as a group on session end
 - `hint_format`: how the CLI hint is presented when a key moment is detected mid-session
 - `tool_result_max_chars` (default `250`): max chars of tool output精华 extracted by moment detector LLM. Hook sends full tool output to daemon (no mechanical truncation); the LLM extracts the most relevant ≤N chars as part of its moment detection run.
-- `inject_fallback` (default `skip`): behavior when BiBLE Atlas is unreachable during context injection. `skip` — return nothing, continue silently. `empty` — return an empty `<relevant-memories>` block.
+- `inject_fallback` (default `skip`): behavior when local buffer is empty during context injection. `skip` — return nothing, continue silently. `empty` — return an empty `<relevant-memories>` block.
 
 ## Review Command (`/bible-cc:review`)
 
@@ -227,14 +227,14 @@ Daemon endpoints:
 
 ## Key Rules
 
-- **Follow the design doc**: `docs/bible-claude-code-plugin-feasibility-report.md` is the authoritative architecture reference. Read it before implementing. Note: Q3 (language choice) is superseded — the final decision is Python + uv.
+- **Follow the design doc**: `docs/bible-claude-code-plugin-feasibility-report.md` is the authoritative architecture reference. Read it before implementing.
 - **BiBLE Atlas API is the contract**: The BiBLE HTTP client at `src/bible_cc_plugin/daemon/client.py` is written directly against the BiBLE Atlas REST API specification. It's the single client used by both daemon and MCP server — don't duplicate. The three-domain model (MEMORY, SKILL, KNOWLEDGE_BASE) and all endpoints are documented in the parent `CLAUDE.md`.
 - **`uv run` everywhere**: Never `source .venv/bin/activate`. Every command uses `uv run`. Every hook, script, and MCP invocation uses `uv run`.
 - **Deployment is two steps**: (1) ensure `uv` is installed, (2) `uv sync`. No activation, no venv management. The Setup hook handles step 1 if needed.
 - **BiBLE HTTP client lives once**: `src/bible_cc_plugin/daemon/client.py` is the single BiBLE API client. Both daemon and MCP server use it — don't duplicate.
 - **PostToolUse hook variable**: Use `$TOOL_OUTPUT` (not `$TOOL_RESULT`) — this is the standard Claude Code env var for `PostToolUse` hooks.
 - **`.mcp.json` env values are literals**: MCP treats them as raw strings. Don't use shell-default syntax (`${VAR:-default}`).
-- **Graceful degradation**: If BiBLE Atlas is unreachable: (1) CLI status hint notifies user, (2) `/session/start` succeeds locally, (3) `/context/inject` is skipped, (4) no automatic retry. The plugin must never block, slow down, or crash Claude Code under any BiBLE Atlas outage. Similarly, if the daemon is unreachable during UserPromptSubmit or PostToolUse hooks, the hook scripts silently skip (bypass) — Claude Code is never blocked by a daemon outage.
+- **Graceful degradation**: If BiBLE Atlas is unreachable: (1) CLI status hint notifies user, (2) `/session/start` and `/context/inject` succeed locally (pure SQLite), (3) MCP tools return errors with context, (4) no automatic retry. The plugin must never block, slow down, or crash Claude Code under any BiBLE Atlas outage. If the daemon is unreachable during UserPromptSubmit or PostToolUse hooks, the hook scripts silently skip (bypass) — Claude Code is never blocked.
 - **Config path**: `~/.bible-cc/config.json`. Env vars override config file values.
 - **MCP server and daemon are independent**: No direct communication between them. MCP tools are pure BiBLE Atlas API wrappers. The daemon gets all tool-call context it needs from the PostToolUse hook (`/turn/tool`). The feasibility report's proposed `POST /daemon/notify` is not needed and should not be implemented. Same-session re-injection of manually saved memories is correct behavior: when `/clear` or context compact triggers SessionStart, the model has lost its context and re-injecting the memory restores it.
 
@@ -252,6 +252,7 @@ Other BiBLE plugins in this monorepo share the same architecture pattern (daemon
 
 ## Design Docs
 
-- `docs/bible-claude-code-plugin-feasibility-report.md` — Full architecture, design journey (Q&A), component designs, config schema, rationale for every decision. **Note: Q3 (language choice) is superseded — final decision is Python + uv.**
+- `docs/bible-claude-code-plugin-feasibility-report.md` — Full architecture, design journey (Q&A), component designs, config schema, rationale for every decision.
 - `docs/claude-mem-analysis-report.md` — Analysis of the claude-mem plugin (v13.4.1) that served as the architectural reference
-- `docs/bible-cc-plugin-validation-2026-06-11.md` — Pre-implementation validation report (critical issues and fixes needed)
+- `docs/design-review-2026-06-12.md` — Design review (10 findings resolved), context recall scenarios, command screening
+- `docs/command-priority-table.md` — Complete screened command inventory (38 plugin + MVP + server side)
