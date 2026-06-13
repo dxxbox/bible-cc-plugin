@@ -1,45 +1,62 @@
 # Phase 0: 1st Call — Install & Run
 
+> **状态：✅ 完成 (2026-06-14)**
+
+Phase 0 walking skeleton 已完成。安装、配置、daemon 启停、health check、卸载全链路跑通。
+超出原计划的额外产出：
+- `bible-cc` 一键 CLI（install/start/stop/restart/status/logs/verify/reinstall/uninstall）
+- Hook bridge（SessionStart 自动启动 daemon，turn-user/turn-tool/session-end 骨架）
+- Marketplace 安装模式（`bible-cc-local`，source: "./"）
+- Daemon 日志持久化（`~/.bible-cc/daemon.log`）+ `./bible-cc logs`
+- 结构化日志（`logging_config.py`，JSON-line 格式）
+
 > **For agentic workers:** Phase 0 是 walking skeleton——安装、配置、启动 daemon、health check、停止、卸载。这一条链路跑通后，所有后续 Phase 都是在此基础上增量添加能力。
 
 **Goal:** 用户从"零"到"plugin 安装完成 → daemon 运行中 → health check green → 可停止/重启/卸载"。这是整个项目的"1st call"。
 
-**Architecture:** Setup wizard（交互式 CLI）→ 写 config.json → 启动 FastAPI daemon → `GET /daemon/health` 返回真实进程状态。无 SQLite，无 session。
+**Architecture:** Setup wizard（交互式 CLI）→ 写 config.json → 启动 FastAPI daemon → `GET /daemon/health` 返回真实进程状态。Phase 0 无 SQLite，无 session。
 
 **Tech Stack:** Python 3.10+, uv, Pydantic, FastAPI, uvicorn
 
-**预估: 2-3 天**
+**预估: 2-3 天 | 实际: Phase 0 核心 ~1 天 + marketplace 迁移 + 日志可观测性**
 
 **1st Call 用户旅程:**
 ```
-# 1. 安装（Claude Code marketplace 或手动 git clone）
-git clone <repo> ~/.claude/plugins/bible-cc-plugin
-cd ~/.claude/plugins/bible-cc-plugin
-uv sync
+# 1. 安装
+cd <workspace>/bible-cc-plugin
+./bible-cc install
+  → rsync → ~/.claude/plugins/marketplaces/bible-cc-local/
+  → uv sync
+  → 注册 marketplace + claude plugin install
 
-# 2. 首次配置（Setup hook 自动触发或手动运行）
-uv run python -m bible_cc_plugin.scripts.setup
+# 2. 首次配置（或 Setup hook 自动触发）
+./bible-cc setup
   → BiBLE Atlas URL? [http://localhost:5555]
   → Token? (optional) []
   → Testing connectivity... OK (15ms)
   → Config written to ~/.bible-cc/config.json
   → Setup complete.
 
-# 3. 启动 daemon（SessionStart hook 自动触发或手动）
-uv run python -m bible_cc_plugin.scripts.daemon start
+# 3. 启动 daemon（SessionStart hook 自动触发，或手动）
+./bible-cc start
   → [daemon] Starting on 127.0.0.1:9777... OK (pid=12345)
 
 # 4. 验证
-uv run python -m bible_cc_plugin.scripts.daemon status
+./bible-cc status
   → Daemon: running (pid=12345, port=9777, uptime=5s)
 
 # 5. 停止
-uv run python -m bible_cc_plugin.scripts.daemon stop
+./bible-cc stop
   → Daemon stopped.
 
 # 6. 重启
-uv run python -m bible_cc_plugin.scripts.daemon restart
+./bible-cc restart
   → Stopping... OK → Starting... OK (pid=12346)
+
+# 7. 查看日志
+./bible-cc logs
+  → {"ts":"...", "level":"INFO", "msg":"daemon starting on port 9777"}
+  → INFO: Uvicorn running on http://127.0.0.1:9777
 ```
 
 ---
@@ -155,25 +172,54 @@ FastAPI app 最小集：health endpoint 用 `os.getpid()` 和 `time.time() - sta
 - `daemon start --debug` → uvicorn log_level=debug，每个 request 输出 stderr
 - `src/bible_cc_plugin/logging_config.py` → 统一 structured logging
 
+### F0.10 — Hook Bridge（bible_cc_plugin.scripts.hook）
+
+| 属性 | 说明 |
+|------|------|
+| **理由** | SessionStart 时自动启动 daemon 是用户体验的基础——用户不应该每次开 Claude Code 都手动 `./bible-cc start`。turn-user/turn-tool/session-end 骨架为 Phase 1 做好准备。 |
+| **优先级** | P0 |
+| **依赖** | config.py、daemon server |
+
+实现：
+- `session-start`: 幂等启动 daemon（先 check health，未运行则 spawn uvicorn），失败不阻断 Claude Code
+- `turn-user` / `turn-tool` / `session-end`: Phase 0 静默 pass-through
+
+### F0.11 — Daemon 日志可观测性
+
+| 属性 | 说明 |
+|------|------|
+| **理由** | 原始实现将 daemon stdout/stderr 丢弃到 /dev/null，启动失败时无法诊断。 |
+| **优先级** | P1（Phase 0 末期追加） |
+| **依赖** | hook.py、daemon.py、server.py |
+
+实现：
+- daemon 输出写入 `~/.bible-cc/daemon.log`（append 模式）
+- 健康检查超时时打印最后 20 行日志
+- `./bible-cc logs` 命令查看最近 50 行
+- `server.py` 启用结构化日志（startup + shutdown 事件）
+- `httpx.ConnectError` → DEBUG（启动中，正常）；其他异常 → WARNING（daemon 已运行但异常）
+
 ---
 
 ## Phase 0 验收标准
 
-- [ ] `uv sync` 成功，无错误
-- [ ] `./scripts/dev.sh ci` 通过（lint → unit test → contract test，exit code 0）
-- [ ] `uv run python -m bible_cc_plugin.scripts.setup` 交互式完成首次配置
-- [ ] Setup 重复运行不覆盖已有 config（idempotent）
-- [ ] `~/.bible-cc/config.json` 格式正确
-- [ ] `uv run python -m bible_cc_plugin.scripts.daemon start` 启动 daemon
-- [ ] `GET /daemon/health` 返回真实 pid + port + uptime（非硬编码）
-- [ ] `daemon status` 显示 running/not running + 详细信息
-- [ ] `daemon stop` 优雅停止 daemon 进程
-- [ ] `daemon restart` stop → start 完整流程
-- [ ] `daemon start` 重复执行不报错（idempotent）
-- [ ] `daemon start --debug` 启动后 stderr 可见 request 日志
-- [ ] `load_config(debug=True)` stderr 输出每项来源
-- [ ] plugin.json、hooks/hooks.json 格式正确；.mcp.json 由 setup.py 正确生成
-- [ ] `tests/contract/test_daemon_health.py` 通过
+- [x] `uv sync` 成功，无错误
+- [x] `./scripts/dev.sh ci` 通过（lint → unit test → contract test，exit code 0）
+- [x] `uv run python -m bible_cc_plugin.scripts.setup` 交互式完成首次配置
+- [x] Setup 重复运行不覆盖已有 config（idempotent）
+- [x] `~/.bible-cc/config.json` 格式正确
+- [x] `uv run python -m bible_cc_plugin.scripts.daemon start` 启动 daemon
+- [x] `GET /daemon/health` 返回真实 pid + port + uptime（非硬编码）
+- [x] `daemon status` 显示 running/not running + 详细信息
+- [x] `daemon stop` 优雅停止 daemon 进程
+- [x] `daemon restart` stop → start 完整流程
+- [x] `daemon start` 重复执行不报错（idempotent）
+- [x] `daemon start --debug` 启动后 stderr 可见 request 日志
+- [x] `load_config(debug=True)` stderr 输出每项来源
+- [x] plugin.json、hooks/hooks.json 格式正确；.mcp.json 由 setup.py 正确生成
+- [x] `tests/contract/test_daemon_health.py` 通过
+- [x] `./bible-cc logs` 查看 daemon 日志
+- [x] 30 tests passed (22 unit + 8 contract)
 
 ---
 
@@ -181,11 +227,15 @@ FastAPI app 最小集：health endpoint 用 `os.getpid()` 和 `time.time() - sta
 
 ```
 bible-cc-plugin/
-├── pyproject.toml              ← F0.1
+├── bible-cc                    ← 一键 CLI（install/start/stop/status/logs/verify/reinstall/uninstall）
 ├── .claude-plugin/
-│   └── plugin.json             ← F0.2 (静态提交)
-├── .mcp.json                   ← F0.2 (由 setup.py 生成，不提交 git)
-├── hooks/hooks.json            ← F0.2 (Setup hook → setup.py)
+│   ├── plugin.json             ← F0.2 (静态提交)
+│   └── marketplace.json        ← marketplace 定义 (source: "./")
+├── .mcp.json                   ← F0.2 (由 setup 生成，不提交 git)
+├── hooks/hooks.json            ← F0.2 (Setup/SessionStart/UserPromptSubmit/PostToolUse/Stop hooks)
+├── commands/
+│   └── status.md               ← 占位（Phase 5 正式实现）
+├── pyproject.toml              ← F0.1
 ├── src/bible_cc_plugin/
 │   ├── __init__.py
 │   ├── types.py                ← F0.3 (Phase 0 最小集)
@@ -193,20 +243,38 @@ bible-cc-plugin/
 │   ├── logging_config.py       ← F0.9
 │   ├── scripts/
 │   │   ├── __init__.py
-│   │   └── hook.py             ← F0.10 (minimal hook bridge, session-start auto-starts daemon)
+│   │   ├── hook.py             ← F0.10 (hook bridge, session-start 自动启动 daemon)
+│   │   ├── setup.py            ← F0.5 (setup wizard)
+│   │   └── daemon.py           ← F0.6 (start/stop/status/restart CLI)
 │   └── daemon/
 │       ├── __init__.py
 │       └── server.py           ← F0.7 (health + start/stop 端点)
 ├── scripts/
-│   ├── setup.py                ← F0.5 (setup wizard)
-│   ├── daemon.py               ← F0.6 (start/stop/status/restart CLI)
-│   └── dev.sh                  ← F0.8 (CI 骨架)
+│   ├── dev.sh                  ← F0.8 (CI 骨架)
+│   ├── uninstall.sh            ← 完整卸载
+│   └── verify-install.sh       ← 安装后验证
 └── tests/
     ├── __init__.py
     ├── unit/
     │   ├── __init__.py
     │   └── test_config.py      ← F0.8
-    └── contract/
-        ├── __init__.py
-        └── test_daemon_health.py ← F0.8
+    ├── contract/
+    │   ├── __init__.py
+    │   └── test_daemon_health.py ← F0.8
+    ├── integration/
+    │   └── __init__.py          ← Phase 1+
+    └── e2e/
+        └── __init__.py          ← Phase 5+
 ```
+
+---
+
+## 与原始计划的主要偏差
+
+| 计划 | 实际 | 原因 |
+|------|------|------|
+| `scripts/setup.py`, `scripts/daemon.py` 为独立脚本 | 移入 `src/bible_cc_plugin/scripts/`，使用 `-m` 模块路径调用 | `uv run python -m bible_cc_plugin.scripts.setup` 范式 |
+| 安装到 `~/.claude/plugins/bible-cc-plugin/` + `skills-dir` 注册 | 安装到 `~/.claude/plugins/marketplaces/bible-cc-local/` + `known_marketplaces.json` + `extraKnownMarketplaces` | Claude Code marketplace 模式 |
+| 不包含 marketplace.json | 新增 `.claude-plugin/marketplace.json` (source: "./") | Plugin 即 marketplace 目录 |
+| F0.10 hook bridge 未在原始计划中 | 已实现 session-start 自动启动 daemon | SessionStart 自动启动是用户体验基础 |
+| F0.11 日志可观测性未在原始计划中 | daemon 日志写入文件 + tail 诊断 + `./bible-cc logs` | /dev/null 丢弃所有输出导致启动失败无法诊断 |
