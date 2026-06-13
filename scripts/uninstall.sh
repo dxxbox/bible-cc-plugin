@@ -31,7 +31,7 @@ fi
 
 echo "==> Stopping daemon..."
 cd "$(dirname "$0")/.."
-uv run python scripts/daemon.py stop $DAEMON_FLAGS 2>/dev/null || true
+uv run python -m bible_cc_plugin.scripts.daemon stop $DAEMON_FLAGS 2>&1 || echo "  (daemon was not running or could not be stopped)"
 
 echo "==> Removing ~/.bible-cc/ (config + data)..."
 rm -rf ~/.bible-cc/
@@ -40,7 +40,8 @@ rm -rf ~/.bible-cc/
 # Only remove from STANDARD install locations — NEVER use pwd.
 # If the plugin was cloned elsewhere, the user must remove it manually.
 STANDARD_PATHS=(
-    "$HOME/.claude/plugins/bible-cc-plugin"
+    "$HOME/.claude/plugins/marketplaces/bible-cc-local"
+    "$HOME/.claude/plugins/bible-cc-plugin"     # legacy pre-merge install location
     "$HOME/.claude-plugins/bible-cc-plugin"
 )
 REMOVED=0
@@ -83,6 +84,10 @@ for key in ('bible-cc-plugin@bible-cc-local', 'bible-cc-plugin@skills-dir'):
         del cfg['enabledPlugins'][key]
         changed = True
         print(f'Removed {key} from settings.json enabledPlugins')
+if 'extraKnownMarketplaces' in cfg and 'bible-cc-local' in cfg['extraKnownMarketplaces']:
+    del cfg['extraKnownMarketplaces']['bible-cc-local']
+    changed = True
+    print('Removed bible-cc-local from settings.json extraKnownMarketplaces')
 if changed:
     json.dump(cfg, open(path, 'w'), indent=4)
 "
@@ -103,4 +108,4 @@ if 'bible-cc-local' in mp:
 fi
 
 echo "==> Uninstall complete."
-echo "To reinstall: git clone <repo-url> ~/.claude/plugins/bible-cc-plugin && cd ~/.claude/plugins/bible-cc-plugin && uv sync"
+echo "To reinstall, run:  ./bible-cc install"

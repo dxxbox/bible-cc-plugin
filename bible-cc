@@ -9,9 +9,12 @@ case "${1:-help}" in
   # ── Install ──────────────────────────────────────────
   install)
     shift
-    TARGET="$HOME/.claude/plugins/bible-cc-plugin"
-    WORKSPACE="$(cd "$(dirname "$0")" && pwd)"
     MARKETPLACE_NAME="bible-cc-local"
+    # Install target IS the marketplace directory — Claude Code scans
+    # ~/.claude/plugins/marketplaces/ at session startup for hook discovery.
+    # source: "./" in marketplace.json means plugin == marketplace directory.
+    TARGET="$HOME/.claude/plugins/marketplaces/${MARKETPLACE_NAME}"
+    WORKSPACE="$(cd "$(dirname "$0")" && pwd)"
     PLUGIN_FULL_NAME="bible-cc-plugin@${MARKETPLACE_NAME}"
 
     echo "==> Installing to $TARGET ..."
@@ -23,7 +26,9 @@ case "${1:-help}" in
         exit 1
     fi
 
-    # Copy workspace → target (exclude dev artifacts)
+    # Copy workspace → target (exclude dev artifacts).
+    # The workspace .claude-plugin/marketplace.json (source: "./") works as-is
+    # because the plugin files live in the same directory.
     echo "==> Copying files..."
     mkdir -p "$TARGET"
     rsync -a --delete \
@@ -47,7 +52,10 @@ case "${1:-help}" in
         # 1. Clean up old @skills-dir registration if present
         claude plugin disable bible-cc-plugin@skills-dir 2>/dev/null || true
 
-        # 2. Register marketplace pointing to the clean target copy
+        # 2. Clean up old install location (pre-merge: target was ~/.claude/plugins/bible-cc-plugin)
+        rm -rf "$HOME/.claude/plugins/bible-cc-plugin"
+
+        # 3. Register marketplace in both registries
         python3 -c "
 import json, os
 mp_path = os.path.expanduser('~/.claude/plugins/known_marketplaces.json')
@@ -58,9 +66,16 @@ mp_data['${MARKETPLACE_NAME}'] = {
     'lastUpdated': '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'
 }
 json.dump(mp_data, open(mp_path, 'w'), indent=4)
+
+spath = os.path.expanduser('~/.claude/settings.json')
+cfg = json.load(open(spath)) if os.path.exists(spath) else {}
+cfg.setdefault('extraKnownMarketplaces', {})['${MARKETPLACE_NAME}'] = {
+    'source': {'source': 'directory', 'path': '${TARGET}'}
+}
+json.dump(cfg, open(spath, 'w'), indent=4)
 "
 
-        # 3. Install plugin from marketplace → cache (where hooks are discovered)
+        # 4. Install plugin from marketplace → cache (where hooks are discovered)
         claude plugin install "$PLUGIN_FULL_NAME" 2>&1
         echo "  Registered via marketplace: $PLUGIN_FULL_NAME"
     else
@@ -105,10 +120,10 @@ json.dump(cfg, open(spath, 'w'), indent=4)
   reinstall)
     echo "==> Full reinstall..."
     ./scripts/uninstall.sh --force 2>/dev/null || true
-    # Re-run install steps targeting ~/.claude/plugins/
-    TARGET="$HOME/.claude/plugins/bible-cc-plugin"
-    WORKSPACE="$(cd "$(dirname "$0")" && pwd)"
+    # Install target IS the marketplace directory (same as install case).
     MARKETPLACE_NAME="bible-cc-local"
+    TARGET="$HOME/.claude/plugins/marketplaces/${MARKETPLACE_NAME}"
+    WORKSPACE="$(cd "$(dirname "$0")" && pwd)"
     PLUGIN_FULL_NAME="bible-cc-plugin@${MARKETPLACE_NAME}"
     mkdir -p "$TARGET"
     rsync -a --delete \
@@ -120,6 +135,7 @@ json.dump(cfg, open(spath, 'w'), indent=4)
     uv sync
     if command -v claude &>/dev/null; then
         claude plugin disable bible-cc-plugin@skills-dir 2>/dev/null || true
+        rm -rf "$HOME/.claude/plugins/bible-cc-plugin"
         python3 -c "
 import json, os
 mp_path = os.path.expanduser('~/.claude/plugins/known_marketplaces.json')
@@ -130,6 +146,13 @@ mp_data['${MARKETPLACE_NAME}'] = {
     'lastUpdated': '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'
 }
 json.dump(mp_data, open(mp_path, 'w'), indent=4)
+
+spath = os.path.expanduser('~/.claude/settings.json')
+cfg = json.load(open(spath)) if os.path.exists(spath) else {}
+cfg.setdefault('extraKnownMarketplaces', {})['${MARKETPLACE_NAME}'] = {
+    'source': {'source': 'directory', 'path': '${TARGET}'}
+}
+json.dump(cfg, open(spath, 'w'), indent=4)
 "
         claude plugin install "$PLUGIN_FULL_NAME" 2>&1
     else
