@@ -13,6 +13,20 @@ if [ "$FORCE" = "--force" ]; then
     DAEMON_FLAGS="--force"
 fi
 
+# ── Confirmation (skip with --force) ─────────────────────
+if [ "$FORCE" != "--force" ]; then
+    echo "This will:"
+    echo "  1. Stop the bible-cc daemon"
+    echo "  2. Delete ~/.bible-cc/ (all config + data)"
+    echo "  3. Delete plugin directory (if in standard location)"
+    echo ""
+    read -rp "Continue? [y/N] " CONFIRM
+    case "$CONFIRM" in
+        [yY]|[yY][eE][sS]) ;;
+        *) echo "Aborted."; exit 0 ;;
+    esac
+fi
+
 echo "==> Stopping daemon..."
 cd "$(dirname "$0")/.."
 uv run python scripts/daemon.py stop $DAEMON_FLAGS 2>/dev/null || true

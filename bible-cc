@@ -29,7 +29,7 @@ case "${1:-help}" in
   verify)  ./scripts/verify-install.sh ;;
 
   # ── Uninstall ────────────────────────────────────────
-  uninstall) ./scripts/uninstall.sh --force ;;
+  uninstall) shift; ./scripts/uninstall.sh "$@" ;;
 
   # ── Full cycle ───────────────────────────────────────
   reinstall)
@@ -43,7 +43,7 @@ case "${1:-help}" in
   reset)
     echo "==> Resetting config..."
     uv run python scripts/daemon.py stop --force 2>/dev/null || true
-    uv run python scripts/setup.py --reset --non-interactive
+    uv run python scripts/setup.py --reset --non-interactive --force
     uv run python scripts/daemon.py start
     echo "==> Done. Run './bible-cc verify' to check."
     ;;
@@ -63,7 +63,7 @@ case "${1:-help}" in
     echo "Install & Config:"
     echo "  install             uv sync + setup --non-interactive"
     echo "  setup [--reset] [--non-interactive] [--base-url X] [--token X] [--debug]"
-    echo "  uninstall           stop daemon + remove everything"
+    echo "  uninstall [--force] stop daemon, remove config + data (--force skips confirmation)"
     echo "  reinstall           full cycle: uninstall → install → start → verify"
     echo "  reset               reset config + restart daemon"
     echo ""

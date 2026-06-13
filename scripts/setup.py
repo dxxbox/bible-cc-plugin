@@ -7,6 +7,9 @@ Modes:
   uv run python -m bible_cc_plugin.scripts.setup --non-interactive  # defaults, no prompts
   uv run python -m bible_cc_plugin.scripts.setup --non-interactive --base-url <URL> --token <TOKEN>
   uv run python -m bible_cc_plugin.scripts.setup --debug   # verbose diagnostics
+
+--reset requires confirmation (or --force to skip).
+--non-interactive + --reset requires --force (prompts are impossible without a tty).
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import httpx
@@ -31,6 +35,9 @@ def main() -> None:
     )
     parser.add_argument("--base-url", help="BiBLE Atlas URL (non-interactive mode)")
     parser.add_argument("--token", help="BiBLE Atlas token (non-interactive mode)")
+    parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompts (for --reset)"
+    )
     args = parser.parse_args()
     debug = args.debug
 
@@ -39,7 +46,7 @@ def main() -> None:
 
     # --reset: delete everything and start fresh
     if args.reset:
-        _do_reset(config_dir, config_path)
+        _do_reset(config_dir, force=args.force, non_interactive=args.non_interactive)
 
     # --non-interactive: skip prompts
     if args.non_interactive:
@@ -73,11 +80,30 @@ def _do_non_interactive(config_dir: Path, config_path: Path, args, *, debug: boo
     _write_and_test(base_url, token, config_dir, config_path, debug=debug)
 
 
-def _do_reset(config_dir: Path, config_path: Path) -> None:
-    """Remove existing config and data directory."""
-    if config_dir.exists():
-        print(f"Removing {config_dir}...")
-        shutil.rmtree(config_dir)
+def _do_reset(config_dir: Path, *, force: bool = False, non_interactive: bool = False) -> None:
+    """Remove existing config and data directory — with confirmation."""
+    if not config_dir.exists():
+        return
+
+    # ── Confirmation ─────────────────────────────────────
+    if not force:
+        if non_interactive:
+            print(
+                "Error: --reset in non-interactive mode requires --force.\n"
+                "  This operation will DELETE: ~/.bible-cc/ (all config + data)\n"
+                "  Re-run with --force if you are sure.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        else:
+            print(f"This will DELETE: {config_dir}/ (all config + local data)")
+            answer = input("Continue? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("Aborted.")
+                sys.exit(0)
+
+    print(f"Removing {config_dir}...")
+    shutil.rmtree(config_dir)
     # Also kill any running daemon on default port
     _kill_daemon_if_running()
 
