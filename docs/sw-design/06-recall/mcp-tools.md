@@ -92,7 +92,7 @@ def serialize_and_save(messages: list[dict], title: str | None, abstract: str | 
 
 ## 5. `.mcp.json`
 
-由 `scripts/setup.py` 在 install 时动态生成于 plugin 目录根，**不提交 git**。示例如下（实际值由 setup.py 根据用户配置写入）：
+由 setup wizard（`bible_cc_plugin.scripts.setup`）在 install 时动态生成于 plugin 目录根，**不提交 git**。示例如下（实际值由 setup 根据用户配置写入）：
 
 ```json
 {

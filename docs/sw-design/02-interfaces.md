@@ -246,7 +246,7 @@ MCP Server（`src/bible_cc_plugin/mcp/server.py`）通过 stdio transport 暴露
 
 ### 3.2 MCP Discovery（`.mcp.json`）
 
-`.mcp.json` 由 `scripts/setup.py` 在 install 时动态生成于 plugin 目录根，**不提交 git**（在 `.gitignore` 中）。Claude Code 在 plugin 目录中自动发现该文件并注册 MCP server。
+`.mcp.json` 由 setup wizard（`bible_cc_plugin.scripts.setup`）在 install 时动态生成于 plugin 目录根，**不提交 git**（在 `.gitignore` 中）。Claude Code 在 plugin 目录中自动发现该文件并注册 MCP server。
 
 ```json
 {

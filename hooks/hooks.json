@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python scripts/setup.py",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.setup",
             "timeout": 120
           }
         ]
