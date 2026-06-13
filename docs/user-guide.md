@@ -36,13 +36,17 @@
 ## 2. 安装
 
 ```bash
-cd ~/.claude/plugins/
-git clone <repo-url> bible-cc-plugin
-cd bible-cc-plugin
+cd <workspace>/bible-cc-plugin
 ./bible-cc install
 ```
 
-`install` 等价于 `uv sync` + `python scripts/setup.py --non-interactive`。
+`install` 执行：
+1. `rsync` 拷贝文件到 `~/.claude/plugins/bible-cc-plugin/`
+2. `uv sync` 安装依赖
+3. 自动注册到 `~/.claude/settings.json`
+4. `setup.py --non-interactive`（生成 `.mcp.json`、写 config、测试连通性）
+
+也支持 `git clone` 到 `~/.claude/plugins/` 后直接 `./bible-cc install`。
 
 ---
 

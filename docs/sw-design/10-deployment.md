@@ -35,28 +35,26 @@ Marketplace 自动执行：
 ### 2.2 手动安装（开发/未上架）
 
 ```bash
-# 1. 克隆 repo
-cd ~/.claude/plugins/
-git clone <bible-cc-plugin-repo-url>
-
-# 2. 安装依赖
-cd bible-cc-plugin
-uv sync
-
-# 3. 注册到 Claude Code
-# 编辑 ~/.claude/settings.json 或通过 Claude Code UI 添加本地 plugin
-
-# 4. 首次配置
-uv run python -m bible_cc_plugin.scripts.setup
+# 从任意目录安装
+cd <workspace>/bible-cc-plugin
+./bible-cc install
 ```
 
-`scripts/setup.py`（Setup hook）执行：
-- 提示 BiBLE Atlas base URL
-- 写 `~/.bible-cc/config.json`
-- 测试 BiBLE Atlas 连通性
-- 启动 daemon（`POST /daemon/start`）
+`./bible-cc install` 执行：
+1. `rsync` 将 workspace 文件拷贝到 `~/.claude/plugins/bible-cc-plugin/`
+2. `uv sync` 安装依赖
+3. 自动注册到 `~/.claude/settings.json`（`enabledPlugins.bible-cc-plugin@skills-dir`）
+4. `uv run python scripts/setup.py --non-interactive`（生成 `.mcp.json`、写 config、测试连通性）
 
-Setup hook timeout: 30s。idempotent（重复运行不会覆盖已有 config，仅提示已存在）。
+```bash
+# 等价的手动步骤（无需 install 脚本时）：
+cd ~/.claude/plugins/
+git clone <bible-cc-plugin-repo-url>
+cd bible-cc-plugin
+uv sync
+# 注册：编辑 ~/.claude/settings.json enabledPlugins 添加 "bible-cc-plugin@skills-dir": true
+uv run python -m bible_cc_plugin.scripts.setup
+```
 
 ---
 
@@ -107,15 +105,16 @@ uv sync
 # Marketplace 自动
 npx @anthropic-ai/claude-code plugins uninstall bible-cc
 
-# 手动清理
-rm -rf ~/.claude/plugins/bible-cc-plugin
-rm -rf ~/.bible-cc/
+# 手动（一键脚本）
+./bible-cc uninstall
 ```
 
-`/bible-cc:uninstall` 命令（本地 shell script，非 daemon 端点）：
-1. 停止 daemon（`POST /daemon/stop`，使用已有端点）
+`./bible-cc uninstall` 执行：
+1. 停止 daemon（`POST /daemon/stop`）
 2. 删除 `~/.bible-cc/`（SQLite DB + config.json）
-3. 提示用户执行 `npx @anthropic-ai/claude-code plugins uninstall bible-cc`（plugin registry 由 Claude Code 管理）
+3. 删除 `~/.claude/plugins/bible-cc-plugin/`（plugin 目录）
+4. 删除 `.mcp.json`（workspace 中的生成文件）
+5. 清理 `~/.claude/settings.json` 中 `enabledPlugins.bible-cc-plugin@skills-dir`
 
 > ⚠️ 卸载不可逆。SQLite DB 和 config 永久删除。flush 到 BiBLE Atlas 的数据不受影响（存储在服务端）。
 
@@ -232,6 +231,8 @@ uv run python -m bible_cc_plugin.scripts.setup
 | `~/.bible-cc/daemon.db` | SQLite 数据库 | 持久。卸载时删除。flush 到 BiBLE 的数据不受影响。 |
 | `~/.bible-cc/daemon.pid` | 运行时 PID 文件（辅助用途；daemon run state 主要靠 `/daemon/health` HTTP check 判断） | 临时。daemon 停止后清理。 |
 | `~/.claude/plugins/bible-cc-plugin/` | 插件源码 | 安装时创建。卸载时删除。 |
+| `~/.claude/plugins/bible-cc-plugin/.mcp.json` | MCP server 定义（由 setup.py 生成，不提交 git） | 安装时生成。卸载时随 plugin 目录删除。 |
+| `~/.claude/settings.json` → `enabledPlugins.bible-cc-plugin@skills-dir` | Plugin 注册 | 安装时写入。卸载时删除。 |
 
 ---
 

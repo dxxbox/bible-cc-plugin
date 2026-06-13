@@ -54,11 +54,11 @@ uv run python -m bible_cc_plugin.scripts.daemon restart
 | **优先级** | P0 — 安装基础 |
 | **依赖** | 无 |
 
-### F0.2 — plugin.json + .mcp.json + hooks/hooks.json
+### F0.2 — plugin.json + .mcp.json（生成） + hooks/hooks.json
 
 | 属性 | 说明 |
 |------|------|
-| **理由** | Claude Code 识别 plugin 的三个清单文件。Setup hook 是首次安装的触发器——Claude Code 检测到新 plugin 时自动运行。没有这些文件，plugin 不会被加载，Setup hook 不会触发。 |
+| **理由** | Claude Code 识别 plugin 的清单文件。`plugin.json` 和 `hooks/hooks.json` 是静态提交的；`.mcp.json` 由 `setup.py` 在 install 时动态生成（不提交 git），内容使用用户配置的 base_url/token。 |
 | **优先级** | P0 — Claude Code 集成基础 |
 | **依赖** | 无 |
 
@@ -172,7 +172,7 @@ FastAPI app 最小集：health endpoint 用 `os.getpid()` 和 `time.time() - sta
 - [ ] `daemon start` 重复执行不报错（idempotent）
 - [ ] `daemon start --debug` 启动后 stderr 可见 request 日志
 - [ ] `load_config(debug=True)` stderr 输出每项来源
-- [ ] plugin.json、.mcp.json、hooks/hooks.json 格式正确
+- [ ] plugin.json、hooks/hooks.json 格式正确；.mcp.json 由 setup.py 正确生成
 - [ ] `tests/contract/test_daemon_health.py` 通过
 
 ---
@@ -182,8 +182,8 @@ FastAPI app 最小集：health endpoint 用 `os.getpid()` 和 `time.time() - sta
 ```
 bible-cc-plugin/
 ├── pyproject.toml              ← F0.1
-├── plugin.json                 ← F0.2
-├── .mcp.json                   ← F0.2
+├── plugin.json                 ← F0.2 (静态提交)
+├── .mcp.json                   ← F0.2 (由 setup.py 生成，不提交 git)
 ├── hooks/hooks.json            ← F0.2 (Setup hook → setup.py)
 ├── src/bible_cc_plugin/
 │   ├── __init__.py

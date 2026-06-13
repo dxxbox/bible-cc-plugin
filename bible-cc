@@ -8,12 +8,55 @@ cd "$(dirname "$0")"
 case "${1:-help}" in
   # ── Install ──────────────────────────────────────────
   install)
-    echo "==> Installing dependencies..."
-    uv sync
-    echo "==> Running setup..."
     shift
+    TARGET="$HOME/.claude/plugins/bible-cc-plugin"
+    WORKSPACE="$(cd "$(dirname "$0")" && pwd)"
+
+    echo "==> Installing to $TARGET ..."
+
+    # Reinstall? If target exists and --force not passed, warn.
+    if [ -d "$TARGET" ] && [ "${1:-}" != "--force" ]; then
+        echo "Target already exists: $TARGET"
+        echo "  Re-run with --force to overwrite, or use 'reinstall'."
+        exit 1
+    fi
+
+    # Copy workspace → target (exclude dev artifacts)
+    echo "==> Copying files..."
+    mkdir -p "$TARGET"
+    rsync -a --delete \
+        --exclude='.venv' \
+        --exclude='.git' \
+        --exclude='__pycache__' \
+        --exclude='.pytest_cache' \
+        --exclude='.mcp.json' \
+        --exclude='.DS_Store' \
+        --exclude='*.pyc' \
+        "$WORKSPACE/" "$TARGET/"
+
+    # Install deps + setup in target
+    echo "==> Installing dependencies..."
+    cd "$TARGET"
+    uv sync
+
+    # Register plugin
+    echo "==> Registering plugin..."
+    python3 -c "
+import json, os
+path = os.path.expanduser('~/.claude/settings.json')
+cfg = json.load(open(path)) if os.path.exists(path) else {}
+cfg.setdefault('enabledPlugins', {})['bible-cc-plugin@skills-dir'] = True
+json.dump(cfg, open(path, 'w'), indent=4)
+print('  Registered in settings.json')
+"
+
+    # Run setup (generates .mcp.json in target)
+    echo "==> Running setup..."
     uv run python scripts/setup.py --non-interactive "$@"
-    echo "==> Install complete. Run './bible-cc start' to start daemon."
+
+    echo "==> Install complete."
+    echo "Plugin installed at: $TARGET"
+    echo "Run './bible-cc start' to start daemon, or restart Claude Code."
     ;;
   setup)
     shift; uv run python scripts/setup.py "$@" ;;
@@ -35,7 +78,24 @@ case "${1:-help}" in
   reinstall)
     echo "==> Full reinstall..."
     ./scripts/uninstall.sh --force 2>/dev/null || true
+    # Re-run install steps targeting ~/.claude/plugins/
+    TARGET="$HOME/.claude/plugins/bible-cc-plugin"
+    WORKSPACE="$(cd "$(dirname "$0")" && pwd)"
+    mkdir -p "$TARGET"
+    rsync -a --delete \
+        --exclude='.venv' --exclude='.git' --exclude='__pycache__' \
+        --exclude='.pytest_cache' --exclude='.mcp.json' --exclude='.DS_Store' \
+        --exclude='*.pyc' \
+        "$WORKSPACE/" "$TARGET/"
+    cd "$TARGET"
     uv sync
+    python3 -c "
+import json, os
+path = os.path.expanduser('~/.claude/settings.json')
+cfg = json.load(open(path)) if os.path.exists(path) else {}
+cfg.setdefault('enabledPlugins', {})['bible-cc-plugin@skills-dir'] = True
+json.dump(cfg, open(path, 'w'), indent=4)
+"
     uv run python scripts/setup.py --non-interactive
     uv run python scripts/daemon.py start
     ./scripts/verify-install.sh

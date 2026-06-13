@@ -92,6 +92,8 @@ def serialize_and_save(messages: list[dict], title: str | None, abstract: str | 
 
 ## 5. `.mcp.json`
 
+由 `scripts/setup.py` 在 install 时动态生成于 plugin 目录根，**不提交 git**。示例如下（实际值由 setup.py 根据用户配置写入）：
+
 ```json
 {
   "mcpServers": {
@@ -99,14 +101,15 @@ def serialize_and_save(messages: list[dict], title: str | None, abstract: str | 
       "command": "uv",
       "args": ["run", "python", "-m", "bible_cc_plugin.mcp.server"],
       "env": {
-        "BIBLE_ATLAS_BASE_URL": "http://localhost:5555"
+        "BIBLE_ATLAS_BASE_URL": "http://localhost:5555",
+        "BIBLE_ATLAS_TOKEN": ""
       }
     }
   }
 }
 ```
 
-env 值为字面量，无 `${VAR:-default}` 语法。
+env 值为字面量，无 `${VAR:-default}` 语法。生命周期详见 `02-interfaces.md` §3.2。
 
 ---
 

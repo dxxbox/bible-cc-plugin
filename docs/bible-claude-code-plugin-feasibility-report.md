@@ -769,7 +769,7 @@ uv run python -m bible_cc_plugin.scripts.setup
 bible-cc-plugin/
 ├── pyproject.toml                  ← uv dependencies + entry points
 ├── plugin.json                     ← .claude-plugin manifest
-├── .mcp.json                       ← MCP server discovery
+├── .mcp.json                       ← MCP server discovery（由 setup.py 生成，不提交 git）
 ├── .gitignore
 ├── LICENSE
 ├── hooks/

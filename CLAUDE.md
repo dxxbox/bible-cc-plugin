@@ -41,7 +41,6 @@ Four components, all Python:
 bible-cc-plugin/
 ├── pyproject.toml            # deps, entry points, build config
 ├── plugin.json               # .claude-plugin manifest
-├── .mcp.json                 # MCP server discovery (bible-cc mcp server)
 ├── hooks/hooks.json          # Hook → daemon HTTP mappings
 ├── commands/                 # User-facing slash commands
 │   ├── status.md             #   /bible-cc:status
@@ -62,7 +61,9 @@ bible-cc-plugin/
 ├── scripts/
 │   ├── daemon.py             #   Daemon lifecycle CLI (start/stop/status)
 │   ├── hook.py               #   Hook bridge (calls daemon HTTP endpoints)
-│   └── setup.py              #   Interactive setup wizard
+│   ├── setup.py              #   Setup wizard (generates .mcp.json)
+│   ├── uninstall.sh          #   Complete uninstall
+│   └── dev.sh                #   Dev helper (init/test/lint/ci)
 └── tests/
     ├── test_daemon.py
     ├── test_buffer.py

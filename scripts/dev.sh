@@ -38,7 +38,6 @@ case "${1:-}" in
     uv sync
     echo "==> Running first-time setup..."
     uv run python scripts/setup.py
-    _generate_mcp_json
     echo "==> Init complete."
     ;;
   test) shift; uv run pytest "$@" tests/ ;;
@@ -49,6 +48,8 @@ case "${1:-}" in
     echo "==> Unit tests..."; uv run pytest tests/unit/ -v
     echo "==> Contract tests..."; uv run pytest tests/contract/ -v
     echo "==> CI PASSED"
+    rm -f .mcp.json
+    echo "  .mcp.json cleaned up"
     ;;
   reload)
     uv run python scripts/daemon.py stop 2>/dev/null || true

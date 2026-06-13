@@ -246,6 +246,8 @@ MCP Server（`src/bible_cc_plugin/mcp/server.py`）通过 stdio transport 暴露
 
 ### 3.2 MCP Discovery（`.mcp.json`）
 
+`.mcp.json` 由 `scripts/setup.py` 在 install 时动态生成于 plugin 目录根，**不提交 git**（在 `.gitignore` 中）。Claude Code 在 plugin 目录中自动发现该文件并注册 MCP server。
+
 ```json
 {
   "mcpServers": {
@@ -253,16 +255,19 @@ MCP Server（`src/bible_cc_plugin/mcp/server.py`）通过 stdio transport 暴露
       "command": "uv",
       "args": ["run", "python", "-m", "bible_cc_plugin.mcp.server"],
       "env": {
-        "BIBLE_ATLAS_BASE_URL": "http://localhost:5555"
+        "BIBLE_ATLAS_BASE_URL": "http://localhost:5555",
+        "BIBLE_ATLAS_TOKEN": ""
       }
     }
   }
 }
 ```
 
+- 示例中的值为默认值。实际值由 `setup.py` 根据用户配置写入（base_url、token）。
 - `env` 值为字面量，不得使用 `${VAR:-default}` 语法（MCP 不解析 shell 默认值）。
 - Daemon 启动时读取 `BIBLE_ATLAS_BASE_URL` env var 或 config 文件；MCP server 读取 `.mcp.json` 中的值或继承父进程环境。
 - `bible-cc` 为 MCP server name，标识这是 bible-cc-plugin 提供的 MCP server。
+- 生命周期：`install` 时生成 → 持久保留 → `uninstall` 时随 plugin 目录或 `rm -f` 删除。CI 结束时显式 `rm -f` 清理。
 
 ---
 
