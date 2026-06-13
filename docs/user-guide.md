@@ -6,7 +6,7 @@
 
 ## 速查
 
-```
+```bash
 ./bible-cc install      首次安装
 ./bible-cc start        启动 daemon
 ./bible-cc stop         停止 daemon
@@ -134,9 +134,9 @@ curl -s http://127.0.0.1:9777/daemon/health | python3 -m json.tool
 典型测试循环：
 ```bash
 ./bible-cc reinstall    # 全自动重装验证
-# ... 测试 ...
+                        # ... 测试 ...
 ./bible-cc reset        # 重置，重来
-# ... 再测 ...
+                        # ... 再测 ...
 ```
 
 ---

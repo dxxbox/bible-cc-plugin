@@ -132,6 +132,29 @@ def _kill_daemon_if_running() -> None:
         pass
 
 
+def _write_mcp_json(base_url: str, token: str) -> None:
+    """Generate .mcp.json in project root so Claude Code discovers the MCP server.
+
+    Uses __file__ location to resolve the project root (scripts/setup.py → project root).
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    mcp = {
+        "mcpServers": {
+            "bible-cc": {
+                "command": "uv",
+                "args": ["run", "python", "-m", "bible_cc_plugin.mcp.server"],
+                "env": {
+                    "BIBLE_ATLAS_BASE_URL": base_url.rstrip("/"),
+                    "BIBLE_ATLAS_TOKEN": token if token else "",
+                },
+            }
+        }
+    }
+    mcp_path = project_root / ".mcp.json"
+    mcp_path.write_text(json.dumps(mcp, indent=2) + "\n")
+    print(f"  .mcp.json written to {mcp_path}")
+
+
 def _write_and_test(
     base_url: str,
     token: str,
@@ -153,6 +176,9 @@ def _write_and_test(
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     print(f"\nConfig written to {config_path}")
+
+    # Generate .mcp.json in project root (for Claude Code MCP discovery)
+    _write_mcp_json(base_url, token)
 
     # Test connectivity
     print(f"\nTesting BiBLE connectivity ({base_url})...", end=" ", flush=True)

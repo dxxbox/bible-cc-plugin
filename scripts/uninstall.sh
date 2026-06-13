@@ -61,5 +61,18 @@ if [ $REMOVED -eq 0 ]; then
     echo "    If installed elsewhere, remove manually."
 fi
 
+# ── Clean up Claude Code plugin registration ─────────────
+if [ -f "$HOME/.claude/settings.json" ]; then
+    python3 -c "
+import json, os
+path = os.path.expanduser('~/.claude/settings.json')
+cfg = json.load(open(path))
+if 'bible-cc-plugin@skills-dir' in cfg.get('enabledPlugins', {}):
+    del cfg['enabledPlugins']['bible-cc-plugin@skills-dir']
+    json.dump(cfg, open(path, 'w'), indent=4)
+    print('Removed bible-cc-plugin from settings.json enabledPlugins')
+"
+fi
+
 echo "==> Uninstall complete."
 echo "To reinstall: git clone <repo-url> ~/.claude/plugins/bible-cc-plugin && cd ~/.claude/plugins/bible-cc-plugin && uv sync"
