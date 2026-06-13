@@ -52,21 +52,21 @@ print('  Registered in settings.json')
 
     # Run setup (generates .mcp.json in target)
     echo "==> Running setup..."
-    uv run python scripts/setup.py --non-interactive "$@"
+    uv run python -m bible_cc_plugin.scripts.setup --non-interactive "$@"
 
     echo "==> Install complete."
     echo "Plugin installed at: $TARGET"
     echo "Run './bible-cc start' to start daemon, or restart Claude Code."
     ;;
   setup)
-    shift; uv run python scripts/setup.py "$@" ;;
+    shift; uv run python -m bible_cc_plugin.scripts.setup "$@" ;;
 
   # ── Daemon ───────────────────────────────────────────
-  start)   shift; uv run python scripts/daemon.py start "$@" ;;
-  stop)    shift; uv run python scripts/daemon.py stop "$@" --force ;;
-  restart) shift; uv run python scripts/daemon.py stop --force 2>/dev/null || true
-           sleep 1; uv run python scripts/daemon.py start "$@" ;;
-  status)  uv run python scripts/daemon.py status ;;
+  start)   shift; uv run python -m bible_cc_plugin.scripts.daemon start "$@" ;;
+  stop)    shift; uv run python -m bible_cc_plugin.scripts.daemon stop "$@" --force ;;
+  restart) shift; uv run python -m bible_cc_plugin.scripts.daemon stop --force 2>/dev/null || true
+           sleep 1; uv run python -m bible_cc_plugin.scripts.daemon start "$@" ;;
+  status)  uv run python -m bible_cc_plugin.scripts.daemon status ;;
 
   # ── Verify ───────────────────────────────────────────
   verify)  ./scripts/verify-install.sh ;;
@@ -96,15 +96,15 @@ cfg = json.load(open(path)) if os.path.exists(path) else {}
 cfg.setdefault('enabledPlugins', {})['bible-cc-plugin@skills-dir'] = True
 json.dump(cfg, open(path, 'w'), indent=4)
 "
-    uv run python scripts/setup.py --non-interactive
-    uv run python scripts/daemon.py start
+    uv run python -m bible_cc_plugin.scripts.setup --non-interactive
+    uv run python -m bible_cc_plugin.scripts.daemon start
     ./scripts/verify-install.sh
     ;;
   reset)
     echo "==> Resetting config..."
-    uv run python scripts/daemon.py stop --force 2>/dev/null || true
-    uv run python scripts/setup.py --reset --non-interactive --force
-    uv run python scripts/daemon.py start
+    uv run python -m bible_cc_plugin.scripts.daemon stop --force 2>/dev/null || true
+    uv run python -m bible_cc_plugin.scripts.setup --reset --non-interactive --force
+    uv run python -m bible_cc_plugin.scripts.daemon start
     echo "==> Done. Run './bible-cc verify' to check."
     ;;
 

@@ -47,7 +47,7 @@ REMOVED=0
 for PLUGIN_DIR in "${STANDARD_PATHS[@]}"; do
     if [ -d "$PLUGIN_DIR" ]; then
         # Safety check: directory must contain plugin.json to confirm it's us
-        if [ -f "$PLUGIN_DIR/plugin.json" ]; then
+        if [ -f "$PLUGIN_DIR/.claude-plugin/plugin.json" ]; then
             echo "==> Removing plugin directory: $PLUGIN_DIR"
             cd ~
             rm -rf "$PLUGIN_DIR"

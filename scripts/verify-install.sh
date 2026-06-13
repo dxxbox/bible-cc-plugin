@@ -35,21 +35,21 @@ echo "--- Config ---"
 # Auto-setup if config doesn't exist (supports fresh install testing)
 if [ ! -f ~/.bible-cc/config.json ]; then
     echo "  (config.json not found — running setup --non-interactive)"
-    uv run python scripts/setup.py --non-interactive 2>&1 | sed 's/^/  | /'
+    uv run python -m bible_cc_plugin.scripts.setup --non-interactive 2>&1 | sed 's/^/  | /'
 fi
 check "config.json exists" test -f ~/.bible-cc/config.json
 check "config.json is valid JSON" python3 -c "import json; json.load(open('$HOME/.bible-cc/config.json'))"
 
 echo ""
 echo "--- Daemon lifecycle ---"
-uv run python scripts/daemon.py stop --force 2>/dev/null || true
+uv run python -m bible_cc_plugin.scripts.daemon stop --force 2>/dev/null || true
 sleep 1
 
-check "daemon start" uv run python scripts/daemon.py start
-check "daemon status shows running" bash -c "uv run python scripts/daemon.py status | grep -q running"
+check "daemon start" uv run python -m bible_cc_plugin.scripts.daemon start
+check "daemon status shows running" bash -c "uv run python -m bible_cc_plugin.scripts.daemon status | grep -q running"
 check "health endpoint responds" curl -sf http://127.0.0.1:9777/daemon/health >/dev/null
 check "health PID > 0" test "$(curl -s http://127.0.0.1:9777/daemon/health | python3 -c 'import sys,json; print(json.load(sys.stdin)["pid"])')" -gt 0
-check "daemon stop" uv run python scripts/daemon.py stop
+check "daemon stop" uv run python -m bible_cc_plugin.scripts.daemon stop
 sleep 1  # daemon does async shutdown (0.5s delay)
 check "daemon not running after stop" bash -c "! curl -sf http://127.0.0.1:9777/daemon/health"
 

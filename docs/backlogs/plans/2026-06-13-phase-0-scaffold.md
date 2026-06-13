@@ -182,7 +182,8 @@ FastAPI app 最小集：health endpoint 用 `os.getpid()` 和 `time.time() - sta
 ```
 bible-cc-plugin/
 ├── pyproject.toml              ← F0.1
-├── plugin.json                 ← F0.2 (静态提交)
+├── .claude-plugin/
+│   └── plugin.json             ← F0.2 (静态提交)
 ├── .mcp.json                   ← F0.2 (由 setup.py 生成，不提交 git)
 ├── hooks/hooks.json            ← F0.2 (Setup hook → setup.py)
 ├── src/bible_cc_plugin/

@@ -40,7 +40,8 @@ Four components, all Python:
 ```
 bible-cc-plugin/
 ├── pyproject.toml            # deps, entry points, build config
-├── plugin.json               # .claude-plugin manifest
+├── .claude-plugin/
+│   └── plugin.json           # .claude-plugin manifest
 ├── hooks/hooks.json          # Hook → daemon HTTP mappings
 ├── commands/                 # User-facing slash commands
 │   ├── status.md             #   /bible-cc:status
