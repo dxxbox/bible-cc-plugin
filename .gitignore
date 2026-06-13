@@ -141,3 +141,21 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# ── uv / venv ───────────────────────────────────────────
+.venv/
+
+# ── pytest ──────────────────────────────────────────────
+.pytest_cache/
+
+# ── Claude Code local ───────────────────────────────────
+.claude/
+
+# ── macOS ───────────────────────────────────────────────
+.DS_Store
