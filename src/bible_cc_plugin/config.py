@@ -117,6 +117,7 @@ class AppConfig(BaseModel):
 # Config loader
 # ---------------------------------------------------------------------------
 
+
 def load_config(config_path: Path | None = None, *, debug: bool = False) -> AppConfig:
     """Three-tier config loading (04-config/schema.md §4).
 
