@@ -1,0 +1,93 @@
+#!/bin/bash
+# bible-cc — one-key script for all plugin operations.
+# Usage: ./bible-cc <command> [options]
+# Try:   ./bible-cc help
+set -euo pipefail
+cd "$(dirname "$0")"
+
+case "${1:-help}" in
+  # ── Install ──────────────────────────────────────────
+  install)
+    echo "==> Installing dependencies..."
+    uv sync
+    echo "==> Running setup..."
+    shift
+    uv run python scripts/setup.py --non-interactive "$@"
+    echo "==> Install complete. Run './bible-cc start' to start daemon."
+    ;;
+  setup)
+    shift; uv run python scripts/setup.py "$@" ;;
+
+  # ── Daemon ───────────────────────────────────────────
+  start)   shift; uv run python scripts/daemon.py start "$@" ;;
+  stop)    shift; uv run python scripts/daemon.py stop "$@" --force ;;
+  restart) shift; uv run python scripts/daemon.py stop --force 2>/dev/null || true
+           sleep 1; uv run python scripts/daemon.py start "$@" ;;
+  status)  uv run python scripts/daemon.py status ;;
+
+  # ── Verify ───────────────────────────────────────────
+  verify)  ./scripts/verify-install.sh ;;
+
+  # ── Uninstall ────────────────────────────────────────
+  uninstall) ./scripts/uninstall.sh --force ;;
+
+  # ── Full cycle ───────────────────────────────────────
+  reinstall)
+    echo "==> Full reinstall..."
+    ./scripts/uninstall.sh --force 2>/dev/null || true
+    uv sync
+    uv run python scripts/setup.py --non-interactive
+    uv run python scripts/daemon.py start
+    ./scripts/verify-install.sh
+    ;;
+  reset)
+    echo "==> Resetting config..."
+    uv run python scripts/daemon.py stop --force 2>/dev/null || true
+    uv run python scripts/setup.py --reset --non-interactive
+    uv run python scripts/daemon.py start
+    echo "==> Done. Run './bible-cc verify' to check."
+    ;;
+
+  # ── Dev / CI ─────────────────────────────────────────
+  test)   shift; uv run pytest "$@" tests/ ;;
+  lint)   shift; uv run ruff check "$@"; uv run ruff format --check "$@" ;;
+  ci)     ./scripts/dev.sh ci ;;
+  format) uv run ruff format; uv run ruff check --fix ;;
+
+  # ── Help ─────────────────────────────────────────────
+  help|--help|-h)
+    echo "bible-cc — one-key script for bible-cc-plugin"
+    echo ""
+    echo "Usage: ./bible-cc <command> [options]"
+    echo ""
+    echo "Install & Config:"
+    echo "  install             uv sync + setup --non-interactive"
+    echo "  setup [--reset] [--non-interactive] [--base-url X] [--token X] [--debug]"
+    echo "  uninstall           stop daemon + remove everything"
+    echo "  reinstall           full cycle: uninstall → install → start → verify"
+    echo "  reset               reset config + restart daemon"
+    echo ""
+    echo "Daemon:"
+    echo "  start [--debug]     start daemon (idempotent)"
+    echo "  stop                force-stop daemon"
+    echo "  restart [--debug]   stop + start"
+    echo "  status              show daemon status"
+    echo ""
+    echo "Verify & Test:"
+    echo "  verify              run 16 install checks"
+    echo "  test                run all tests"
+    echo "  lint                ruff check + format check"
+    echo "  ci                  lint → unit test → contract test"
+    echo "  format              auto-format + fix"
+    echo ""
+    echo "Quick start:"
+    echo "  ./bible-cc install   # first time"
+    echo "  ./bible-cc start     # start daemon"
+    echo "  ./bible-cc verify    # everything OK?"
+    ;;
+  *)
+    echo "Unknown command: $1"
+    echo "Run './bible-cc help' for usage."
+    exit 1
+    ;;
+esac
