@@ -1,6 +1,24 @@
 # bible-cc-plugin User Guide
 
-> 适用于首次安装和测试。当前版本: **Phase 0 — 1st Call**（安装、配置、daemon 生命周期、反复重装测试）。
+> 当前版本: **Phase 0 — 1st Call**。所有操作通过 `./bible-cc` 一键脚本完成。
+
+---
+
+## 速查
+
+```
+./bible-cc install      首次安装
+./bible-cc start        启动 daemon
+./bible-cc stop         停止 daemon
+./bible-cc restart      重启 daemon
+./bible-cc status       查看状态
+./bible-cc verify       验证一切正常
+./bible-cc reinstall    完整重装循环
+./bible-cc reset        重置配置 + 重启
+./bible-cc uninstall    彻底清理
+./bible-cc ci           CI 流水线
+./bible-cc help         完整菜单
+```
 
 ---
 
@@ -21,110 +39,58 @@
 cd ~/.claude/plugins/
 git clone <repo-url> bible-cc-plugin
 cd bible-cc-plugin
-uv sync
+./bible-cc install
 ```
+
+`install` 等价于 `uv sync` + `python scripts/setup.py --non-interactive`。
 
 ---
 
 ## 3. 配置
 
-### 3.1 交互式配置（首次使用）
+所有配置通过 `./bible-cc setup` 完成。
+
+### 交互式
 
 ```bash
-uv run python scripts/setup.py
+./bible-cc setup
 ```
 
-```
-=== bible-cc-plugin Setup ===
-
-BiBLE Atlas URL [http://localhost:5555]:   ← 输入地址，回车用默认
-Token (optional, press Enter to skip):     ← 需要认证时输入
-
-Config written to ~/.bible-cc/config.json
-Testing BiBLE connectivity... OK (15ms)
-Setup complete.
-```
-
-幂等——重复运行不会覆盖已有配置：
-```
-Config already exists at ~/.bible-cc/config.json
-To reconfigure, use --reset. To skip prompts, use --non-interactive.
-```
-
-### 3.2 非交互式配置（自动化/CI）
+### 自动化
 
 ```bash
-# 全部用默认值
-uv run python scripts/setup.py --non-interactive
-
-# 指定参数
-uv run python scripts/setup.py --non-interactive --base-url http://bible:5555 --token sk-ant-xxx
-
-# 通过环境变量
-BIBLE_ATLAS_BASE_URL=http://bible:5555 uv run python scripts/setup.py --non-interactive
+./bible-cc setup --non-interactive
+./bible-cc setup --non-interactive --base-url http://bible:5555 --token sk-ant-xxx
 ```
 
-### 3.3 重置配置
+### 重置
 
 ```bash
-# 删除旧 config + 停止残留 daemon，然后交互式重新配置
-uv run python scripts/setup.py --reset
-
-# 重置 + 无交互
-uv run python scripts/setup.py --reset --non-interactive
+./bible-cc setup --reset               # 交互式
+./bible-cc setup --reset --non-interactive  # 自动化
 ```
 
-### 3.4 Debug 模式
+### 调试
 
 ```bash
-uv run python scripts/setup.py --debug          # 交互式 + 详细诊断
-uv run python scripts/setup.py --non-interactive --debug  # 自动化 + 详细诊断
+./bible-cc setup --debug
 ```
+
+> 底层命令: `uv run python scripts/setup.py <args>`
 
 ---
 
 ## 4. Daemon 生命周期
 
-Daemon 是后台 HTTP 服务（FastAPI），监听 `127.0.0.1:9777`。
-
-### 启动
-
 ```bash
-uv run python scripts/daemon.py start
-# → [daemon] Starting on 127.0.0.1:9777... OK (pid=12345, port=9777)
+./bible-cc start          # 启动（幂等）
+./bible-cc start --debug  # 启动 + stderr 全量日志
+./bible-cc status         # 查看状态
+./bible-cc stop           # 停止（强制，无响应时 kill -9）
+./bible-cc restart        # 重启
 ```
 
-幂等——已运行时不会重复启动。
-
-### 状态
-
-```bash
-uv run python scripts/daemon.py status
-# → Daemon: running
-#     PID:    12345
-#     Port:   9777
-#     Uptime: 3m 22s
-```
-
-### 停止
-
-```bash
-uv run python scripts/daemon.py stop            # 优雅关闭
-uv run python scripts/daemon.py stop --force    # 优雅关闭失败则 kill -9
-```
-
-### 重启
-
-```bash
-uv run python scripts/daemon.py restart
-```
-
-### Debug 模式
-
-```bash
-uv run python scripts/daemon.py start --debug
-# stderr 输出所有 HTTP request/response
-```
+> 底层命令: `uv run python scripts/daemon.py <action>`
 
 ---
 
@@ -158,50 +124,19 @@ curl -s http://127.0.0.1:9777/daemon/health | python3 -m json.tool
 
 ## 6. 反复重装测试
 
-### 一键验证
-
 ```bash
-./scripts/verify-install.sh
+./bible-cc verify       # 16 checks: env → config → daemon → code → tests
+./bible-cc reinstall    # 完整循环: uninstall → install → start → verify
+./bible-cc reset        # 重置配置 + 重启 daemon
+./bible-cc uninstall    # 彻底清理
 ```
 
-自动执行 16 项检查：
-1. 基础环境（uv、Python、pyproject.toml、.venv）
-2. 配置（config.json 存在 + 有效，不存在时自动 `setup --non-interactive`）
-3. Daemon 生命周期（start → status → health → stop → 确认停止）
-4. 代码质量（ruff lint + format）
-5. 测试（unit + contract）
-
-全部 PASS → exit 0。任一 FAIL → exit 1。
-
-### 一键卸载
-
+典型测试循环：
 ```bash
-./scripts/uninstall.sh           # 停止 daemon + 删除 ~/.bible-cc/ + 删除插件目录
-./scripts/uninstall.sh --force   # 同上，daemon 无响应时 kill -9
-```
-
-### 完整重装循环
-
-```bash
-# 1. 彻底清理
-./scripts/uninstall.sh --force
-
-# 2. 重新安装
-git clone <repo> ~/.claude/plugins/bible-cc-plugin
-cd ~/.claude/plugins/bible-cc-plugin
-uv sync
-
-# 3. 无交互配置
-uv run python scripts/setup.py --non-interactive
-
-# 4. 验证
-./scripts/verify-install.sh
-
-# 5. 开始测试...
-
-# 6. 重置重来（不重新 clone）
-uv run python scripts/setup.py --reset --non-interactive
-./scripts/verify-install.sh
+./bible-cc reinstall    # 全自动重装验证
+# ... 测试 ...
+./bible-cc reset        # 重置，重来
+# ... 再测 ...
 ```
 
 ---
@@ -209,12 +144,10 @@ uv run python scripts/setup.py --reset --non-interactive
 ## 7. 开发工具
 
 ```bash
-./scripts/dev.sh init       # uv sync + setup
-./scripts/dev.sh test       # 全部测试
-./scripts/dev.sh lint       # Lint + 格式化检查
-./scripts/dev.sh ci         # 完整 CI（lint → unit → contract）
-./scripts/dev.sh reload     # 停止 daemon（下次 SessionStart 自动重启）
-./scripts/dev.sh restart    # 停止 + 启动 daemon
+./bible-cc test     # 全部测试
+./bible-cc lint     # lint + format check
+./bible-cc ci       # 完整 CI（lint → unit → contract）
+./bible-cc format   # 自动格式化 + fix
 ```
 
 ---
@@ -241,7 +174,7 @@ uv run python scripts/setup.py --reset --non-interactive
 
 ```bash
 # 用不同端口启动
-BIBLE_CC_DAEMON_PORT=9780 uv run python scripts/daemon.py start
+BIBLE_CC_DAEMON_PORT=9780 ./bible-cc start
 ```
 
 ---
@@ -251,10 +184,8 @@ BIBLE_CC_DAEMON_PORT=9780 uv run python scripts/daemon.py start
 ### 端口被占用
 
 ```bash
-lsof -i :9777
-# 换端口或 kill
-BIBLE_CC_DAEMON_PORT=9780 uv run python scripts/daemon.py start
-uv run python scripts/daemon.py stop --force
+lsof -i :9777                           # 查看占用者
+BIBLE_CC_DAEMON_PORT=9780 ./bible-cc start  # 换端口
 ```
 
 ### BiBLE 连不上
@@ -273,9 +204,8 @@ python3 --version # >= 3.10
 ### Daemon 进程残留
 
 ```bash
-uv run python scripts/daemon.py stop --force
-# 或
-lsof -ti :9777 | xargs kill -9
+./bible-cc stop          # 已包含 --force
+lsof -ti :9777 | xargs kill -9  # 兜底
 ```
 
 ---
