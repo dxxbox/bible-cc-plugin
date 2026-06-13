@@ -1,0 +1,24 @@
+{
+  "name": "bible-cc-local",
+  "owner": {
+    "name": "BiBLE"
+  },
+  "metadata": {
+    "description": "Local development marketplace for bible-cc-plugin"
+  },
+  "plugins": [
+    {
+      "name": "bible-cc-plugin",
+      "source": "./",
+      "description": "BiBLE Atlas memory + knowledge broker for Claude Code — auto-recall context, capture key moments, semantic search tools",
+      "version": "0.1.0",
+      "author": {
+        "name": "BiBLE"
+      },
+      "license": "MIT",
+      "keywords": ["memory", "context", "RAG", "semantic-search"],
+      "category": "context-management",
+      "strict": false
+    }
+  ]
+}

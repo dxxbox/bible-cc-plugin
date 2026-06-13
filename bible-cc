@@ -11,6 +11,8 @@ case "${1:-help}" in
     shift
     TARGET="$HOME/.claude/plugins/bible-cc-plugin"
     WORKSPACE="$(cd "$(dirname "$0")" && pwd)"
+    MARKETPLACE_NAME="bible-cc-local"
+    PLUGIN_FULL_NAME="bible-cc-plugin@${MARKETPLACE_NAME}"
 
     echo "==> Installing to $TARGET ..."
 
@@ -34,21 +36,45 @@ case "${1:-help}" in
         --exclude='*.pyc' \
         "$WORKSPACE/" "$TARGET/"
 
-    # Install deps + setup in target
+    # Install deps in target
     echo "==> Installing dependencies..."
     cd "$TARGET"
     uv sync
 
-    # Register plugin
+    # Register plugin via local marketplace (hooks only fire from cache-installed plugins)
     echo "==> Registering plugin..."
-    python3 -c "
+    if command -v claude &>/dev/null; then
+        # 1. Clean up old @skills-dir registration if present
+        claude plugin disable bible-cc-plugin@skills-dir 2>/dev/null || true
+
+        # 2. Register marketplace pointing to the clean target copy
+        python3 -c "
 import json, os
-path = os.path.expanduser('~/.claude/settings.json')
-cfg = json.load(open(path)) if os.path.exists(path) else {}
-cfg.setdefault('enabledPlugins', {})['bible-cc-plugin@skills-dir'] = True
-json.dump(cfg, open(path, 'w'), indent=4)
-print('  Registered in settings.json')
+mp_path = os.path.expanduser('~/.claude/plugins/known_marketplaces.json')
+mp_data = json.load(open(mp_path)) if os.path.exists(mp_path) else {}
+mp_data['${MARKETPLACE_NAME}'] = {
+    'source': {'source': 'directory', 'path': '${TARGET}'},
+    'installLocation': '${TARGET}',
+    'lastUpdated': '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'
+}
+json.dump(mp_data, open(mp_path, 'w'), indent=4)
 "
+
+        # 3. Install plugin from marketplace → cache (where hooks are discovered)
+        claude plugin install "$PLUGIN_FULL_NAME" 2>&1
+        echo "  Registered via marketplace: $PLUGIN_FULL_NAME"
+    else
+        # Fallback: @skills-dir (hooks won't fire — daemon must be started manually)
+        echo "  WARNING: 'claude' CLI not found — using @skills-dir fallback."
+        echo "  Hooks will NOT fire. Start daemon manually with: ./bible-cc start"
+        python3 -c "
+import json, os
+spath = os.path.expanduser('~/.claude/settings.json')
+cfg = json.load(open(spath)) if os.path.exists(spath) else {}
+cfg.setdefault('enabledPlugins', {})['bible-cc-plugin@skills-dir'] = True
+json.dump(cfg, open(spath, 'w'), indent=4)
+"
+    fi
 
     # Run setup (generates .mcp.json in target)
     echo "==> Running setup..."
@@ -56,7 +82,8 @@ print('  Registered in settings.json')
 
     echo "==> Install complete."
     echo "Plugin installed at: $TARGET"
-    echo "Run './bible-cc start' to start daemon, or restart Claude Code."
+    echo "Hooks (SessionStart auto-start): enabled"
+    echo "Restart Claude Code for hooks to take effect."
     ;;
   setup)
     shift; uv run python -m bible_cc_plugin.scripts.setup "$@" ;;
@@ -81,6 +108,8 @@ print('  Registered in settings.json')
     # Re-run install steps targeting ~/.claude/plugins/
     TARGET="$HOME/.claude/plugins/bible-cc-plugin"
     WORKSPACE="$(cd "$(dirname "$0")" && pwd)"
+    MARKETPLACE_NAME="bible-cc-local"
+    PLUGIN_FULL_NAME="bible-cc-plugin@${MARKETPLACE_NAME}"
     mkdir -p "$TARGET"
     rsync -a --delete \
         --exclude='.venv' --exclude='.git' --exclude='__pycache__' \
@@ -89,13 +118,29 @@ print('  Registered in settings.json')
         "$WORKSPACE/" "$TARGET/"
     cd "$TARGET"
     uv sync
-    python3 -c "
+    if command -v claude &>/dev/null; then
+        claude plugin disable bible-cc-plugin@skills-dir 2>/dev/null || true
+        python3 -c "
 import json, os
-path = os.path.expanduser('~/.claude/settings.json')
-cfg = json.load(open(path)) if os.path.exists(path) else {}
-cfg.setdefault('enabledPlugins', {})['bible-cc-plugin@skills-dir'] = True
-json.dump(cfg, open(path, 'w'), indent=4)
+mp_path = os.path.expanduser('~/.claude/plugins/known_marketplaces.json')
+mp_data = json.load(open(mp_path)) if os.path.exists(mp_path) else {}
+mp_data['${MARKETPLACE_NAME}'] = {
+    'source': {'source': 'directory', 'path': '${TARGET}'},
+    'installLocation': '${TARGET}',
+    'lastUpdated': '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'
+}
+json.dump(mp_data, open(mp_path, 'w'), indent=4)
 "
+        claude plugin install "$PLUGIN_FULL_NAME" 2>&1
+    else
+        python3 -c "
+import json, os
+spath = os.path.expanduser('~/.claude/settings.json')
+cfg = json.load(open(spath)) if os.path.exists(spath) else {}
+cfg.setdefault('enabledPlugins', {})['bible-cc-plugin@skills-dir'] = True
+json.dump(cfg, open(spath, 'w'), indent=4)
+"
+    fi
     uv run python -m bible_cc_plugin.scripts.setup --non-interactive
     uv run python -m bible_cc_plugin.scripts.daemon start
     ./scripts/verify-install.sh

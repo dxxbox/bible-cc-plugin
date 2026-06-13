@@ -77,10 +77,28 @@ if [ -f "$HOME/.claude/settings.json" ]; then
 import json, os
 path = os.path.expanduser('~/.claude/settings.json')
 cfg = json.load(open(path))
-if 'bible-cc-plugin@skills-dir' in cfg.get('enabledPlugins', {}):
-    del cfg['enabledPlugins']['bible-cc-plugin@skills-dir']
+changed = False
+for key in ('bible-cc-plugin@bible-cc-local', 'bible-cc-plugin@skills-dir'):
+    if key in cfg.get('enabledPlugins', {}):
+        del cfg['enabledPlugins'][key]
+        changed = True
+        print(f'Removed {key} from settings.json enabledPlugins')
+if changed:
     json.dump(cfg, open(path, 'w'), indent=4)
-    print('Removed bible-cc-plugin from settings.json enabledPlugins')
+"
+fi
+
+# ── Clean up known_marketplaces.json ─────────────────────
+KMP="$HOME/.claude/plugins/known_marketplaces.json"
+if [ -f "$KMP" ]; then
+    python3 -c "
+import json, os
+path = os.path.expanduser('~/.claude/plugins/known_marketplaces.json')
+mp = json.load(open(path))
+if 'bible-cc-local' in mp:
+    del mp['bible-cc-local']
+    json.dump(mp, open(path, 'w'), indent=4)
+    print('Removed bible-cc-local from known_marketplaces.json')
 "
 fi
 
