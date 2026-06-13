@@ -190,6 +190,9 @@ bible-cc-plugin/
 │   ├── types.py                ← F0.3 (Phase 0 最小集)
 │   ├── config.py               ← F0.4
 │   ├── logging_config.py       ← F0.9
+│   ├── scripts/
+│   │   ├── __init__.py
+│   │   └── hook.py             ← F0.10 (minimal hook bridge, session-start auto-starts daemon)
 │   └── daemon/
 │       ├── __init__.py
 │       └── server.py           ← F0.7 (health + start/stop 端点)
