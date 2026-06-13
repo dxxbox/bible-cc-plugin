@@ -3,7 +3,7 @@
   "hooks": {
     "Setup": [
       {
-        "command": "uv run python -m bible_cc_plugin.scripts.setup"
+        "command": "uv run python scripts/setup.py"
       }
     ],
     "SessionStart": [

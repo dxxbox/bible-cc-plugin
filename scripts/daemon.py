@@ -24,6 +24,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="bible-cc daemon lifecycle")
     parser.add_argument("action", choices=["start", "stop", "status", "restart"])
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--force", action="store_true", help="Force-kill daemon if graceful stop fails"
+    )
     args = parser.parse_args()
 
     config = load_config(debug=args.debug)
@@ -33,7 +36,7 @@ def main() -> None:
     if args.action == "start":
         _do_start(port, debug=args.debug)
     elif args.action == "stop":
-        _do_stop(base_url)
+        _do_stop(base_url, force=args.force)
     elif args.action == "status":
         _do_status(base_url)
     elif args.action == "restart":
@@ -87,7 +90,7 @@ def _do_start(port: int, *, debug: bool) -> None:
     sys.exit(1)
 
 
-def _do_stop(base_url: str) -> None:
+def _do_stop(base_url: str, *, force: bool = False) -> None:
     try:
         r = httpx.post(f"{base_url}/daemon/stop", timeout=5)
         if r.status_code == 200:
@@ -95,6 +98,21 @@ def _do_stop(base_url: str) -> None:
             return
     except Exception:
         pass
+
+    if force:
+        import subprocess
+
+        port = int(base_url.rsplit(":", 1)[1]) if ":" in base_url else 9777
+        try:
+            result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True)
+            for pid in result.stdout.strip().split("\n"):
+                if pid:
+                    subprocess.run(["kill", "-9", pid])
+                    print(f"Daemon force-killed (pid={pid}, port={port}).")
+                    return
+        except Exception:
+            pass
+
     print("Daemon is not running.")
 
 
