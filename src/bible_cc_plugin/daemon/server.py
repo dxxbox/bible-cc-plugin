@@ -6,15 +6,21 @@ Phase 0 implements only health/start/stop. Session/turn endpoints added in Phase
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from bible_cc_plugin.logging_config import setup_logging
+
+_logger = setup_logging(level="INFO")
 _START_TIME = time.time()
 
 app = FastAPI(title="bible-cc-daemon", version="0.1.0")
+
+_logger.info("daemon starting on port %s", os.getenv("BIBLE_CC_DAEMON_PORT", "9777"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +44,7 @@ async def daemon_start():
 @app.post("/daemon/stop")
 async def daemon_stop():
     """Graceful shutdown. Phase 0: no SQLite to flush."""
+    _logger.info("daemon shutting down")
     import asyncio
 
     asyncio.get_event_loop().call_later(0.5, lambda: os._exit(0))

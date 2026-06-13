@@ -11,18 +11,35 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import httpx
 
 from bible_cc_plugin.config import load_config
 
+logger = logging.getLogger("bible-cc.daemon")
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+_DAEMON_LOG = Path.home() / ".bible-cc" / "daemon.log"
+
 
 def _local_client(timeout: int = 5) -> httpx.Client:
     """httpx client that bypasses proxy for 127.0.0.1 (trust_env=False)."""
     return httpx.Client(trust_env=False, timeout=timeout)
+
+
+def _tail_log(path: Path, lines: int = 20) -> str:
+    """Return the last N lines of a file, or empty string if file missing."""
+    try:
+        content = path.read_text()
+        all_lines = content.splitlines()
+        return "\n".join(all_lines[-lines:])
+    except (OSError, FileNotFoundError):
+        return ""
 
 
 def main() -> None:
@@ -61,7 +78,10 @@ def _do_start(port: int, *, debug: bool) -> None:
     except Exception:
         pass
 
-    log_level = "debug" if debug else "warning"
+    _DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(str(_DAEMON_LOG), "a")
+
+    log_level = "debug" if debug else "info"
     cmd = [
         sys.executable,
         "-m",
@@ -77,21 +97,32 @@ def _do_start(port: int, *, debug: bool) -> None:
     print(f"[daemon] Starting on 127.0.0.1:{port}...", end=" ", flush=True)
     subprocess.Popen(
         cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=None if debug else subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=log_fh,
     )
     deadline = time.time() + 5
     while time.time() < deadline:
+        ok = False
         try:
             r = _local_client(timeout=1).get(f"{base_url}/daemon/health")
-            if r.status_code == 200:
-                data = r.json()
-                print(f"OK (pid={data['pid']}, port={port})")
-                return
+            ok = r.status_code == 200
+        except httpx.ConnectError:
+            logger.debug("daemon not ready (connection refused)")
         except Exception:
-            pass
+            logger.warning("health check error: %s", sys.exc_info()[1])
+        if ok:
+            log_fh.close()
+            data = r.json()
+            print(f"OK (pid={data['pid']}, port={port})")
+            return
         time.sleep(0.3)
+
+    log_fh.close()
+    tail = _tail_log(_DAEMON_LOG)
     print("FAILED (health check timed out)")
+    if tail:
+        print(f"Last 20 lines of {_DAEMON_LOG}:")
+        print(tail)
     sys.exit(1)
 
 

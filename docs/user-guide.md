@@ -12,6 +12,7 @@
 ./bible-cc stop         停止 daemon
 ./bible-cc restart      重启 daemon
 ./bible-cc status       查看状态
+./bible-cc logs         查看 daemon 日志
 ./bible-cc verify       验证一切正常
 ./bible-cc reinstall    完整重装循环
 ./bible-cc reset        重置配置 + 重启
@@ -91,6 +92,7 @@ cd <workspace>/bible-cc-plugin
 ./bible-cc start          # 启动（幂等）
 ./bible-cc start --debug  # 启动 + stderr 全量日志
 ./bible-cc status         # 查看状态
+./bible-cc logs           # 查看 daemon 日志（最后 50 行）
 ./bible-cc stop           # 停止（强制，无响应时 kill -9）
 ./bible-cc restart        # 重启
 ```

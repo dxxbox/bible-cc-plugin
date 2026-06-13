@@ -109,6 +109,12 @@ json.dump(cfg, open(spath, 'w'), indent=4)
   restart) shift; uv run python -m bible_cc_plugin.scripts.daemon stop --force 2>/dev/null || true
            sleep 1; uv run python -m bible_cc_plugin.scripts.daemon start "$@" ;;
   status)  uv run python -m bible_cc_plugin.scripts.daemon status ;;
+  logs)    _DAEMON_LOG="$HOME/.bible-cc/daemon.log"
+           if [ -f "$_DAEMON_LOG" ]; then
+             tail -n 50 "$_DAEMON_LOG"
+           else
+             echo "(no daemon log at $_DAEMON_LOG)"
+           fi ;;
 
   # ── Verify ───────────────────────────────────────────
   verify)  ./scripts/verify-install.sh ;;
@@ -200,6 +206,7 @@ json.dump(cfg, open(spath, 'w'), indent=4)
     echo "  stop                force-stop daemon"
     echo "  restart [--debug]   stop + start"
     echo "  status              show daemon status"
+    echo "  logs                show last 50 lines of daemon log"
     echo ""
     echo "Verify & Test:"
     echo "  verify              run 16 install checks"
