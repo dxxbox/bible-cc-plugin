@@ -113,7 +113,7 @@ def _kill_daemon_if_running() -> None:
     import subprocess
 
     try:
-        r = httpx.post("http://127.0.0.1:9777/daemon/stop", timeout=3)
+        r = httpx.Client(trust_env=False, timeout=3).post("http://127.0.0.1:9777/daemon/stop")
         if r.status_code == 200:
             print("Daemon stopped gracefully.")
             return

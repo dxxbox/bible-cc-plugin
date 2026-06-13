@@ -20,6 +20,11 @@ import httpx
 from bible_cc_plugin.config import load_config
 
 
+def _local_client(timeout: int = 5) -> httpx.Client:
+    """httpx client that bypasses proxy for 127.0.0.1 (trust_env=False)."""
+    return httpx.Client(trust_env=False, timeout=timeout)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="bible-cc daemon lifecycle")
     parser.add_argument("action", choices=["start", "stop", "status", "restart"])
@@ -48,7 +53,7 @@ def main() -> None:
 def _do_start(port: int, *, debug: bool) -> None:
     base_url = f"http://127.0.0.1:{port}"
     try:
-        r = httpx.get(f"{base_url}/daemon/health", timeout=2)
+        r = _local_client(timeout=2).get(f"{base_url}/daemon/health")
         if r.status_code == 200:
             data = r.json()
             print(f"Daemon already running (pid={data['pid']}, port={port})")
@@ -78,7 +83,7 @@ def _do_start(port: int, *, debug: bool) -> None:
     deadline = time.time() + 5
     while time.time() < deadline:
         try:
-            r = httpx.get(f"{base_url}/daemon/health", timeout=1)
+            r = _local_client(timeout=1).get(f"{base_url}/daemon/health")
             if r.status_code == 200:
                 data = r.json()
                 print(f"OK (pid={data['pid']}, port={port})")
@@ -92,12 +97,16 @@ def _do_start(port: int, *, debug: bool) -> None:
 
 def _do_stop(base_url: str, *, force: bool = False) -> None:
     try:
-        r = httpx.post(f"{base_url}/daemon/stop", timeout=5)
+        r = _local_client(timeout=5).post(f"{base_url}/daemon/stop")
         if r.status_code == 200:
             print("Daemon stopped.")
             return
-    except Exception:
-        pass
+    except Exception as e:
+        if force:
+            pass  # graceful stop failed — falling through to force-kill
+        else:
+            print(f"Daemon is not running (stop failed: {e})")
+            return
 
     if force:
         import subprocess
@@ -118,7 +127,7 @@ def _do_stop(base_url: str, *, force: bool = False) -> None:
 
 def _do_status(base_url: str) -> None:
     try:
-        r = httpx.get(f"{base_url}/daemon/health", timeout=2)
+        r = _local_client(timeout=2).get(f"{base_url}/daemon/health")
         if r.status_code == 200:
             data = r.json()
             uptime_m = data["uptime"] // 60
@@ -128,9 +137,10 @@ def _do_status(base_url: str) -> None:
             print(f"  Port:   {data['port']}")
             print(f"  Uptime: {uptime_m}m {uptime_s}s")
             return
-    except Exception:
-        pass
-    print("Daemon: not running")
+    except Exception as e:
+        print(f"Daemon: not running ({e})")
+        return
+    print(f"Daemon: not running (HTTP {r.status_code})")
 
 
 if __name__ == "__main__":
