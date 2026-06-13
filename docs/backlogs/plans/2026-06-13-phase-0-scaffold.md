@@ -1,14 +1,75 @@
 # Phase 0: 1st Call — Install & Run
 
+## General Summary
+
 > **状态：✅ 完成 (2026-06-14)**
 
-Phase 0 walking skeleton 已完成。安装、配置、daemon 启停、health check、卸载全链路跑通。
+**Phase 0 walking skeleton 已完成。** 安装、配置、daemon 启停、health check、卸载全链路跑通。
 超出原计划的额外产出：
 - `bible-cc` 一键 CLI（install/start/stop/restart/status/logs/verify/reinstall/uninstall）
 - Hook bridge（SessionStart 自动启动 daemon，turn-user/turn-tool/session-end 骨架）
 - Marketplace 安装模式（`bible-cc-local`，source: "./"）
 - Daemon 日志持久化（`~/.bible-cc/daemon.log`）+ `./bible-cc logs`
 - 结构化日志（`logging_config.py`，JSON-line 格式）
+
+Commits:
+
+### Stage 1: Phase-0 Core
+
+| Commit | Date | Description |
+|--------|------|-------------|
+| `8383a7f` | Jun 13 | Project scaffold + config system (TDD green) |
+| `05f326c` | Jun 13 | Daemon server + lifecycle CLI + CI pipeline |
+| `afd44db` | Jun 13 | Setup wizard — 1st Call complete |
+
+### Stage 2: Polish & Tooling
+
+| Commit | Date | Description |
+|--------|------|-------------|
+| `c8503f9` | Jun 13 | Reinstall support — --reset, --non-interactive, --force, verify-install.sh, uninstall.sh |
+| `bd5dcc5` | Jun 13 | User-guide update — reinstall testing, non-interactive setup |
+| `0313928` | Jun 13 | One-key script `./bible-cc` |
+| `dae0380` | Jun 13 | One-station deploy script |
+| `5f6be37` | Jun 13 | Fix uninstall — stop removing workspace |
+| `b855da2` | Jun 13 | Require confirmation for destructive operations |
+
+### Stage 3: Fixes & Hardening
+
+| Commit | Date | Description |
+|--------|------|-------------|
+| `082292a` | Jun 13 | Remove committed `__pycache__` |
+| `4e110e3` | Jun 13 | Bypass proxy for localhost httpx calls |
+| `42e95cc` | Jun 13 | Generate `.mcp.json` dynamically, clean stale plugin ref on uninstall |
+| `a7465ca` | Jun 13 | Use local workspace as running base |
+| `eb8caa0` | Jun 13 | Hook bridge — SessionStart auto-starts daemon |
+| `3e18ad6` | Jun 13 | Daemon startup issue retry |
+| `47037cf` | Jun 13 | Marketplace integration |
+
+### Stage 4: Marketplace Migration
+
+| Commit | Date | Description |
+|--------|------|-------------|
+| `438c279` | Jun 13 | Marketplace install path migration + design doc sync |
+| `82915e6` | Jun 13 | Fix Setup hook invocation path (module path) |
+
+### Stage 5: Observability & Wrap-Up
+
+| Commit | Date | Description |
+|--------|------|-------------|
+| `67883c1` | Jun 13 | Daemon log file + `./bible-cc logs` + structured logging |
+| `ef33366` | Jun 14 | Update Phase 0 plan to reflect actual implementation |
+
+**What was accomplished:**
+1. Daemon logging — captured `/dev/null`'d daemon output to `~/.bible-cc/daemon.log`, added log tail on health check timeout, added `./bible-cc logs` command
+2. Phase 0 plan finalized — all 17 acceptance criteria checked, file tree updated, deviations documented, status banner added
+3. Phase 0 lessons saved — 7 lessons in `memory/phase-0-lessons.md` loaded automatically in future sessions
+4. Rules compliance feedback saved — `memory/rules-compliance-required.md` documenting the pattern of violations
+
+**Current state:**
+- 30/30 tests passing
+- Daemon running on :9777
+- `daemon.log` capturing all output
+- Phase 0: complete
 
 > **For agentic workers:** Phase 0 是 walking skeleton——安装、配置、启动 daemon、health check、停止、卸载。这一条链路跑通后，所有后续 Phase 都是在此基础上增量添加能力。
 
