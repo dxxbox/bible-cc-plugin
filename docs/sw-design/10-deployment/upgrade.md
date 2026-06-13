@@ -105,7 +105,7 @@ def run_migrations(conn: sqlite3.Connection) -> None:
 curl -X POST http://127.0.0.1:9777/daemon/stop
 
 # 2. 恢复旧版代码
-cd ~/.claude/plugins/bible-cc-plugin
+cd ~/.claude/plugins/marketplaces/bible-cc-local
 git checkout <previous-version-tag>
 uv sync
 

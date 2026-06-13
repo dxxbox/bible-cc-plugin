@@ -19,18 +19,21 @@
 
 ### 2.1 Marketplace 安装（推荐）
 
-上架 Claude Code Marketplace 后，用户一键安装：
+bible-cc-plugin 使用本地 marketplace 目录模式（`marketplace.json` 中 `source: "./"` 表示 plugin 源码与 marketplace 定义在同一目录）。
 
-> **[TBD]** 以下命令语法为推测，待 Marketplace 正式上线后确认。
-
+```bash
+cd <workspace>/bible-cc-plugin
+./bible-cc install
 ```
-npx @anthropic-ai/claude-code plugins install <publisher>/bible-cc
-```
 
-Marketplace 自动执行：
-1. 下载 plugin 源码到 `~/.claude/plugins/cache/`
-2. 注册到 `~/.claude/plugins/installed_plugins.json`
-3. 触发 Setup hook → 首次安装流程
+`install` 自动执行：
+1. `rsync` 将 workspace 文件拷贝到 `~/.claude/plugins/marketplaces/bible-cc-local/`（marketplace 目录即 plugin 目录）
+2. `uv sync` 安装依赖
+3. 注册 marketplace 到 `~/.claude/plugins/known_marketplaces.json` 和 `~/.claude/settings.json` 的 `extraKnownMarketplaces`
+4. `claude plugin install bible-cc-plugin@bible-cc-local` 将 plugin 安装到 cache（hook 发现依赖此步骤）
+5. `uv run python -m bible_cc_plugin.scripts.setup --non-interactive`（生成 `.mcp.json`、写 config、测试连通性）
+
+> **设计说明**: 因为 `marketplace.json` 的 `source` 指向 `"./"`，plugin 文件直接在 marketplace 目录中，无需分离 marketplace 定义和 plugin 源码。Claude Code 在 session 启动时扫描 `~/.claude/plugins/marketplaces/` 发现 marketplace，然后通过 `claude plugin install` 将 plugin 安装到 cache 以供 hook 发现。
 
 ### 2.2 手动安装（开发/未上架）
 
@@ -41,18 +44,19 @@ cd <workspace>/bible-cc-plugin
 ```
 
 `./bible-cc install` 执行：
-1. `rsync` 将 workspace 文件拷贝到 `~/.claude/plugins/bible-cc-plugin/`
+1. `rsync` 将 workspace 文件拷贝到 `~/.claude/plugins/marketplaces/bible-cc-local/`（marketplace 目录即 plugin 目录）
 2. `uv sync` 安装依赖
-3. 自动注册到 `~/.claude/settings.json`（`enabledPlugins.bible-cc-plugin@skills-dir`）
-4. `uv run python scripts/setup.py --non-interactive`（生成 `.mcp.json`、写 config、测试连通性）
+3. 注册 marketplace 到 `~/.claude/plugins/known_marketplaces.json` 和 `~/.claude/settings.json` 的 `extraKnownMarketplaces`
+4. `claude plugin install bible-cc-plugin@bible-cc-local`（将 plugin 安装到 cache）
+5. `uv run python -m bible_cc_plugin.scripts.setup --non-interactive`（生成 `.mcp.json`、写 config、测试连通性）
 
 ```bash
 # 等价的手动步骤（无需 install 脚本时）：
-cd ~/.claude/plugins/
-git clone <bible-cc-plugin-repo-url>
-cd bible-cc-plugin
+mkdir -p ~/.claude/plugins/marketplaces/
+git clone <bible-cc-plugin-repo-url> ~/.claude/plugins/marketplaces/bible-cc-local
+cd ~/.claude/plugins/marketplaces/bible-cc-local
 uv sync
-# 注册：编辑 ~/.claude/settings.json enabledPlugins 添加 "bible-cc-plugin@skills-dir": true
+# 注册：claude plugin install bible-cc-plugin@bible-cc-local
 uv run python -m bible_cc_plugin.scripts.setup
 ```
 
@@ -84,7 +88,7 @@ Daemon 没有 idle timeout——运行到关机或手动停止。
 npx @anthropic-ai/claude-code plugins update bible-cc
 
 # 手动
-cd ~/.claude/plugins/bible-cc-plugin
+cd ~/.claude/plugins/marketplaces/bible-cc-local
 git pull
 uv sync
 # 然后 reload-plugin --force
@@ -112,9 +116,12 @@ npx @anthropic-ai/claude-code plugins uninstall bible-cc
 `./bible-cc uninstall` 执行：
 1. 停止 daemon（`POST /daemon/stop`）
 2. 删除 `~/.bible-cc/`（SQLite DB + config.json）
-3. 删除 `~/.claude/plugins/bible-cc-plugin/`（plugin 目录）
-4. 删除 `.mcp.json`（workspace 中的生成文件）
-5. 清理 `~/.claude/settings.json` 中 `enabledPlugins.bible-cc-plugin@skills-dir`
+3. 删除 `~/.claude/plugins/marketplaces/bible-cc-local/`（marketplace/plugin 目录）
+4. 删除 `~/.claude/plugins/bible-cc-plugin/`（legacy 安装路径，如存在）
+5. 删除 `.mcp.json`（workspace 中的生成文件）
+6. 清理 `~/.claude/settings.json` 中 `enabledPlugins.bible-cc-plugin@bible-cc-local` 和 `enabledPlugins.bible-cc-plugin@skills-dir`
+7. 清理 `~/.claude/settings.json` 中 `extraKnownMarketplaces.bible-cc-local`
+8. 清理 `~/.claude/plugins/known_marketplaces.json` 中 `bible-cc-local`
 
 > ⚠️ 卸载不可逆。SQLite DB 和 config 永久删除。flush 到 BiBLE Atlas 的数据不受影响（存储在服务端）。
 
@@ -230,9 +237,11 @@ uv run python -m bible_cc_plugin.scripts.setup
 | `~/.bible-cc/config.json` | 配置文件 | 持久。卸载时删除。 |
 | `~/.bible-cc/daemon.db` | SQLite 数据库 | 持久。卸载时删除。flush 到 BiBLE 的数据不受影响。 |
 | `~/.bible-cc/daemon.pid` | 运行时 PID 文件（辅助用途；daemon run state 主要靠 `/daemon/health` HTTP check 判断） | 临时。daemon 停止后清理。 |
-| `~/.claude/plugins/bible-cc-plugin/` | 插件源码 | 安装时创建。卸载时删除。 |
-| `~/.claude/plugins/bible-cc-plugin/.mcp.json` | MCP server 定义（由 setup.py 生成，不提交 git） | 安装时生成。卸载时随 plugin 目录删除。 |
-| `~/.claude/settings.json` → `enabledPlugins.bible-cc-plugin@skills-dir` | Plugin 注册 | 安装时写入。卸载时删除。 |
+| `~/.claude/plugins/marketplaces/bible-cc-local/` | 插件源码（marketplace 目录即 plugin 目录，因为 `source: "./"`） | 安装时创建。卸载时删除。 |
+| `~/.claude/plugins/marketplaces/bible-cc-local/.mcp.json` | MCP server 定义（由 setup.py 生成，不提交 git） | 安装时生成。卸载时随 marketplace 目录删除。 |
+| `~/.claude/plugins/bible-cc-plugin/` | 旧版安装路径（legacy） | 卸载时清理（如存在）。 |
+| `~/.claude/plugins/known_marketplaces.json` → `bible-cc-local` | Marketplace 注册 | 安装时写入。卸载时删除。 |
+| `~/.claude/settings.json` → `extraKnownMarketplaces.bible-cc-local` | Marketplace 目录源注册 | 安装时写入。卸载时删除。 |
 
 ---
 
