@@ -1,0 +1,9 @@
+{
+  "name": "bible-cc",
+  "version": "0.1.0",
+  "description": "BiBLE Atlas memory + knowledge broker for Claude Code",
+  "author": "BiBLE",
+  "hooks": "./hooks/hooks.json",
+  "commands": "./commands/",
+  "mcpServers": {}
+}

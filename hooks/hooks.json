@@ -1,0 +1,31 @@
+{
+  "description": "BiBLE CC Plugin hooks — bridge Claude Code lifecycle to daemon HTTP API",
+  "hooks": {
+    "Setup": [
+      {
+        "command": "uv run python -m bible_cc_plugin.scripts.setup"
+      }
+    ],
+    "SessionStart": [
+      {
+        "command": "uv run python -m bible_cc_plugin.scripts.hook session-start",
+        "inject": true
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "command": "uv run python -m bible_cc_plugin.scripts.hook turn-user"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "command": "uv run python -m bible_cc_plugin.scripts.hook turn-tool"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "uv run python -m bible_cc_plugin.scripts.hook session-end"
+      }
+    ]
+  }
+}

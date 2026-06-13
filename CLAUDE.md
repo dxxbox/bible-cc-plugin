@@ -330,5 +330,4 @@ docs/sw-design/
 
 - `docs/bible-claude-code-plugin-feasibility-report.md` — Full architecture, design journey (Q&A), component designs, config schema, rationale for every decision.
 - `docs/claude-mem-analysis-report.md` — Analysis of the claude-mem plugin (v13.4.1) that served as the architectural reference
-- `docs/design-review-2026-06-12.md` — Design review (10 findings resolved), context recall scenarios, command screening
 - `docs/command-priority-table.md` — Complete screened command inventory (38 plugin + MVP + server side)

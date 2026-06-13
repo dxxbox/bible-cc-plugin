@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bible_cc_plugin"]
+
+[project]
+name = "bible-cc-plugin"
+version = "0.1.0"
+description = "Claude Code plugin — BiBLE Atlas memory + knowledge broker"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.28.0",
+    "anthropic>=0.40.0",
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+bible-cc-daemon = "bible_cc_plugin.scripts.daemon:main"
+bible-cc-setup = "bible_cc_plugin.scripts.setup:main"
+bible-cc-hook = "bible_cc_plugin.scripts.hook:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-html>=4.0.0",
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+log_cli = true
+log_cli_level = "INFO"
