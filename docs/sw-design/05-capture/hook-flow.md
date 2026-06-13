@@ -19,8 +19,8 @@
 
 ```
 1. 验证 session_id 存在于 sessions 表（不存在则 404）
-2. INSERT INTO turns (session_id, seq, role, content, timestamp)
-   → seq = SELECT COALESCE(MAX(seq), 0) + 1 FROM turns WHERE session_id = ?
+2. INSERT INTO turns (session_id, seq, role, content)
+   → seq = session_seq[session_id] += 1（内存计数器，见 §1.3）
    → role = "user"
 3. 更新 sessions 表: turn_count += 1, buffered_chars += LEN(message)
 4. 检查阈值: if turn_count >= commit_threshold_turns OR buffered_chars >= commit_threshold_chars
@@ -79,7 +79,7 @@ sessions 表中的 `turn_count` / `buffered_chars` 是全生命周期计数器�
 
 ```
 1. 验证 session_id
-2. INSERT INTO turns (session_id, seq, role, content, tool_calls, timestamp)
+2. INSERT INTO turns (session_id, seq, role, content, tool_name, tool_arguments, tool_output)
    → role = "assistant"
    → 完整 tool output 存入 turns 表
 3. 更新 sessions 表: turn_count += 1, buffered_chars += LEN(output)
@@ -112,6 +112,6 @@ LLM 检测时 → 从完整 output 提取 ≤tool_result_max_chars (250) 精华
 
 ## 4. 参考文档
 
-- [`../../02-interfaces.md`](../../02-interfaces.md) — `/turn/user`, `/turn/tool` 完整 spec
-- [`../../03-daemon.md`](../../03-daemon.md) — SQLite turns 表、阈值
+- [`../../02-interfaces.md`](../02-interfaces.md) — `/turn/user`, `/turn/tool` 完整 spec
+- [`../../03-daemon.md`](../03-daemon.md) — SQLite turns 表、阈值
 - [`detection.md`](detection.md) — Phase 1 检测详细设计

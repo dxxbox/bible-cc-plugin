@@ -109,5 +109,5 @@ last injection: empty (new session, no local buffer data)
 
 ## 4. 参考文档
 
-- [`../../02-interfaces.md`](../../02-interfaces.md) — `/daemon/health` 响应格式
+- [`../../02-interfaces.md`](../02-interfaces.md) — `/daemon/health` 响应格式
 - [`../08-operability.md`](../08-operability.md) — 全局约束

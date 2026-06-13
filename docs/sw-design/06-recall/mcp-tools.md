@@ -50,6 +50,34 @@ def search_memory(query: str, tag: str = "memory", top_k: int = 8, search_type: 
 
 ---
 
+### 3.1 `bible_memory_save` 序列化
+
+`bible_memory_save` 接受 `messages[]`（对话消息数组），需序列化为文件后通过 `POST /api/import/memory`（multipart/form-data）上传。
+
+```python
+import json, tempfile, os
+
+def serialize_and_save(messages: list[dict], title: str | None, abstract: str | None) -> str:
+    payload = {
+        "messages": messages,    # [{"role":"user","content":"..."}, ...]
+        "title": title or "",
+        "abstract": abstract or "",
+        "saved_at": datetime.now().isoformat()
+    }
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+        json.dump(payload, f, ensure_ascii=False)
+        tmp_path = f.name
+
+    # 上传同 flush 模式：files + data → POST /api/import/memory → task_id
+    os.unlink(tmp_path)
+    return task_id
+```
+
+- `kb_index` 取自 `bible.kb_index`（默认 `"bible-cc"`），`tag` 固定 `"memory"`。
+- 上传后立即删除临时文件。
+
+---
+
 ## 4. 错误响应
 
 ```json
@@ -84,6 +112,6 @@ env 值为字面量，无 `${VAR:-default}` 语法。
 
 ## 6. 参考文档
 
-- [`../../02-interfaces.md`](../../02-interfaces.md) — MCP tool schema、BiBLE V4 API、`.mcp.json`
-- [`../../04-config.md`](../../04-config.md) — `search` config
+- [`../../02-interfaces.md`](../02-interfaces.md) — MCP tool schema、BiBLE V4 API、`.mcp.json`
+- [`../../04-config.md`](../04-config.md) — `search` config
 - [`consult.md`](consult.md) — 用户主动跨域搜索

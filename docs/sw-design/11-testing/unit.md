@@ -177,7 +177,7 @@ Sunny tests:
 
 Rainy tests:
 
-- UserPromptSubmit/PostToolUse daemon connection failure exits success and suppresses output.
+- UserPromptSubmit/PostToolUse daemon connection failure: first failure per session outputs hint via cooldown marker file; subsequent failures suppress output. Always exits success.
 - SessionStart daemon startup failure emits error hint through stdout and includes injectable context.
 - Stop daemon connection failure exits success so Claude Code shutdown is not blocked.
 - PostToolUse tests fail if implementation reads `$TOOL_RESULT` instead of `$TOOL_OUTPUT`.

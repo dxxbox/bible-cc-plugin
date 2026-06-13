@@ -121,6 +121,8 @@ HTTP 状态码：
 ```json
 {
   "status": "ok",
+  "pid": 12345,
+  "port": 9777,
   "uptime": 3600,
   "sessions": {"active": 1, "completed": 42},
   "buffer": {"total_turns": 156, "pending_moments": 3},
@@ -130,7 +132,8 @@ HTTP 状态码：
 ```
 
 **内部流程:**
-1. 计算 `uptime = now - daemon_start_time`。
+1. `pid`、`port` 取自 daemon 进程自身（port 可能是 auto_fallback 后的实际端口）。
+2. 计算 `uptime = now - daemon_start_time`。
 2. 查询 SQLite：
    ```sql
    SELECT COUNT(*) FROM sessions WHERE status='active';
@@ -248,13 +251,52 @@ HTTP 状态码：
 |------|------|------|
 | session_id 缺失 | `SESSION_NOT_FOUND` | 400 |
 | Session 不存在 | `SESSION_NOT_FOUND` | 404 |
-| Session 已 completed | `SESSION_NOT_FOUND` | 404（幂等——不重复 flush） |
+| Session 已 completed | （不报错）返回 `status: "already_completed"` | 200 |
 | Phase 2 LLM 失败 | （不报错）flush Phase 1 moments 后返回 | 200 |
 | BiBLE flush 失败 | （不报错）moments 保持 flushed=0 | 200 |
 
 **⚠️ 这是唯一会阻塞等待 LLM 的端点**。Stop hook 的 timeout 设为 30s 以覆盖此阻塞。如果 LLM 调用超过 30s，hook 被 kill，但 daemon 端可能仍在执行——需要任务追踪机制防止孤儿任务。
 
 **调用方**：Stop hook。
+
+---
+
+### 3.3 `POST /daemon/session/flush`
+
+手动 flush 当前 session 的所有 unflushed moments 到 BiBLE Atlas。**不结束 session。**
+
+**Request:**
+```json
+{
+  "session_id": "abc123-def456"
+}
+```
+
+**Response (200):**
+```json
+{
+  "session_id": "abc123-def456",
+  "moments_flushed": 3
+}
+```
+
+**内部流程:**
+1. 验证 session 存在且 `status='active'`。
+2. 取出所有 unflushed moments：`SELECT * FROM moments WHERE session_id=? AND flushed=0;`。
+3. 序列化 → `POST /api/import/memory`（见 `05-capture/flush.md`）。
+4. 更新 moments 状态：`flushed=1`（或 `-1` 如果失败）。
+5. 返回 flushed count。
+
+**不触发 Phase 2 detection。** 此端点仅 flush 已有的 Phase 1 moments，不做 LLM 调用。
+
+**错误:**
+| 场景 | Code | HTTP |
+|------|------|------|
+| session_id 缺失 | `SESSION_NOT_FOUND` | 400 |
+| Session 不存在 | `SESSION_NOT_FOUND` | 404 |
+| BiBLE flush 失败 | （不报错）moments 保持 flushed=0 | 200 |
+
+**调用方**：`/bible-cc:push` 命令。
 
 ---
 
@@ -332,7 +374,7 @@ HTTP 状态码：
 ```
 
 **内部流程:**
-1. 同 `/turn/user` steps 1-3，但 role='tool'，且写入 `tool_name`、`tool_arguments`（JSON string）、`tool_output`。
+1. 同 `/turn/user` steps 1-3，但 role='assistant'，且写入 `tool_name`、`tool_arguments`（JSON string）、`tool_output`。
 2. 无机械截断——完整 `output` 存入 `tool_output` 列。LLM 在 detection worker 中按 `capture.tool_result_max_chars`（默认 250）提取精华摘要。
 3. 阈值检测同 `/turn/user`。
 
@@ -597,7 +639,7 @@ DELETE FROM moments WHERE id = ? AND flushed = 0;
 
 ## 9. 参考文档
 
-- [`../../02-interfaces.md`](../../02-interfaces.md) — L1 接口定义（本文与之保持一致）
+- [`../../02-interfaces.md`](../02-interfaces.md) — L1 接口定义（本文与之保持一致）
 - [`startup.md`](startup.md) — 启动序列
 - [`sqlite-schema.md`](sqlite-schema.md) — 表结构
 - [`../05-capture/detection.md`](../05-capture/detection.md) — Phase 1/2 LLM 调用参数

@@ -26,6 +26,8 @@ GET /daemon/health
   → Liveness + diagnostic probe. Used by /bible-cc:status and /bible-cc:check-bible.
   → Response: {
       status: "ok",
+      pid: int,
+      port: int,
       uptime: int (seconds),
       sessions: {active: int, completed: int},
       buffer: {total_turns: int, pending_moments: int},
@@ -50,6 +52,12 @@ POST /session/end
   → Marks session status = 'completed'.
   → Request:  {session_id: string}
   → Response: {session_id: string, moments_flushed: int, status: "completed"}
+
+POST /daemon/session/flush
+  → Flushes all unflushed moments for a session WITHOUT ending the session.
+  → Used by /bible-cc:push for manual mid-session flush.
+  → Request:  {session_id: string}
+  → Response: {session_id: string, moments_flushed: int}
 ```
 
 ### 1.3 Turn 端点
@@ -340,7 +348,7 @@ Hook 脚本通过 stdout JSON 向 Claude Code 返回结构化结果：
 |------|------|
 | Daemon 端口被占 | SessionStart hook 检测 → stdout error hint（transcript + system prompt）。用户看到 `❌` 标记错误。 |
 | BiBLE Atlas 不可达 | Flush 延迟（moments 留 SQLite）。MCP tools 返回结构化错误给 model。CLI hint 通知用户。`/bible-cc:check-bible` 返回当前状态。 |
-| Daemon 在 session 中途 crash | UserPromptSubmit/PostToolUse hooks 尝试调 daemon → 静默跳过。Stop hook 失败 → 数据留 SQLite。下次 SessionStart 自动 recovery。 |
+| Daemon 在 session 中途 crash | UserPromptSubmit/PostToolUse hooks 尝试调 daemon 失败 → 首次输出 hint "daemon unreachable"，同 session 后续静默跳过（cooldown）。Stop hook 失败 → 数据留 SQLite。下次 SessionStart 自动 recovery。 |
 | Phase 1 LLM 调用失败 | Log 错误，跳过本轮检测。不影响 buffer。下轮 threshold 到达时重试。 |
 | Phase 2 LLM 调用失败 | Log 错误，仅 flush Phase 1 已有的 moments。不阻塞 session close。 |
 | BiBLE import（flush）失败 | Moments 保持 `flushed=0`。用户可通过 `/bible-cc:retry-push` 手动重试，或等下次 push。 |

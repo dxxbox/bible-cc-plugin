@@ -56,7 +56,7 @@ Env override: `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`
 约束：
 - `port` 范围 1024-65535。非法值回退到 9777。
 - `db_path` 中的 `~` 展开为用户 home 目录。
-- `port_auto_fallback=true` 时最多重试 3 次，仍未找到则报错。
+- `port_auto_fallback=true` 时最多重试 10 次（port+0 到 port+9），仍未找到则报错。
 
 ### 3.3 `injection` — Context Injection（SessionStart 本地注入）
 
@@ -79,9 +79,11 @@ Env override: `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`
 |----|------|--------|------|
 | `default_top_k` | int | `8` | 各 MCP search tool 的默认返回数量 |
 | `default_min_score` | float（0.0-1.0） | `0.35` | 默认最低相关性阈值 |
+| `default_knowledge_tag` | string | `"design"` | `POST /api/search/knowledge-base` 的 `tag` 参数默认值 |
 
 约束：
 - MCP 工具调用时若未传 `top_k`/`min_score`，使用此默认值。调用时传了则按调用参数。
+- `default_knowledge_tag` 同时用于 consult 三域并行搜索中的知识库 tag。
 - SessionStart 本地注入不读这些值。
 
 ### 3.5 `capture` — 采集控制
@@ -139,7 +141,7 @@ Env override: `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`
 
 | 文件 | 内容 | 状态 |
 |------|------|------|
-| `04-config/schema.md` | 每一项的完整 Pydantic model、type/range/default、env override key、validation 规则 | 待编写 |
+| `04-config/schema.md` | 每一项的完整 Pydantic model、type/range/default、env override key、validation 规则 | 已完成 |
 
 ---
 

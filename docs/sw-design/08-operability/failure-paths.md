@@ -9,7 +9,7 @@
 | # | 场景 | 严重度 | 用户感知 | 诊断 | 恢复 |
 |---|------|--------|---------|------|------|
 | F1 | daemon 端口被占 | ❌ error | `⎿ ❌ daemon failed to start on port X` | `/bible-cc:status` | 释放端口 或 `port_auto_fallback: true` |
-| F2 | daemon 中途 crash | ⚠️ warning | 无直接感知（hooks 尝试重启一次，失败则静默跳过） | `/bible-cc:status` | hooks 尝试重启一次；失败则等下次 SessionStart 自动 recovery |
+| F2 | daemon 中途 crash | ⚠️ warning | 每 session 首次失败 hint "daemon unreachable"，后续静默跳过 | `/bible-cc:status` | 下次 SessionStart 自动启动 daemon + crash recovery |
 | F3 | BiBLE Atlas 不可达 | ⚠️ warning | `⎿ ⚠️ BiBLE Atlas unreachable` | `/bible-cc:check-bible` | 修复 BiBLE 连接后自动恢复 |
 | F4 | Phase 1 LLM 调用失败 | —（内部） | 无 | 无 | 自动重试（下次 threshold 触发） |
 | F5 | Phase 2 LLM 调用失败 | —（内部） | 无 | `/bible-cc:status` | 手动 `/bible-cc:push` |
@@ -40,14 +40,15 @@ Recovery:   下次 SessionStart 自动重试启动。
 
 ```
 User sees:  UserPromptSubmit/PostToolUse hook 尝试调 daemon 失败
-            → hook 脚本尝试重启 daemon（POST /daemon/start，一次）
-            → 重启成功：继续正常采集
-            → 重启失败：通过 hint-system 输出 warning（如果 hook 支持），然后静默跳过
+            → hook 检查标记文件 /tmp/bible-cc-hint-{session_id}
+            → 不存在: 输出 hint "⎿ ⚠️ bible-cc daemon unreachable. Local capture paused." 并创建标记文件
+            → 存在: 静默跳过（同 session 已通知过，不刷屏）
+            → 标记文件在 SessionStart 时清理。
+            → 数据留在 SQLite，下次 SessionStart 自动 crash recovery。
 
 User runs:  /bible-cc:status → daemon: not running
 
-Recovery:   重启成功则无缝恢复。
-            重启失败则数据留在 SQLite，等下次 SessionStart → crash recovery 触发。
+Recovery:   下次 SessionStart 自动触发 daemon 启动 + crash recovery。
             或手动: /bible-cc:recover
 ```
 
@@ -68,7 +69,7 @@ Recovery:   BiBLE 恢复后 /bible-cc:push 或 /bible-cc:push-all 手动 flush�
 ### F4-F5: LLM 调用失败
 
 ```
-F4 (Phase 1):  无感知。自动重试。连续失败 10 次 → daemon log error。
+F4 (Phase 1):  无感知。自动重试。连续失败 10 次（内部固定值，不可配置） → daemon log error。
 F5 (Phase 2):  无感知。Phase 2 的 retrospective moments 丢失。
                Mitigation: 提高 Phase 1 频率（降低 commit_threshold）。
 ```
@@ -125,4 +126,4 @@ Recovery:   1. 确认 daemon 已停止（或 kill 残留进程）
 
 - [`hint-system.md`](hint-system.md) — 通知模板和触发逻辑
 - [`status.md`](status.md) — 诊断命令输出格式
-- [`../../03-daemon.md`](../../03-daemon.md) — 错误处理策略、crash recovery
+- [`../../03-daemon.md`](../03-daemon.md) — 错误处理策略、crash recovery

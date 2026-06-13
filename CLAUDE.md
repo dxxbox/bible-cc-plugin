@@ -244,7 +244,7 @@ Daemon endpoints:
 - **`.mcp.json` env values are literals**: MCP treats them as raw strings. Don't use shell-default syntax (`${VAR:-default}`).
 - **Graceful degradation**: If BiBLE Atlas is unreachable: (1) CLI status hint notifies user, (2) `/session/start` and `/context/inject` succeed locally (pure SQLite), (3) MCP tools return errors with context, (4) no automatic retry. The plugin must never block, slow down, or crash Claude Code under any BiBLE Atlas outage. If the daemon is unreachable during UserPromptSubmit or PostToolUse hooks, the hook scripts silently skip (bypass) — Claude Code is never blocked.
 - **Config path**: `~/.bible-cc/config.json`. Env vars override config file values.
-- **MCP server and daemon are independent**: No direct communication between them. MCP tools are pure BiBLE Atlas API wrappers. The daemon gets all tool-call context it needs from the PostToolUse hook (`/turn/tool`). The feasibility report's proposed `POST /daemon/notify` is not needed and should not be implemented. Same-session re-injection of manually saved memories is correct behavior: when `/clear` or context compact triggers SessionStart, the model has lost its context and re-injecting the memory restores it.
+- **MCP server and daemon are independent**: No direct communication between them. MCP tools are pure BiBLE Atlas API wrappers. The daemon gets all tool-call context it needs from the PostToolUse hook (`/turn/tool`). Same-session re-injection of manually saved memories is correct behavior: when `/clear` or context compact triggers SessionStart, the model has lost its context and re-injecting the memory restores it.
 
 ## Monorepo Context
 

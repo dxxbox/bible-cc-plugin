@@ -309,13 +309,13 @@ Rainy paths:
 
 - With fallback disabled, startup returns error.
 - SessionStart hook emits transcript-visible error hint and injectable context.
-- UserPromptSubmit/PostToolUse later silently skip because daemon is unavailable.
+- UserPromptSubmit/PostToolUse first failure per session outputs hint via cooldown marker file; subsequent failures silently skip.
 
 Assertions:
 
 - Error hint includes port and actionable status command.
 - Failure is not silent at SessionStart.
-- Later turn hooks are silent by design.
+- Later turn hooks (after first hint) are silent by design, enforced by cooldown marker file.
 
 ### Scenario 10: Concurrent Sessions
 

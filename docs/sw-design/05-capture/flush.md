@@ -101,7 +101,7 @@ Phase 1 detects moment → dedup → INSERT (flushed=0) → if mid_session_uploa
 
 ## 7. 参考文档
 
-- [`../../02-interfaces.md`](../../02-interfaces.md) — BiBLE import API、flush 序列化设计待定注
-- [`../../04-config.md`](../../04-config.md) — `bible.kb_index`, `capture.mid_session_upload`
+- [`../../02-interfaces.md`](../02-interfaces.md) — BiBLE import API、flush 序列化设计待定注
+- [`../../04-config.md`](../04-config.md) — `bible.kb_index`, `capture.mid_session_upload`
 - [`detection.md`](detection.md) — Phase 1/2 检测到 moment 后的 flush 调用
 - [`../08-operability/failure-paths.md`](../08-operability/failure-paths.md) — F6 flush 失败恢复

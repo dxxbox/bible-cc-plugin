@@ -49,6 +49,7 @@ hint 到达时间 = **检测完成时间**，不是 turn 发生的时间。由�
 | 场景 | 触发点 | 级别 |
 |------|--------|------|
 | daemon 端口被占，启动失败 | SessionStart hook 脚本检测到 daemon 无响应 | ❌ error |
+| daemon 中途 crash（mid-session） | UserPromptSubmit/PostToolUse hook 调 daemon 失败 + cooldown 标记文件不存在 | ⚠️ warning |
 | BiBLE Atlas 不可达 | `/bible-cc:check-bible` 或 daemon health check 发现连通性失败 | ⚠️ warning |
 | flush 失败（连续 N 次） | daemon 检测到连续 flush 失败 | ⚠️ warning |
 | Phase 1/2 LLM 调用失败 | daemon 内部 log + 不产生用户 hint | —（内部日志） |
@@ -57,6 +58,9 @@ hint 到达时间 = **检测完成时间**，不是 turn 发生的时间。由�
 
 ```
 ⎿ ❌ bible-cc daemon failed to start on port 9777 (address in use).
+    Run /bible-cc:status for details.
+
+⎿ ⚠️ bible-cc daemon unreachable. Local capture paused.
     Run /bible-cc:status for details.
 
 ⎿ ⚠️ BiBLE Atlas unreachable (http://localhost:5555). Moments stay local until restored.
@@ -95,11 +99,13 @@ def should_hint(hint_type: str, cooldown_seconds: int = 300) -> bool:
     return False
 ```
 
-error 级别 hint cooldown 可缩短（用户需要尽快知道）。注意：`_hint_tracker` 是内存 dict，daemon 重启后丢失——重启后首轮 hint 不享受去重。
+error 级别 hint cooldown 可缩短（用户需要尽快知道）。
+
+> ⚠️ `_hint_tracker` 是内存 dict，daemon 重启后丢失——重启后首轮 hint 不享受去重。这是已知行为：daemon 持久运行，重启罕见；重启后如有重复 hint 属小概率事件，不引入文件持久化复杂度。
 
 ---
 
 ## 6. 参考文档
 
-- [`../../02-interfaces.md`](../../02-interfaces.md) — Hook stdout、`suppressOutput`、`inject`
+- [`../../02-interfaces.md`](../02-interfaces.md) — Hook stdout、`suppressOutput`、`inject`
 - [`../08-operability.md`](../08-operability.md) — 全局约束

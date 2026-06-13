@@ -32,6 +32,7 @@ E2E tests 只覆盖关键旅程，数量保持少而稳定。
 
 1. Build/install step: `uv sync` in repo.
 2. Temp plugin runtime: isolated `HOME`, isolated `.claude` test directory if command discovery is tested.
+   > ⚠️ Plugin discovery 的模拟方案待实现时细化。当前 E2E 不驱动真实 Claude Code UI，通过直接执行 hook/command entrypoint 绕过 discovery 步骤。
 3. BiBLE server: configured test instance URL + unique test namespace.
 4. Daemon process: dynamic port + temp DB.
 5. Hook runner: executes `uv run python -m bible_cc_plugin.scripts.hook <event>` with synthetic Claude Code env vars.

@@ -21,6 +21,8 @@
 
 上架 Claude Code Marketplace 后，用户一键安装：
 
+> **[TBD]** 以下命令语法为推测，待 Marketplace 正式上线后确认。
+
 ```
 npx @anthropic-ai/claude-code plugins install <publisher>/bible-cc
 ```
@@ -228,7 +230,7 @@ uv run python -m bible_cc_plugin.scripts.setup
 |------|------|---------|
 | `~/.bible-cc/config.json` | 配置文件 | 持久。卸载时删除。 |
 | `~/.bible-cc/daemon.db` | SQLite 数据库 | 持久。卸载时删除。flush 到 BiBLE 的数据不受影响。 |
-| `~/.bible-cc/daemon.pid` | 运行时 PID 文件 | 临时。daemon 停止后清理。 |
+| `~/.bible-cc/daemon.pid` | 运行时 PID 文件（辅助用途；daemon run state 主要靠 `/daemon/health` HTTP check 判断） | 临时。daemon 停止后清理。 |
 | `~/.claude/plugins/bible-cc-plugin/` | 插件源码 | 安装时创建。卸载时删除。 |
 
 ---

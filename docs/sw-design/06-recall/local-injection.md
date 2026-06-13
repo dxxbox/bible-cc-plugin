@@ -46,6 +46,7 @@ POST /context/inject {session_id, user_message}
 ```
 
 内容优先级：turns 摘要 > unflushed moments。超 token_budget 时从最早的 moment 开始截断。
+Token 估算使用 `字符数/3`（粗糙估算；中英文混合时偏差可达 50%+。后续可引入 `tiktoken` 精确计算）。
 
 ---
 
@@ -103,7 +104,7 @@ POST /context/inject {session_id, user_message}
 
 ## 7. 参考文档
 
-- [`../../02-interfaces.md`](../../02-interfaces.md) — `/context/inject` 端点 spec
-- [`../../03-daemon.md`](../../03-daemon.md) — SQLite tables、crash recovery
-- [`../../04-config.md`](../../04-config.md) — injection config
+- [`../../02-interfaces.md`](../02-interfaces.md) — `/context/inject` 端点 spec
+- [`../../03-daemon.md`](../03-daemon.md) — SQLite tables、crash recovery
+- [`../../04-config.md`](../04-config.md) — injection config
 - [`../01-architecture-overview.md`](../01-architecture-overview.md) — 三种 SessionStart 场景

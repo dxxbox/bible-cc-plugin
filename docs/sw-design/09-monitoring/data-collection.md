@@ -38,17 +38,9 @@
 
 ## 4. SQLite 存储
 
-```sql
-CREATE TABLE IF NOT EXISTS metrics (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    metric_name TEXT NOT NULL,
-    metric_value REAL NOT NULL,
-    recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
+DDL 见 [`03-daemon/sqlite-schema.md`](../03-daemon/sqlite-schema.md) §2.5——不在此处重复定义。
 
-每 session 结束时聚合写入。30 天保留窗口。
+每 session 结束时聚合写入。30 天保留窗口，由 `/bible-cc:gc` 清理。
 
 ---
 
@@ -85,5 +77,5 @@ flush 的 `moments.json` 中附带 monitoring section：
 ## 7. 参考文档
 
 - [`../09-monitoring.md`](../09-monitoring.md) — L2 总览
-- [`../../05-capture/flush.md`](../../05-capture/flush.md) — flush 序列化
-- [`../../02-interfaces.md`](../../02-interfaces.md) — BiBLE import API
+- [`../../05-capture/flush.md`](../05-capture/flush.md) — flush 序列化
+- [`../../02-interfaces.md`](../02-interfaces.md) — BiBLE import API

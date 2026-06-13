@@ -34,6 +34,7 @@ bible-cc-plugin 由四个独立的、通过明确协议通信的组件构成。
 │  │  /bible-cc:push          │  Force-push moments            │
 │  │  /bible-cc:consult       │  Search BiBLE Atlas            │
 │  │  /bible-cc:review        │  Manage pending moments        │
+│  │  /bible-cc:help           │  List all commands             │
 │  └──────────┬───────────────┘                                │
 └─────────────┼───────────────────────────────────────────────-┘
               │
@@ -191,5 +192,5 @@ SessionStart hook
 
 - [`docs/bible-claude-code-plugin-feasibility-report.md`](../bible-claude-code-plugin-feasibility-report.md) — 架构设计、决策历程、配置 schema
 - [`CLAUDE.md`](../../CLAUDE.md) — 项目约束、Key Rules、SW Design 编写规则
-- [`docs/command-priority-table.md`](../command-priority-table.md) — 完整命令清单（38 采纳 + MVP + server 侧）
+- [`docs/command-priority-table.md`](../command-priority-table.md) — 完整命令清单（含优先级、MVP 范围、server/plugin 边界）
 - [`docs/design-review-2026-06-12.md`](../design-review-2026-06-12.md) — 10 findings 的讨论结论和修复记录

@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     status        TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'completed'
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     closed_at     TEXT,
-    turn_count    INTEGER NOT NULL DEFAULT 0
+    turn_count    INTEGER NOT NULL DEFAULT 0,
+    buffered_chars INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
@@ -54,6 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 - `status`：`active` → session 进行中；`completed` → session 已结束（Stop hook 已触发）。
 - `closed_at`：session end 时写入。
 - `turn_count`：每次 `/turn/*` 写入时 `UPDATE sessions SET turn_count = turn_count + 1`。
+- `buffered_chars`：累计缓冲字符数，每次 turn 写入时递增。用于 `/bible-cc:status` 展示。
 
 ### 2.3 `turns` — 对话 turn 缓冲
 
@@ -62,11 +64,11 @@ CREATE TABLE IF NOT EXISTS turns (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id     TEXT NOT NULL REFERENCES sessions(session_id),
     seq            INTEGER NOT NULL,             -- per-session 序号，非全局
-    role           TEXT NOT NULL,                -- 'user' | 'tool'
+    role           TEXT NOT NULL,                -- 'user' | 'assistant'
     content        TEXT,                         -- user message（role='user' 时）
-    tool_name      TEXT,                         -- tool 名称（role='tool' 时）
-    tool_arguments TEXT,                         -- tool 参数 JSON（role='tool' 时）
-    tool_output    TEXT,                         -- 完整 tool output（role='tool' 时，无截断）
+    tool_name      TEXT,                         -- tool 名称（role='assistant' 时）
+    tool_arguments TEXT,                         -- tool 参数 JSON（role='assistant' 时）
+    tool_output    TEXT,                         -- 完整 tool output（role='assistant' 时，无截断）
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
 
     UNIQUE(session_id, seq)
@@ -115,6 +117,21 @@ CREATE INDEX IF NOT EXISTS idx_moments_content_hash ON moments(content_hash);
 - **phase**：`1` = Phase 1 mid-session detection，`2` = Phase 2 retrospective detection。
 - `retry_count`：仅对 failed 的 moment 递增。3 次后产出 warning hint。
 
+### 2.5 `metrics` — 监控指标
+
+```sql
+CREATE TABLE IF NOT EXISTS metrics (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    metric_value REAL NOT NULL,
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+- 每 session 结束时聚合写入。30 天保留窗口，由 `/bible-cc:gc` 清理。
+- 完整指标定义见 [`09-monitoring/data-collection.md`](../09-monitoring/data-collection.md)。
+
 ---
 
 ## 3. 索引策略
@@ -125,7 +142,7 @@ CREATE INDEX IF NOT EXISTS idx_moments_content_hash ON moments(content_hash);
 | `idx_turns_session_seq` | Phase 1 检测：取 session 最近 2-3 turns | `WHERE session_id=? ORDER BY seq DESC LIMIT 3` |
 | `idx_moments_session` | `/daemon/moments`：列出 session pending moments | `WHERE session_id=? AND flushed=0` |
 | `idx_moments_flushed` | `/bible-cc:push-all`：全量 pending | `WHERE flushed IN (0, -1)` |
-| `idx_moments_content_hash` | Dedup 查询（可选——UNIQUE 约束本身使用索引） | 内部 |
+| `idx_moments_content_hash` | Dedup 查询 | 内部。UNIQUE 约束已自带隐式索引，此显式索引为命名引用，SQLite 会自动合并 |
 
 不需要在 `turns.session_id` 和 `moments.session_id` 上额外建索引——`UNIQUE` 和 `REFERENCES` 约束已提供索引。
 
@@ -148,7 +165,8 @@ MIGRATIONS = [
             status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             closed_at TEXT,
-            turn_count INTEGER NOT NULL DEFAULT 0
+            turn_count INTEGER NOT NULL DEFAULT 0,
+            buffered_chars INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
         CREATE TABLE IF NOT EXISTS turns (
@@ -184,6 +202,13 @@ MIGRATIONS = [
         CREATE INDEX IF NOT EXISTS idx_moments_session ON moments(session_id);
         CREATE INDEX IF NOT EXISTS idx_moments_flushed ON moments(flushed);
         CREATE INDEX IF NOT EXISTS idx_moments_content_hash ON moments(content_hash);
+        CREATE TABLE IF NOT EXISTS metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            metric_name TEXT NOT NULL,
+            metric_value REAL NOT NULL,
+            recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     """),
     # Future migrations added here:
     # Migration(version=2, description="Add X column", sql="ALTER TABLE ..."),
@@ -269,7 +294,7 @@ def insert_moment(conn, session_id, moment_type, title, narrative, ...) -> int |
 ## 7. 参考文档
 
 - [`startup.md`](startup.md) — Step 3 WAL PRAGMA，Step 4 migration 执行
-- [`../../02-interfaces.md`](../../02-interfaces.md) — turn/user、turn/tool 端点的请求字段
-- [`../../04-config/schema.md`](../../04-config/schema.md) — `daemon.db_path`
+- [`../../02-interfaces.md`](../02-interfaces.md) — turn/user、turn/tool 端点的请求字段
+- [`../../04-config/schema.md`](../04-config/schema.md) — `daemon.db_path`
 - [`../05-capture/flush.md`](../05-capture/flush.md) — flush 状态管理、moments 表 flush 字段定义
 - [`../../CLAUDE.md`](../../../CLAUDE.md) — Dedup Strategy（两层去重）

@@ -138,7 +138,7 @@ Daemon:   "我能绑定端口吗？"（启动失败时提供上下文信息）
 
 - [`startup.md`](startup.md) — Step 2 port resolution，Step 6 uvicorn 启动
 - [`http-api.md`](http-api.md) — `/daemon/start` 端点 spec
-- [`../../02-interfaces.md`](../../02-interfaces.md) — SessionStart hook error 行为
-- [`../../04-config/schema.md`](../../04-config/schema.md) — `daemon.port`, `daemon.port_auto_fallback`
+- [`../../02-interfaces.md`](../02-interfaces.md) — SessionStart hook error 行为
+- [`../../04-config/schema.md`](../04-config/schema.md) — `daemon.port`, `daemon.port_auto_fallback`
 - [`../08-operability/hint-system.md`](../08-operability/hint-system.md) — error hint 格式
-- [`../08-operability/failure-paths.md`](../08-operability/failure-paths.md) — F2 端口冲突诊断路径
+- [`../08-operability/failure-paths.md`](../08-operability/failure-paths.md) — F1 端口冲突诊断路径

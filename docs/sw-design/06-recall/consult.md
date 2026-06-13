@@ -45,9 +45,8 @@ LLM 调用是 synchronously blocking——command timeout 控制上限。
 
 ```python
 async def search_all_domains(query: str, base_url: str, top_k: int, token: str):
-    domains = [("memory", "memory"), ("knowledge-base", "design"), ("skill", "skill")]
-    # KNOWLEDGE_BASE 的 tag 是必填项。默认 "design"，可通过 config 覆盖。
-    # 如果某个 domain 没有 tag 可用 → 跳过该 domain
+    tag = config.search.default_knowledge_tag  # default "design"
+    domains = [("memory", "memory"), ("knowledge-base", tag), ("skill", "skill")]
     tasks = [search(domain, tag, query, top_k, base_url, token) for domain, tag in domains]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -91,6 +90,6 @@ consult:   用户主动，三 domain 并行+合并，结果注入上下文
 
 ## 7. 参考文档
 
-- [`../../02-interfaces.md`](../../02-interfaces.md) — `/daemon/consult`、BiBLE V4 API
-- [`../../04-config.md`](../../04-config.md) — `search.default_top_k`
+- [`../../02-interfaces.md`](../02-interfaces.md) — `/daemon/consult`、BiBLE V4 API
+- [`../../04-config.md`](../04-config.md) — `search.default_top_k`
 - [`mcp-tools.md`](mcp-tools.md) — MCP 工具 schema

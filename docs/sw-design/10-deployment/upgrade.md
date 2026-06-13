@@ -8,7 +8,7 @@
 
 | 路径 | 触发者 | 流程 |
 |------|--------|------|
-| Marketplace | 用户执行 `plugins update` | 自动拉取新版本 → `uv sync` → `reload-plugin --force`（非交互式，不触发 setup wizard） |
+| Marketplace **[TBD]** | 用户执行 `plugins update`（语法待确认） | 自动拉取新版本 → `uv sync` → `reload-plugin --force`（非交互式，不触发 setup wizard） |
 | 手动 git pull | 开发者 | `git pull` → `uv sync` → `reload-plugin --force` |
 | `/bible-cc:upgrade` | 用户命令 | 检查更新 → 提示 → 用户确认 → 执行升级 |
 
@@ -43,7 +43,7 @@
 
 3. 停止旧 daemon
    → 升级脚本（或 `/bible-cc:upgrade` 命令）调用 POST /daemon/stop
-   → 等待优雅关闭（≤5s）
+   → 等待优雅关闭（≤10s，与 `POST /daemon/stop` 内部 flush 超时一致）
    → 强制 kill 如果超时
 
 4. 启动新 daemon（或等下次 SessionStart 自动启动）
@@ -66,47 +66,22 @@
 | **幂等** | `CREATE TABLE IF NOT EXISTS`，重复执行无害 |
 | **只加不删** | 只允许 `CREATE TABLE`、`ALTER TABLE ADD COLUMN`。不删表、不删列、不改类型 |
 | **默认值** | 新增列必须有 `DEFAULT` 值，保证旧数据兼容 |
-| **版本号** | `schema_versions` 表记录当前 schema 版本，启动时检查 |
+| **版本号** | `schema_version` 表记录当前 schema 版本，启动时检查 |
 
-Migration 伪代码：
+Migration 逻辑：
 
 ```python
-def migrate(conn: sqlite3.Connection):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS schema_versions (
-            version INTEGER PRIMARY KEY,
-            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-
-    current_version = conn.execute(
-        "SELECT COALESCE(MAX(version), 0) FROM schema_versions"
-    ).fetchone()[0]
-
-    if current_version < 1:
-        # 完整 schema 定义见 03-daemon/sqlite-schema.md
-        conn.execute("CREATE TABLE IF NOT EXISTS sessions ("
-            "session_id TEXT PRIMARY KEY, started_at TEXT NOT NULL,"
-            "status TEXT NOT NULL DEFAULT 'active', topic_scope TEXT,"
-            "turn_count INTEGER DEFAULT 0, buffered_chars INTEGER DEFAULT 0)")
-        conn.execute("CREATE TABLE IF NOT EXISTS turns ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "session_id TEXT NOT NULL REFERENCES sessions(session_id),"
-            "seq INTEGER NOT NULL, role TEXT NOT NULL,"
-            "content TEXT NOT NULL, tool_calls TEXT, timestamp TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS moments ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "session_id TEXT NOT NULL REFERENCES sessions(session_id),"
-            "moment_type TEXT NOT NULL, title TEXT NOT NULL,"
-            "narrative TEXT NOT NULL, turn_range TEXT,"
-            "detected_at TEXT NOT NULL, flushed INTEGER DEFAULT 0,"
-            "content_hash TEXT UNIQUE NOT NULL)")
-        conn.execute("INSERT INTO schema_versions (version) VALUES (1)")
-
-    if current_version < 2:
-        # v2 migration (future example)
-        pass
+def run_migrations(conn: sqlite3.Connection) -> None:
+    # 完整 DDL 定义见 03-daemon/sqlite-schema.md §4——不在此处重复。
+    # 此处只展示 migration 执行框架：版本号检查 + 幂等执行。
+    current_version = get_schema_version(conn)  # 0 if no schema_version table
+    for m in MIGRATIONS[current_version:]:
+        conn.executescript(m.sql)
+        set_schema_version(conn, m.version)
+    conn.commit()
 ```
+
+其中 `MIGRATIONS` 列表的 SQL 和 `run_migrations()` 完整实现见 [`03-daemon/sqlite-schema.md`](../03-daemon/sqlite-schema.md) §4。每项 migration 的 DDL 以该文件为权威定义。
 
 ---
 

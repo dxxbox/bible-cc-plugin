@@ -31,6 +31,7 @@ class InjectionConfig(BaseModel):
 class SearchConfig(BaseModel):
     default_top_k: int = 8
     default_min_score: float = 0.35
+    default_knowledge_tag: str = "design"
 
 class CaptureConfig(BaseModel):
     enabled: bool = True
@@ -111,6 +112,15 @@ def validate_port(cls, v: int) -> int:
 | `crash_recovery_moments` | `bool` | `True` | — | — | 无。 |
 | `inject_fallback` | `str` | `"skip"` | `"skip"` \| `"empty"` | — | 非法值回退到 `"skip"`。 |
 
+```python
+@field_validator("inject_fallback")
+@classmethod
+def validate_inject_fallback(cls, v: str) -> str:
+    if v not in ("skip", "empty"):
+        return "skip"  # silent fallback
+    return v
+```
+
 `token_budget` 是软上限——超过时由注入逻辑截断内容。
 
 ### 2.4 `search`
@@ -119,6 +129,7 @@ def validate_port(cls, v: int) -> int:
 |----|------|---------|-------|-------------|------------|
 | `default_top_k` | `int` | `8` | 1–100 | — | 非法值回退到 8。 |
 | `default_min_score` | `float` | `0.35` | 0.0–1.0 | — | 非法值回退到 0.35。 |
+| `default_knowledge_tag` | `str` | `"design"` | — | — | `POST /api/search/knowledge-base` 的默认 tag。 |
 
 ### 2.5 `capture`
 
@@ -132,6 +143,17 @@ def validate_port(cls, v: int) -> int:
 | `mid_session_upload` | `bool` | `False` | — | — | `True` 时 Phase 1 moment 立即 flush。 |
 | `hint_format` | `str` | `"quote_with_command"` | `"quote_with_command"` \| `"quote_only"` \| `"command_only"` \| `"narrative"` | — | 非法值回退到 `"command_only"`。 |
 | `tool_result_max_chars` | `int` | `250` | 0–4000 | — | 0 表示不提取摘要。 |
+
+```python
+HINT_FORMATS = {"quote_with_command", "quote_only", "command_only", "narrative"}
+
+@field_validator("hint_format")
+@classmethod
+def validate_hint_format(cls, v: str) -> str:
+    if v not in HINT_FORMATS:
+        return "command_only"  # silent fallback
+    return v
+```
 
 ### 2.6 `detection`
 
@@ -147,9 +169,9 @@ def validate_port(cls, v: int) -> int:
 def resolve_detection_model(config_model: str) -> str:
     import os
     return (
-        config_model or
         os.getenv("ANTHROPIC_SMALL_FAST_MODEL") or
         os.getenv("ANTHROPIC_MODEL") or
+        config_model or
         "claude-sonnet-4-5"
     )
 ```
@@ -199,10 +221,11 @@ def load_config() -> AppConfig:
     config = AppConfig()
 
     # Step 2: file overlay
+    # Pydantic 自动填充缺失字段的默认值——JSON 只需包含用户想覆盖的项
     config_path = Path.home() / ".bible-cc" / "config.json"
     if config_path.exists():
         file_data = json.loads(config_path.read_text())
-        config = AppConfig.model_validate(file_data)
+        config = AppConfig(**file_data)
 
     # Step 3: env var overlay (highest priority)
     if v := os.getenv("BIBLE_ATLAS_BASE_URL"):
@@ -222,4 +245,4 @@ def load_config() -> AppConfig:
 ## 5. 参考文档
 
 - [`../04-config.md`](../04-config.md) — L2 配置总览、全局约束
-- [`../../02-interfaces.md`](../../02-interfaces.md) — env var 约定
+- [`../../02-interfaces.md`](../02-interfaces.md) — env var 约定

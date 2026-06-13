@@ -65,6 +65,7 @@ daemon 内部内存队列（`asyncio.Queue`），非 Celery。
 - synthesis + gap-fill，不是重新检测
 - prompt 含 Phase 1 已检测 moments，LLM 不重复报告
 - 可能发现 Phase 1 遗漏的 moments（全局上下文）
+- Phase 2 prompt 不含 `SESSION_START`：session 范围定义只在 mid-session 检测，retrospective 聚焦决策和成果
 
 ---
 
@@ -110,7 +111,7 @@ Do NOT re-report them. Only report NEW moments not covered below:
 Full session transcript:
 {all_turns_text}
 
-Key moment types (same as mid-session):
+Key moment types (subset of mid-session; SESSION_START excluded):
 - DECISION: the user confirms a choice, approach, or design direction
 - ACCOMPLISHMENT: something was completed, verified, and accepted
 
@@ -143,6 +144,8 @@ Now identify:
 }
 ```
 
+> Prompt 中 moment type 用大写（`DECISION`）指引 LLM；结构化输出和 `moments` 表存储用小写（`"decision"`）。解析器做大小写归一化。
+
 ---
 
 ## 5. LLM 调用参数
@@ -150,7 +153,7 @@ Now identify:
 | 参数 | Phase 1 | Phase 2 |
 |------|---------|---------|
 | model | detection.model (default claude-sonnet-4-5) | same |
-| max_tokens | 512 | 1024 |
+| max_tokens | detection.max_tokens (default 512) | detection.max_tokens × 2（自动推导，不单独配置） |
 | temperature | 0.0 | 0.0 |
 | API key | ANTHROPIC_API_KEY (from env) | same |
 
@@ -160,5 +163,5 @@ Now identify:
 
 - [`hook-flow.md`](hook-flow.md) — 阈值触发逻辑
 - [`flush.md`](flush.md) — moment flush 到 BiBLE
-- [`../../03-daemon.md`](../../03-daemon.md) — content-hash dedup、SQLite schema
+- [`../../03-daemon.md`](../03-daemon.md) — content-hash dedup、SQLite schema
 - [`../../../CLAUDE.md`](../../../CLAUDE.md) — Moment Detection Design、Dedup Strategy

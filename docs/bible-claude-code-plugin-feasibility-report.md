@@ -1,6 +1,7 @@
 # BiBLE Claude Code Plugin — Architecture Design
 
 > Status: draft | Date: 2026-06-11
+> ⚠️ **本文是早期可行性分析，部分细节已过时。** MCP 工具数量（6 活跃 + 2 postponed）、端点名称（`/turn/tool` 非 `/turn/assistant`）、配置字段等以 `docs/sw-design/` 下的 SW design 文档为准。
 
 ## Overview
 

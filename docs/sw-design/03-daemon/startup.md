@@ -199,6 +199,6 @@ SessionStart hook
 - [`sqlite-schema.md`](sqlite-schema.md) — 表结构、migration 脚本
 - [`port-conflict.md`](port-conflict.md) — 端口冲突处理
 - [`http-api.md`](http-api.md) — `/daemon/start` 端点 spec
-- [`../../04-config/schema.md`](../../04-config/schema.md) — 配置加载器
+- [`../../04-config/schema.md`](../04-config/schema.md) — 配置加载器
 - [`../08-operability/hint-system.md`](../08-operability/hint-system.md) — error hint 格式
 - [`../08-operability/failure-paths.md`](../08-operability/failure-paths.md) — F1 daemon 启动失败

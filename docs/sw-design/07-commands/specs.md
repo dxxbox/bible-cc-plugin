@@ -22,7 +22,7 @@
 
 | 命令 | 类型 | 端点 | 说明 |
 |------|------|------|------|
-| `/bible-cc:push [--title] [--abstract]` | `uv run` | `POST /daemon/session/flush` | 立即检测+flush 当前 session moments |
+| `/bible-cc:push` | curl | `POST /daemon/session/flush` | 立即 flush 当前 session 的 pending moments 到 BiBLE |
 | `/bible-cc:consult [query]` | curl | `POST /daemon/consult` | 跨域搜索。有 query→直接搜；无→LLM 归纳→并行三域 |
 | `/bible-cc:review` | curl | `GET/PUT/DELETE /daemon/moments` | 浏览/编辑/删除 pending moments |
 
@@ -49,6 +49,10 @@
 | `/bible-cc:upgrade` | `uv run` | — | 检查→拉取→uv sync→restart |
 | `/bible-cc:changelog` | 本地 | `CHANGELOG.md` | 变更内容 |
 | `/bible-cc:uninstall` | `uv run` | stop daemon + rm -rf | 卸载流程 |
+| `/bible-cc:memory-duplicates` | curl | daemon→BiBLE | 扫描 BiBLE 中的重复记忆 | [TBD] |
+| `/bible-cc:memory-merge` | curl | daemon→BiBLE | 合并重复记忆 | [TBD] |
+| `/bible-cc:team-search` | curl | daemon→BiBLE | 在团队共享记忆中搜索 | [TBD] |
+| `/bible-cc:share-memory` | curl | daemon→BiBLE | 将个人记忆分享到团队空间 | [TBD] |
 
 ---
 
@@ -81,5 +85,5 @@
 ## 参考文档
 
 - [`../07-commands.md`](../07-commands.md) — L2 总览
-- [`../../02-interfaces.md`](../../02-interfaces.md) — HTTP API 端点
+- [`../../02-interfaces.md`](../02-interfaces.md) — HTTP API 端点
 - [`../../command-priority-table.md`](../../command-priority-table.md) — 完整清单
