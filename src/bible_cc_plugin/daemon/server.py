@@ -1,17 +1,20 @@
-"""Phase 0/1 daemon server — FastAPI app with health, session, turn endpoints.
+"""Phase 0/1 daemon server — FastAPI app with health, session, turn, debug endpoints.
 
 Design: 02-interfaces.md §1.1-1.4.
 Phase 1a: health endpoint reads real SQLite data via buffer.py.
 Phase 1b: session/turn CRUD endpoints.
+Phase 1c: context injection.
+Phase 1d: request-id middleware, verbose health, debug endpoints.
 """
 
 from __future__ import annotations
 
 import os
 import time
+import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -22,6 +25,9 @@ _START_TIME = time.time()
 
 app = FastAPI(title="bible-cc-daemon", version="0.1.0")
 
+_startup_timings: dict[str, int] = {}  # Phase 1d: step → ms
+_debug_mode: bool = os.getenv("BIBLE_CC_DEBUG", "") in ("1", "true", "yes")
+
 _logger.info("daemon starting on port %s", os.getenv("BIBLE_CC_DAEMON_PORT", "9777"))
 
 app.add_middleware(
@@ -30,6 +36,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Request-ID middleware (Phase 1d) ─────────────────────────────────────
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Inject X-Request-ID into every response."""
+    rid = uuid.uuid4().hex
+    request.state.request_id = rid
+    start = time.monotonic()
+    response = await call_next(request)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    response.headers["X-Request-ID"] = rid
+    _logger.debug(
+        "%s %s → %d (%dms) [rid=%s]",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+        rid,
+    )
+    return response
+
 
 # ── lazy SQLite init (Phase 1a) ───────────────────────────────────────
 
@@ -107,10 +137,11 @@ async def daemon_stop():
 
 
 @app.get("/daemon/health")
-async def daemon_health():
+async def daemon_health(verbose: bool = False):
     """Liveness + diagnostic probe (02-interfaces.md §1.1).
 
-    Phase 1a: SQLite fields read real data. Falls back to zeros on DB error.
+    Phase 1a: SQLite fields read real data.
+    Phase 1d: verbose=true adds startup_timings, sqlite_detailed, config_sources.
     """
     conn = _get_db()
 
@@ -130,18 +161,18 @@ async def daemon_health():
         pending = count_pending_moments(conn)
         integrity = verify_integrity(conn)
         schema_ver = get_schema_version(conn)
-        db_size = (
-            Path(os.getenv("BIBLE_CC_DB_PATH", str(Path.home() / ".bible-cc" / "daemon.db")))
-            .stat()
-            .st_size
-        )
+        db_path_str = os.getenv("BIBLE_CC_DB_PATH", str(Path.home() / ".bible-cc" / "daemon.db"))
+        try:
+            db_size = Path(db_path_str).stat().st_size
+        except OSError:
+            db_size = -1
     else:
         active = completed = turns = pending = 0
         integrity = _db_error or "unavailable"
         schema_ver = -1
         db_size = -1
 
-    return {
+    result: dict = {
         "status": "ok",
         "pid": os.getpid(),
         "port": _read_port(),
@@ -156,6 +187,14 @@ async def daemon_health():
         },
     }
 
+    if verbose:
+        result["startup_timings"] = dict(_startup_timings) if _startup_timings else {}
+        if conn is not None:
+            result["sqlite_detailed"] = _build_sqlite_detailed(conn)
+        result["config_sources"] = _build_config_sources()
+
+    return result
+
 
 # ── recovery cache (Phase 1c) ────────────────────────────────────────────
 
@@ -163,28 +202,6 @@ _recovery_cache: dict[str, dict] = {}  # session_id → recovery data
 
 
 # ── request models (Phase 1b-1c) ─────────────────────────────────────────
-
-
-class _SessionStartRequest(BaseModel):
-    session_id: str
-
-
-class _SessionEndRequest(BaseModel):
-    session_id: str
-
-
-class _TurnUserRequest(BaseModel):
-    session_id: str
-    message: str
-
-
-class _TurnToolRequest(BaseModel):
-    session_id: str
-    tool_name: str
-    arguments: dict = {}
-    output: str = ""
-
-
 class _ContextInjectRequest(BaseModel):
     session_id: str
     user_message: str = ""
@@ -375,6 +392,73 @@ async def list_sessions():
 
 
 # ---------------------------------------------------------------------------
+
+
+# ── verbose health helpers (Phase 1d) ───────────────────────────────────────
+
+
+def _build_sqlite_detailed(conn) -> dict:
+    """Build sqlite_detailed section for verbose health."""
+    tables = ("sessions", "turns", "moments", "metrics")
+    row_counts = {}
+    for t in tables:
+        r = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()
+        row_counts[t] = r[0] if r else 0
+    return {"table_row_counts": row_counts}
+
+
+def _build_config_sources() -> dict:
+    """Build config_sources section — key→source mapping, token masked."""
+    sources = {
+        "bible.base_url": os.getenv("BIBLE_ATLAS_BASE_URL") or "default",
+        "daemon.port": os.getenv("BIBLE_CC_DAEMON_PORT") or "default(9777)",
+        "daemon.db_path": os.getenv("BIBLE_CC_DB_PATH") or "default(~/.bible-cc/daemon.db)",
+    }
+    token = os.getenv("BIBLE_ATLAS_TOKEN")
+    sources["bible.token"] = "***" if token else "<none>"
+    return sources
+
+
+# ── Debug endpoints (Phase 1d, only in debug mode) ──────────────────────────
+
+
+if _debug_mode:
+
+    @app.get("/daemon/debug/schema")
+    async def debug_schema():
+        conn = _get_db()
+        if conn is None:
+            raise HTTPException(503, "database unavailable")
+        rows = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+        ).fetchall()
+        return {"ddl": [r[0] for r in rows]}
+
+    @app.get("/daemon/debug/tables/{name}")
+    async def debug_table_rows(name: str, limit: int = 20):
+        conn = _get_db()
+        if conn is None:
+            raise HTTPException(503, "database unavailable")
+        if name not in ("sessions", "turns", "moments", "metrics", "schema_version"):
+            raise HTTPException(404, f"unknown table: {name}")
+        limit = min(limit, 100)
+        rows = conn.execute(
+            f"SELECT * FROM {name} ORDER BY rowid DESC LIMIT ?", (limit,)
+        ).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+        return {"rows": [dict(r) for r in rows], "total": total}
+
+    @app.get("/daemon/debug/turns")
+    async def debug_turns_by_session(session_id: str, limit: int = 50):
+        conn = _get_db()
+        if conn is None:
+            raise HTTPException(503, "database unavailable")
+        limit = min(limit, 100)
+        rows = conn.execute(
+            "SELECT * FROM turns WHERE session_id=? ORDER BY seq DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+        return {"turns": [dict(r) for r in rows]}
 
 
 def _read_port() -> int:

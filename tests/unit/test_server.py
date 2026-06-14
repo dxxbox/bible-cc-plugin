@@ -341,3 +341,63 @@ class TestContextInject:
     def test_missing_session_id_returns_422(self, client):
         r = client.post("/context/inject", json={})
         assert r.status_code in (400, 422)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1d: Operability
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRequestIDMiddleware:
+    """1d.4: every response must include X-Request-ID header."""
+
+    def test_response_has_request_id_header(self, client):
+        r = client.get("/daemon/health")
+        assert r.status_code == 200
+        assert "x-request-id" in r.headers
+
+    def test_request_id_unique_per_request(self, client):
+        ids = {client.get("/daemon/health").headers["x-request-id"] for _ in range(5)}
+        assert len(ids) == 5, "each request must have a unique request-id"
+
+    def test_error_responses_also_have_request_id(self, client):
+        r = client.post("/session/start", json={})
+        assert r.status_code in (400, 422)
+        assert "x-request-id" in r.headers, "error responses must include request-id"
+
+
+class TestVerboseHealth:
+    """1d.3: GET /daemon/health?verbose=true adds diagnostic fields."""
+
+    def test_verbose_health_has_additional_fields(self, client):
+        r = client.get("/daemon/health?verbose=true")
+        assert r.status_code == 200
+        data = r.json()
+        # Standard fields still present
+        assert data["status"] == "ok"
+        # Verbose extras
+        assert "startup_timings" in data
+        assert "sqlite_detailed" in data or "sqlite" in data
+
+    def test_standard_health_still_works(self, client):
+        r = client.get("/daemon/health")
+        assert r.status_code == 200
+        assert "status" in r.json()
+
+
+class TestDebugEndpoints:
+    """1d.2: debug endpoints only available in debug mode."""
+
+    def test_debug_schema_returns_ddl(self, client):
+        """Requires --debug mode for the daemon, so 404 is expected in tests."""
+        r = client.get("/daemon/debug/schema")
+        # Without --debug, should 404
+        assert r.status_code == 404
+
+    def test_debug_tables_requires_debug_mode(self, client):
+        r = client.get("/daemon/debug/tables/sessions?limit=5")
+        assert r.status_code == 404
+
+    def test_debug_turns_requires_debug_mode(self, client):
+        r = client.get("/daemon/debug/turns?session_id=test&limit=10")
+        assert r.status_code == 404
