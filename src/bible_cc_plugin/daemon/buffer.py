@@ -362,20 +362,40 @@ def get_recovery(conn: sqlite3.Connection, current_session_id: str) -> dict | No
 
     unclosed_ids = [r["session_id"] for r in unclosed]
     placeholders = ",".join("?" for _ in unclosed_ids)
-    moments_row = conn.execute(
-        f"SELECT COUNT(*) FROM moments WHERE session_id IN ({placeholders}) AND flushed IN (0, -1)",
-        unclosed_ids,
-    ).fetchone()
-    moments_recovered = moments_row[0] if moments_row else 0
+
+    # Read moments for all unclosed sessions
+    recovery_moments = [
+        dict(r)
+        for r in conn.execute(
+            f"SELECT * FROM moments WHERE session_id IN ({placeholders}) "
+            f"AND flushed IN (0, -1) ORDER BY detected_at",
+            unclosed_ids,
+        ).fetchall()
+    ]
+
+    # Read recent turns for each unclosed session (up to 30 each)
+    recovery_turns: list[dict] = []
+    for sid in unclosed_ids:
+        rows = conn.execute(
+            "SELECT role, content, tool_name, tool_output FROM turns "
+            "WHERE session_id=? ORDER BY seq DESC LIMIT 30",
+            (sid,),
+        ).fetchall()
+        recovery_turns.extend(dict(r) for r in reversed(rows))
+
+    moments_recovered = len(recovery_moments)
 
     _logger.info(
-        "crash recovery scan: %d unclosed sessions, %d moments recovered",
+        "crash recovery scan: %d unclosed sessions, %d moments, %d turns",
         len(unclosed_ids),
         moments_recovered,
+        len(recovery_turns),
     )
     return {
         "unclosed_sessions_found": len(unclosed_ids),
         "moments_recovered": moments_recovered,
+        "_moments": recovery_moments,
+        "_turns": recovery_turns,
     }
 
 

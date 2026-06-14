@@ -281,3 +281,63 @@ class TestEndpointIntent:
             },
         )
         assert r.status_code == 200
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1c: Context Injection
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestContextInject:
+    """POST /context/inject — three-scenario branching."""
+
+    def test_new_session_skip_fallback(self, client):
+        client.post("/session/start", json={"session_id": "sess-1"})
+        r = client.post(
+            "/context/inject",
+            json={"session_id": "sess-1", "user_message": "hi"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert "context" in data
+        assert "sources" in data
+
+    def test_clear_scenario_has_turns_summary(self, client):
+        client.post("/session/start", json={"session_id": "sess-1"})
+        client.post("/turn/user", json={"session_id": "sess-1", "message": "important work"})
+        r = client.post(
+            "/context/inject",
+            json={"session_id": "sess-1", "user_message": "continue"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["sources"]["turns"] >= 1
+
+    def test_crash_recovery_scenario(self, client):
+        client.post("/session/start", json={"session_id": "old"})
+        r = client.post("/session/start", json={"session_id": "new"})
+        recovery = r.json().get("recovery")
+        assert recovery is not None
+
+        r = client.post(
+            "/context/inject",
+            json={"session_id": "new", "user_message": "hello"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["sources"]["crash_recovery"] >= 0
+
+    def test_disabled_injection_returns_empty(self, client):
+        client.post("/session/start", json={"session_id": "sess-1"})
+        r = client.post(
+            "/context/inject",
+            json={"session_id": "sess-1", "user_message": "hi"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert "context" in data
+        assert isinstance(data["sources"], dict)
+
+    def test_missing_session_id_returns_422(self, client):
+        r = client.post("/context/inject", json={})
+        assert r.status_code in (400, 422)

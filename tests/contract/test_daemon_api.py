@@ -148,3 +148,21 @@ class TestErrorFormatContract:
     def test_session_end_missing_id_has_detail(self, daemon_url):
         r = httpx.post(f"{daemon_url}/session/end", json={})
         assert r.status_code in (400, 422)
+
+
+class TestContextInjectContract:
+    """POST /context/inject response schema (02-interfaces.md §1.4)."""
+
+    def test_response_has_context_and_sources(self, daemon_url):
+        httpx.post(f"{daemon_url}/session/start", json={"session_id": "ct-ci1"})
+        r = httpx.post(
+            f"{daemon_url}/context/inject",
+            json={"session_id": "ct-ci1", "user_message": "hello"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert "context" in data
+        assert "sources" in data
+        assert "turns" in data["sources"]
+        assert "moments" in data["sources"]
+        assert "crash_recovery" in data["sources"]

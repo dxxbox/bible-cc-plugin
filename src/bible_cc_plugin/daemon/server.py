@@ -157,7 +157,37 @@ async def daemon_health():
     }
 
 
-# ── request models (Phase 1b) ────────────────────────────────────────────
+# ── recovery cache (Phase 1c) ────────────────────────────────────────────
+
+_recovery_cache: dict[str, dict] = {}  # session_id → recovery data
+
+
+# ── request models (Phase 1b-1c) ─────────────────────────────────────────
+
+
+class _SessionStartRequest(BaseModel):
+    session_id: str
+
+
+class _SessionEndRequest(BaseModel):
+    session_id: str
+
+
+class _TurnUserRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+class _TurnToolRequest(BaseModel):
+    session_id: str
+    tool_name: str
+    arguments: dict = {}
+    output: str = ""
+
+
+class _ContextInjectRequest(BaseModel):
+    session_id: str
+    user_message: str = ""
 
 
 class _SessionStartRequest(BaseModel):
@@ -202,6 +232,10 @@ async def session_start(req: _SessionStartRequest):
         _logger.warning("crash recovery scan failed: %s", exc)
         recovery = None
 
+    # Cache recovery data for /context/inject
+    if recovery is not None:
+        _recovery_cache[req.session_id] = recovery
+
     is_new = insert_session(conn, req.session_id)
     _logger.info(
         "session/start %s is_new=%s recovery=%s",
@@ -238,6 +272,7 @@ async def session_end(req: _SessionEndRequest):
         }
 
     mark_session_completed(conn, req.session_id)
+    _recovery_cache.pop(req.session_id, None)  # DRIFT #1: prevent unbounded growth
     _logger.info("session/end %s completed", req.session_id)
     return {
         "session_id": req.session_id,
@@ -294,6 +329,35 @@ async def turn_tool(req: _TurnToolRequest):
     increment_turn_count(conn, req.session_id, len(req.output))
     _logger.debug("turn/tool %s seq=%d tool=%s", req.session_id, turn_id, req.tool_name)
     return {"turn_id": turn_id, "queued": False}
+
+
+@app.post("/context/inject")
+async def context_inject(req: _ContextInjectRequest):
+    """Return local-buffer context for session (02-interfaces.md §1.4).
+
+    Pure local SQLite — no BiBLE calls.  Three branches:
+    - empty (new session, no data)
+    - crash_recovery (prior unclosed session data)
+    - clear_or_compact (current session turns + moments)
+    """
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+
+    from bible_cc_plugin.daemon.injector import build_context
+
+    recovery = _recovery_cache.pop(req.session_id, None)
+
+    ctx, sources = build_context(
+        conn,
+        session_id=req.session_id,
+        recovery_data=recovery,
+        fallback_mode="skip",
+        token_budget=1200,
+        include_turns_summary=True,
+        include_moments=True,
+    )
+    return {"context": ctx, "sources": sources}
 
 
 @app.get("/daemon/sessions")
