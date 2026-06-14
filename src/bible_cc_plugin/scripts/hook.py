@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import argparse
 import logging
-import subprocess
+import subprocess  # TODO: remove after deleting _ensure_daemon
 import sys
-import time
+import time  # TODO: remove after deleting _ensure_daemon
 from pathlib import Path
 
 import httpx
 
 from bible_cc_plugin.config import load_config
+from bible_cc_plugin.daemon.daemon_launcher import ensure_daemon_started
 
 logger = logging.getLogger("bible-cc.hook")
 logging.basicConfig(
@@ -119,24 +120,153 @@ def _ensure_daemon(port: int) -> None:
         print(f"[bible-cc] (no log output at {_DAEMON_LOG})", file=sys.stderr)
 
 
+# ── Phase 2a action handlers ──────────────────────────────────────────────
+
+
+def _handle_session_start(config, args) -> None:
+    """三步流程：ensure daemon → register session → inject context → stdout."""
+    base_url = f"http://127.0.0.1:{config.daemon.port}"
+    if not args.session_id:
+        print("[bible-cc] WARNING: session-start missing --session-id", file=sys.stderr)
+        return
+
+    # 1. Ensure daemon running
+    ok = ensure_daemon_started(config.daemon.port, _DAEMON_LOG)
+    if not ok:
+        print("[bible-cc] WARNING: daemon failed to start", file=sys.stderr)
+        return
+
+    # 2. Register session
+    try:
+        r = _local_client().post(
+            f"{base_url}/session/start",
+            json={"session_id": args.session_id},
+        )
+        r.raise_for_status()
+        body = r.json()
+        is_new = body.get("is_new")
+        print(f"[hook:session-start] POST /session/start... OK (is_new={is_new})", file=sys.stderr)
+    except Exception as e:
+        print(f"[bible-cc] WARNING: /session/start failed: {e}", file=sys.stderr)
+        return
+
+    # 3. Inject context
+    try:
+        r = _local_client().post(
+            f"{base_url}/context/inject",
+            json={"session_id": args.session_id, "user_message": args.message or ""},
+        )
+        r.raise_for_status()
+        body = r.json()
+        context = body.get("context", "")
+        if context:
+            print(context)  # stdout → CC inject（依赖 hooks.json inject:true）
+        print("[hook:session-start] POST /context/inject... OK", file=sys.stderr)
+    except Exception as e:
+        print(f"[bible-cc] WARNING: /context/inject failed: {e}", file=sys.stderr)
+
+    print("[hook:session-start] DONE", file=sys.stderr)
+
+
+def _handle_turn_user(config, args) -> None:
+    """POST /turn/user {session_id, message}."""
+    if not args.session_id:
+        print("[bible-cc] WARNING: turn-user missing --session-id", file=sys.stderr)
+        return
+    base_url = f"http://127.0.0.1:{config.daemon.port}"
+    try:
+        r = _local_client().post(
+            f"{base_url}/turn/user",
+            json={"session_id": args.session_id, "message": args.message or ""},
+        )
+        r.raise_for_status()
+        body = r.json()
+        sid = args.session_id[:8]
+        mlen = len(args.message or "")
+        tid = body.get("turn_id")
+        print(f"[hook:turn-user] {sid} msg_len={mlen} → OK turn_id={tid}", file=sys.stderr)
+    except Exception as e:
+        print(f"[hook:turn-user] daemon unreachable → skipping ({e})", file=sys.stderr)
+
+
+def _handle_turn_tool(config, args) -> None:
+    """POST /turn/tool {session_id, tool_name, arguments, output}."""
+    if not args.session_id or not args.tool:
+        print("[bible-cc] WARNING: turn-tool missing --session-id or --tool", file=sys.stderr)
+        return
+    # Parse CLAUDE_TOOL_INPUT JSON string → dict
+    arguments = {}
+    if args.input:
+        try:
+            arguments = __import__("json").loads(args.input)
+        except Exception:
+            arguments = {}
+    base_url = f"http://127.0.0.1:{config.daemon.port}"
+    try:
+        r = _local_client().post(
+            f"{base_url}/turn/tool",
+            json={
+                "session_id": args.session_id,
+                "tool_name": args.tool,
+                "arguments": arguments,
+                "output": args.output or "",
+            },
+        )
+        r.raise_for_status()
+        olen = len(args.output or "")
+        sid = args.session_id[:8]
+        print(f"[hook:turn-tool] {sid} {args.tool} out={olen} → OK", file=sys.stderr)
+    except Exception as e:
+        print(f"[hook:turn-tool] daemon unreachable → skipping ({e})", file=sys.stderr)
+
+
+def _handle_session_end(config, args) -> None:
+    """POST /session/end {session_id}."""
+    if not args.session_id:
+        print("[bible-cc] WARNING: session-end missing --session-id", file=sys.stderr)
+        return
+    base_url = f"http://127.0.0.1:{config.daemon.port}"
+    try:
+        r = _local_client().post(
+            f"{base_url}/session/end",
+            json={"session_id": args.session_id},
+        )
+        r.raise_for_status()
+        print("[hook:session-end] POST /session/end... OK", file=sys.stderr)
+    except Exception as e:
+        print(f"[hook:session-end] daemon unreachable → skipping ({e})", file=sys.stderr)
+
+
+# ── main ───────────────────────────────────────────────────────────────────
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="bible-cc hook bridge")
     parser.add_argument(
         "action",
         choices=["session-start", "turn-user", "turn-tool", "session-end"],
     )
+    parser.add_argument("--session-id", default=None)
+    parser.add_argument("--message", default=None)
+    parser.add_argument("--tool", default=None)
+    parser.add_argument("--input", default=None)
+    parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
-    if args.action == "session-start":
-        try:
-            config = load_config()
-            _ensure_daemon(config.daemon.port)
-        except Exception as e:
-            print(f"[bible-cc] WARNING: session-start hook failed: {e}", file=sys.stderr)
-        # Phase 0: no context injection yet (Phase 1 adds /context/inject).
-        # Print nothing — empty inject output.
+    try:
+        config = load_config()
+    except Exception as e:
+        print(f"[bible-cc] WARNING: config load failed: {e}", file=sys.stderr)
+        sys.exit(0)
 
-    # turn-user, turn-tool, session-end: silent pass-through (Phase 1+).
+    if args.action == "session-start":
+        _handle_session_start(config, args)
+    elif args.action == "turn-user":
+        _handle_turn_user(config, args)
+    elif args.action == "turn-tool":
+        _handle_turn_tool(config, args)
+    elif args.action == "session-end":
+        _handle_session_end(config, args)
 
 
 if __name__ == "__main__":

@@ -175,3 +175,54 @@ class TestLoadConfigFunction:
         load_config(config_path=config_file, debug=True)
         captured = capsys.readouterr()
         assert "6666" in captured.err or "6666" in captured.out
+
+
+class TestDetectionConfig:
+    """2a.2: detection.model default + env override."""
+
+    def test_detection_model_default(self):
+        from bible_cc_plugin.config import AppConfig
+
+        config = AppConfig()
+        assert config.detection.model == "deepseek-v4-flash"
+
+
+class TestCaptureModeValidation:
+    """2a.2: capture.mode tightened to Literal['key_moments', 'all']."""
+
+    def test_capture_mode_default(self):
+        from bible_cc_plugin.config import AppConfig
+
+        config = AppConfig()
+        assert config.capture.mode == "key_moments"
+
+    def test_capture_mode_all_accepted(self):
+        from bible_cc_plugin.config import AppConfig
+
+        config = AppConfig(capture={"mode": "all"})
+        assert config.capture.mode == "all"
+
+    def test_capture_mode_invalid_raises(self):
+        import pydantic
+
+        from bible_cc_plugin.config import AppConfig
+
+        try:
+            AppConfig(capture={"mode": "invalid_mode"})
+            assert False, "should have raised"
+        except pydantic.ValidationError:
+            pass
+
+    def test_capture_enabled_env_override(self, monkeypatch):
+        monkeypatch.setenv("BIBLE_CC_CAPTURE_ENABLED", "false")
+        from bible_cc_plugin.config import load_config
+
+        config = load_config()
+        assert config.capture.enabled is False
+
+    def test_capture_enabled_env_override_true(self, monkeypatch):
+        monkeypatch.setenv("BIBLE_CC_CAPTURE_ENABLED", "1")
+        from bible_cc_plugin.config import load_config
+
+        config = load_config()
+        assert config.capture.enabled is True

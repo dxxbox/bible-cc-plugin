@@ -377,6 +377,20 @@ async def context_inject(req: _ContextInjectRequest):
     return {"context": ctx, "sources": sources}
 
 
+# ── Moment management (Phase 2a.4) ────────────────────────────────────────
+
+
+@app.get("/daemon/moments")
+async def list_moments(session_id: str):
+    """Return all moments for a session, newest first."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+    from bible_cc_plugin.daemon.buffer import get_moments_by_session
+
+    return {"moments": get_moments_by_session(conn, session_id)}
+
+
 @app.get("/daemon/sessions")
 async def list_sessions():
     """Return all sessions ordered by created_at (newest first)."""

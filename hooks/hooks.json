@@ -18,8 +18,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-start",
-            "timeout": 60
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-start --session-id \"$CLAUDE_SESSION_ID\"",
+            "timeout": 60,
+            "inject": true
           }
         ]
       }
@@ -29,8 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-user",
-            "timeout": 10
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-user --session-id \"$CLAUDE_SESSION_ID\" --message \"$USER_PROMPT\"",
+            "timeout": 3
           }
         ]
       }
@@ -40,8 +41,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-tool",
-            "timeout": 10
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-tool --session-id \"$CLAUDE_SESSION_ID\" --tool \"$CLAUDE_TOOL_NAME\" --input \"$CLAUDE_TOOL_INPUT\" --output \"$CLAUDE_TOOL_OUTPUT\"",
+            "timeout": 3
           }
         ]
       }
@@ -51,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-end",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-end --session-id \"$CLAUDE_SESSION_ID\"",
             "timeout": 30
           }
         ]

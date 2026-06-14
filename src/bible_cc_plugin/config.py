@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -77,7 +78,7 @@ class SearchConfig(BaseModel):
 
 class CaptureConfig(BaseModel):
     enabled: bool = True
-    mode: str = "key_moments"
+    mode: Literal["key_moments", "all"] = "key_moments"
     commit_threshold_turns: int = 8
     commit_threshold_chars: int = 16000
     mid_session_detection: bool = True
@@ -94,7 +95,7 @@ class CaptureConfig(BaseModel):
 
 
 class DetectionConfig(BaseModel):
-    model: str = "claude-sonnet-4-5"
+    model: str = "deepseek-v4-flash"
     max_tokens: int = 512
     temperature: float = 0.0
 
@@ -144,6 +145,10 @@ def load_config(config_path: Path | None = None, *, debug: bool = False) -> AppC
         config.daemon.port = int(v)
     if v := os.getenv("BIBLE_CC_DB_PATH"):
         config.daemon.db_path = v
+    if v := os.getenv("BIBLE_CC_CAPTURE_ENABLED"):
+        config.capture.enabled = v.lower() in ("1", "true", "yes")
+    if v := os.getenv("BIBLE_CC_DETECTION_MODEL"):
+        config.detection.model = v
 
     if debug:
         _debug_trace(config, config_path, file=sys.stderr)
