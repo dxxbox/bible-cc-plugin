@@ -52,11 +52,11 @@
 | Phase | 文件 | 目标 | 预估 | 可演示 |
 |-------|------|------|------|--------|
 | **0** | [`2026-06-13-phase-0-scaffold.md`](2026-06-13-phase-0-scaffold.md) | **1st Call：Install & Run** — Setup wizard、daemon lifecycle（start/stop/status/restart）、health check、config 系统、CI 骨架 | 2-3d | 安装 → 配置 → daemon 启动 → health green → 停止/重启 |
-| **1** | [`2026-06-13-phase-1-daemon-core.md`](2026-06-13-phase-1-daemon-core.md) | Daemon 数据层：SQLite schema（WAL）、完整 HTTP API（15 端点）、session/turn 管理、context injection | 5-7d | Session 创建、turn 缓冲、本地 context 注入，全链路 request-id 追踪 |
+| **1** | [总览](2026-06-13-phase-1-daemon-core.md) → [1a](../Phase-1/2026-06-14-phase-1a-sqlite-schema.md) · [1b](../Phase-1/2026-06-14-phase-1b-session-turn.md) · [1c](../Phase-1/2026-06-14-phase-1c-context-injection.md) · [1d](../Phase-1/2026-06-14-phase-1d-operability.md) | Daemon 数据层：SQLite schema（WAL）、15 HTTP 端点、session/turn 管理、context injection、operability | 5-7d | 首批 4 个 slash command：status / sessions / context / diagnose |
 | **2** | [`2026-06-13-phase-2-capture-pipeline.md`](2026-06-13-phase-2-capture-pipeline.md) | 采集管线：Hook bridge、Phase 1/2 moment detection、dedup、hint system | 5-7d | Key moment 自动检测、去重、用户可见 hint，每步可追溯 |
-| **3** | [`2026-06-13-phase-3-bible-integration.md`](2026-06-13-phase-3-bible-integration.md) | BiBLE 集成：HTTP client、flush 链路、graceful degradation | 4-5d | Moment 推送到 BiBLE Atlas，断连不 crash，请求全追踪 |
-| **4** | [`2026-06-13-phase-4-recall-pipeline.md`](2026-06-13-phase-4-recall-pipeline.md) | 回忆管线：MCP server（6 tools）、consult 跨域搜索 | 4-5d | 模型通过 MCP 搜索 BiBLE，用户跨域查询 |
-| **5** | [`2026-06-13-phase-5-commands-operability.md`](2026-06-13-phase-5-commands-operability.md) | **5a** 核心命令（MVP + 高优先级 10 个）+ **5b** 运维诊断（中优先级 8 个 + diagnose + log-level + 集成 sanity check） | 3-4d + 2-3d | 完整命令集、一键全链路诊断、四组件集成验证 |
+| **3** | [`2026-06-13-phase-3-bible-integration.md`](2026-06-13-phase-3-bible-integration.md) | BiBLE 集成：HTTP client、flush 链路、graceful degradation + 交付 `push`/`check-bible` 命令 | 4-5d | Moment 推送到 BiBLE Atlas，命令可验证 flush |
+| **4** | [`2026-06-13-phase-4-recall-pipeline.md`](2026-06-13-phase-4-recall-pipeline.md) | 回忆管线：MCP server（6 tools）、consult 跨域搜索 + 交付 `consult` 命令 | 4-5d | 模型搜索 BiBLE + 用户跨域查询 |
+| **5** | [`2026-06-13-phase-5-commands-operability.md`](2026-06-13-phase-5-commands-operability.md) | Operability polish：`diagnose`/`log-level`/`logs` + 故障路径 + 4-component sanity check（MVP 命令已分散到 Phase 1-4） | 2-3d | 一键诊断、四组件集成验证 |
 | **6** | [`2026-06-13-phase-6-deployment-e2e.md`](2026-06-13-phase-6-deployment-e2e.md) | E2E 验证 + Ship：E2E 测试（4 旅程）、CI 成熟化、监控数据采集、README 故障排查 | 4-5d | E2E 全绿，CI 完整流水线，README 完备 |
 
 **总计预估: 29-39 天**
@@ -67,14 +67,9 @@
 
 ```
 Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6
-                                    │                         │
-                                    └──► Phase 4 (可并行) ◄───┘
-                                         (Phase 2 完成后可与 Phase 3 并行)
 ```
 
-**严格串行**: Phase 0 → 1 → 2（types → config → SQLite → HTTP API → hooks → detection，每一层都依赖前一层）
-
-**可部分并行**: Phase 3（BiBLE client + flush）和 Phase 4（MCP + consult）都依赖 Phase 2 完成后的 buffer + client，但彼此不直接依赖。Phase 3 完成后 Phase 4 的 MCP 工具才能端到端验证（需要 BiBLE 里有数据）。
+**严格串行**: 全链路——Phase 4 的 MCP server 需要 Phase 3 的 `client.py` 才能做真实 BiBLE 调用，不可跳过 Phase 3 直接并行。
 
 ---
 
@@ -134,6 +129,8 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 
   ✅ SQLite 内省 debug API（查看 schema、表内容、turns）
   ✅ 启动序列 6 步诊断日志（每步 + timing）
   ✅ 端口冲突时产生可见 error 信息
+  ✅ 基础 slash commands（/bible-cc:status --verbose、/bible-cc:sessions、/bible-cc:context、/bible-cc:help、/bible-cc:config、/bible-cc:version）
+  ✅ Smoke test: `curl /daemon/health | jq .sqlite.integrity` → "ok"（非 null 占位）
 
   还不能做的事：
   ❌ Moment detection（Phase 2）
@@ -156,11 +153,12 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 
   ✅ Detection 全链路追踪（trigger reason → prompt stats → LLM latency → dedup result）
   ✅ Detection debug API（查看 detection 历史 + 累计统计）
   ✅ Hook 执行追踪（每个 hook action 的 endpoint + status + duration）
+  ✅ /bible-cc:review 命令（查看/编辑/删除 pending moments）
+  ✅ Smoke test: 模拟 10 turns → 确认 moment 产生 → `curl /daemon/debug/detections/stats`
 
   还不能做的事：
   ❌ Moment 推送到 BiBLE Atlas——moments 只存本地 SQLite（Phase 3）
   ❌ MCP 工具搜索 BiBLE（Phase 4）
-  ❌ review/push 命令——moments 只能通过 debug API 查看（Phase 5）
 ```
 
 ### Phase 3 交付后 — BiBLE 通信可用
@@ -178,11 +176,11 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 
   ✅ BiBLE API 请求全追踪（每个 request 的 method + URL + status + latency）
   ✅ Flush 诊断日志（每步：bundle → import → update）
   ✅ Debug API（flush 历史 + BiBLE request 历史）
+  ✅ Smoke test: 启动 BiBLE test server → `./bible-cc push` → 确认 moments 出现在 BiBLE
 
   还不能做的事：
   ❌ 模型通过 MCP 主动搜索 BiBLE（Phase 4）
-  ❌ 用户通过命令搜索 BiBLE（Phase 4 consult、Phase 5 命令）
-  ❌ review 管理 pending moments（Phase 5）
+  ❌ 用户通过 consult 搜索 BiBLE（Phase 4）
 ```
 
 ### Phase 4 交付后 — 跨 Session 知识检索可用
@@ -201,34 +199,29 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 
   ✅ MCP 调用全追踪（tool name + args + result count + latency）
   ✅ Consult 查询分解日志（每域搜索耗时、合并结果）
   ✅ MCP server 启动诊断（注册工具列表 + BiBLE 连通性检查）
+  ✅ MCP server 日志写入 `~/.bible-cc/daemon.log`（与 daemon 同一文件）
+  ✅ Smoke test: `./bible-cc consult "test query"` → 跨域搜索结果
 
   还不能做的事：
-  ❌ 用户友好的 slash commands（Phase 5）
   ❌ 一键全链路诊断（Phase 5）
-  ❌ review/push 等管理命令（Phase 5）
+  ❌ 运行时日志级别切换（Phase 5）
 ```
 
-### Phase 5 交付后 — 用户可自助操作
+### Phase 5 交付后 — 用户可自助诊断
 
 在 Phase 4 基础上新增：
 
-**Phase 5a — 核心命令：**
-```
-  ✅ 7 个 MVP 命令（status, check-bible, help, config, version, context, sessions）
-  ✅ 3 个高优先级命令（push, consult, review）
-  ✅ review 命令完整行为：查看 pending moments 列表（带 turn 溯源）、编辑 title/abstract、删除、force-flush
-```
-
-**Phase 5b — 运维诊断：**
 ```
   ✅ 一键全链路诊断（/bible-cc:diagnose → 6 项检查，每项 PASS/FAIL + 诊断建议）
   ✅ 运行时日志级别切换（/bible-cc:log-level debug/info/warning）
   ✅ 日志查看（/bible-cc:logs --detections/--bible/--errors）
   ✅ /bible-cc:status --verbose（config sources + recent detections + recent BiBLE requests）
   ✅ /bible-cc:config --sources（每项标注来源）
-  ✅ 所有故障场景有诊断路径 + 恢复操作（端口冲突、BiBLE 断连、hook 失败、crash）
+  ✅ 所有故障场景有诊断路径 + 恢复操作
   ✅ 四组件集成 sanity check（daemon + MCP + hooks + commands 联合验证，9 步全绿）
 ```
+
+> **注意**: MVP 命令（status/help/version/config/sessions/context）和 high-pri 命令（push/check-bible/consult/review）已在 Phase 1-4 中交付，Phase 5 不再重复。
 
 ### Phase 6 交付后 — 生产就绪
 
@@ -252,10 +245,9 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 
 | **M0 — 1st Call** | 0 | lint + unit test + contract test green | 安装 → setup wizard → daemon start → health green → stop → restart |
 | **M1 — Data Layer** | 1 | + unit test green | Session 创建、turn 缓冲、本地 context 注入 |
 | **M2 — Capture Works** | 2 | + detector unit test green | Moment 检测、去重、hint 通知 |
-| **M3 — Data Flows to BiBLE** | 3 | + integration test green | Flush 到 BiBLE Atlas（**可与 M4 并行开发**） |
-| **M4 — Recall Works** | 4 | + MCP integration test green | MCP 工具搜索 BiBLE（**可与 M3 并行开发**） |
-| **M5a — User Commands** | 5a | + command integration test green | 10 个核心命令可用 |
-| **M5b — Operability** | 5b | + sanity check green | 一键诊断、日志控制、四组件集成验证 |
+| **M3 — Data Flows to BiBLE** | 3 | + integration test green | Flush 到 BiBLE Atlas + push/check-bible 命令 |
+| **M4 — Recall Works** | 4 | + MCP integration test green | MCP 工具搜索 BiBLE + consult 命令 |
+| **M5 — Operability** | 5 | + sanity check green | 一键诊断、日志控制、四组件集成验证 |
 | **M6 — Ship** | 6 | + E2E test green | E2E 全绿、CI 完整流水线、README 完备 |
 
 ---
@@ -268,7 +260,8 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 
 | MCP Python SDK 不成熟 | Phase 4 阻塞 | fallback：stdio JSON-RPC 直接实现 |
 | BiBLE Atlas V4 API 变更 | Phase 3/4 | client.py 是单一适配层 |
 | Claude Code plugin 机制变更 | 全 Phase | hook/command/mcp 是公开契约，backward compat 预期高 |
-| 单人力开发 | 持续时间长 | Phase 3/4 可部分并行 |
+| Phase 0 模式复发（debug 未接入、命令集中最后、E2E 验证延后） | 后续 Phase 重蹈覆辙 | 每 phase 拆分 sub-phase + command 随 feature 交付 + debug contract test 强制验证 |
+| 单人力开发 | 持续时间长 | 全串行，sub-phase 拆分确保每步可验证 |
 
 ## 7. 假设
 

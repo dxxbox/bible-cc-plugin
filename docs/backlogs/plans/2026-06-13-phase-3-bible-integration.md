@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Phase 3 是本地数据到达 BiBLE Atlas 的桥梁。
 >
-> **/orchestrate 并行提示**: Phase 3 和 Phase 4 在 Phase 2 完成后可并行开发——两者都依赖 client.py + buffer，但互不依赖。BiBLE flush（Phase 3）和 MCP tools（Phase 4）是独立功能。Phase 4 的 MCP 工具端到端验证需要 Phase 3 的 BiBLE 里有数据——但 MCP contract test 可用 stub/mock 先行。建议：两个独立的 `/orchestrate custom` 调用，在 Phase 5 汇合。
+> **Phase 0 复盘调整**: 原计划认为 Phase 3/4 可并行，但 Phase 4 MCP server 需要 Phase 3 的 `client.py` 做真实 BiBLE 调用。建议串行：先 Phase 3（client.py + flush），再 Phase 4（MCP + consult）。
 
 **Goal:** BiBLE HTTP client 完成、flush 链路打通（daemon → BiBLE Atlas import）、graceful degradation（BiBLE 不可达时本地不受影响）。
 

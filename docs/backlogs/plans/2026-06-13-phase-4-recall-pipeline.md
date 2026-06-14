@@ -97,7 +97,7 @@
 
 实现：
 
-**MCP 调用追踪日志**（MCP server stderr）：
+**MCP 调用追踪日志**（写入 `~/.bible-cc/daemon.log`，与 daemon 同一文件——Phase 0 复盘规则 D）：
 ```
 [mcp:tool] bible_memory_search(query="PostgreSQL", limit=5) → 5 hits (0.3s)
 [mcp:tool] bible_memory_save(title="Rate limiting design", content_len=450) → task_id=abc (1.1s)
@@ -105,6 +105,7 @@
 [mcp:tool] ERROR: bible_memory_search → BiBLE unreachable (timeout 30s)
 [mcp:tool] bible_knowledge_search(query="auth pattern") → 3 hits (0.4s)
 ```
+> **注意**: MCP server 是独立 stdio 进程，不能依赖 daemon 的 stderr 重定向。必须在 MCP server 内部显式打开 `~/.bible-cc/daemon.log` 追加写入。
 
 **MCP 启动诊断**：
 ```

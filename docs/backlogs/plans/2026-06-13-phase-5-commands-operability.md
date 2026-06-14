@@ -1,10 +1,8 @@
 # Phase 5: Commands + Operability
 
-> **For agentic workers:** Phase 5 是用户与 plugin 交互的入口层。分为 5a（核心命令）和 5b（运维 + 诊断），可串行或由两个 agent 并行开发（5b 依赖 5a 的命令骨架，但 debug 命令独立）。
+> **Phase 0 复盘调整**: 原计划将所有 slash commands 集中在 Phase 5，导致 Phase 1-4 期间用户没有命令可用。现已将大部分命令分散到对应 feature phase：Phase 1a→status/help/version/config, 1b→sessions, 1c→context, 2c→review, 3→push/check-bible, 4→consult。Phase 5 缩小为 operability polish + 剩余 medium-priority commands + 集成 sanity check。
 
-**Goal 5a:** 7 个 MVP 命令 + 3 个高优先级命令 + review 命令完整行为 + command spec 文件 + CI 扩展 + contract tests。
-
-**Goal 5b:** 8 个中优先级命令（择取）+ 故障路径覆盖 + 恢复操作 + 一键诊断 + 日志控制 + 集成 sanity check。
+**Goal:** 一键诊断 + 运行时日志控制 + 故障路径覆盖 + 恢复操作 + 4-component sanity check。
 
 **Architecture:** Shell scripts / Markdown command files → daemon HTTP API → formatted output。
 
