@@ -9,7 +9,7 @@ Phase 1a+1b 交付了 daemon 的全部核心端点（health、session、turn）�
 ## Root Cause
 
 1. **hook.py** — turn-user、turn-tool、session-end 三个 action 均为 pass-through 空操作
-2. **hooks.json** — 四个 hook 命令均**未传入 CC 环境变量**（`$CLAUDE_SESSION_ID`、`$USER_PROMPT`、`$TOOL_NAME`、`$TOOL_OUTPUT`）
+2. **hooks.json** — 四个 hook 命令均**未传入 CC 环境变量**（`$CLAUDE_SESSION_ID`、`$USER_PROMPT`、`$CLAUDE_TOOL_NAME`、`$CLAUDE_TOOL_INPUT`、`$CLAUDE_TOOL_OUTPUT`）
 
 ## Resolution Plan
 
