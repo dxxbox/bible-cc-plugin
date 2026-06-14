@@ -1,4 +1,7 @@
-"""Contract test for GET /daemon/health — verifies response schema matches 02-interfaces.md §1.1."""
+"""Contract test for GET /daemon/health — verifies response schema matches 02-interfaces.md §1.1.
+
+Phase 1a: verifies that SQLite data is real (no longer hardcoded zeros).
+"""
 
 import subprocess
 import sys
@@ -116,3 +119,35 @@ class TestDaemonHealthContract:
         assert "integrity" in data["sqlite"]
         assert "schema_version" in data["sqlite"]
         assert "size_bytes" in data["sqlite"]
+
+    # Phase 1a — real SQLite data ────────────────────────────────────────
+
+    def test_sqlite_schema_version_is_real_not_hardcoded(self, daemon_url):
+        """Phase 1a: schema_version must reflect actual migration state.
+
+        Before Phase 1a this was hardcoded to 0. After Phase 1a, the daemon
+        lazy-inits SQLite on first health check — schema_version should be >= 1.
+        """
+        r = httpx.get(f"{daemon_url}/daemon/health")
+        data = r.json()
+        assert data["sqlite"]["schema_version"] >= 1, (
+            f"schema_version is {data['sqlite']['schema_version']} — "
+            "expected >= 1 (Phase 1a migration should have run)"
+        )
+
+    def test_sqlite_integrity_is_ok_after_migration(self, daemon_url):
+        """Phase 1a: sqlite.integrity should be 'ok' after successful migration."""
+        r = httpx.get(f"{daemon_url}/daemon/health")
+        data = r.json()
+        assert data["sqlite"]["integrity"] == "ok", (
+            f"sqlite.integrity is {data['sqlite']['integrity']!r} — expected 'ok'"
+        )
+
+    def test_sqlite_size_bytes_is_positive(self, daemon_url):
+        """Phase 1a: a migrated database must have non-zero size."""
+        r = httpx.get(f"{daemon_url}/daemon/health")
+        data = r.json()
+        assert data["sqlite"]["size_bytes"] > 0, (
+            f"sqlite.size_bytes is {data['sqlite']['size_bytes']} — "
+            "expected > 0 after migration creates tables"
+        )
