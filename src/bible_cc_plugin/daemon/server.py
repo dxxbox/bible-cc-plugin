@@ -1,7 +1,8 @@
-"""Phase 0 daemon server — minimal FastAPI app with health + start/stop endpoints.
+"""Phase 0/1 daemon server — FastAPI app with health, session, turn endpoints.
 
-Design: 02-interfaces.md §1.1 (lifecycle endpoints).
+Design: 02-interfaces.md §1.1-1.4.
 Phase 1a: health endpoint reads real SQLite data via buffer.py.
+Phase 1b: session/turn CRUD endpoints.
 """
 
 from __future__ import annotations
@@ -10,8 +11,9 @@ import os
 import time
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from bible_cc_plugin.logging_config import setup_logging
 
@@ -153,6 +155,162 @@ async def daemon_health():
             "size_bytes": db_size,
         },
     }
+
+
+# ── request models (Phase 1b) ────────────────────────────────────────────
+
+
+class _SessionStartRequest(BaseModel):
+    session_id: str
+
+
+class _SessionEndRequest(BaseModel):
+    session_id: str
+
+
+class _TurnUserRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+class _TurnToolRequest(BaseModel):
+    session_id: str
+    tool_name: str
+    arguments: dict = {}
+    output: str = ""
+
+
+# ── Session / Turn endpoints (Phase 1b, 02-interfaces.md §1.2-1.4) ──────
+
+
+@app.post("/session/start")
+async def session_start(req: _SessionStartRequest):
+    """Create a new session.  Scans for unclosed sessions (crash recovery)."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+
+    from bible_cc_plugin.daemon.buffer import (
+        get_recovery,
+        insert_session,
+    )
+
+    # crash recovery scan — collect unclosed session ids
+    try:
+        recovery = get_recovery(conn, current_session_id=req.session_id)
+    except Exception as exc:
+        _logger.warning("crash recovery scan failed: %s", exc)
+        recovery = None
+
+    is_new = insert_session(conn, req.session_id)
+    _logger.info(
+        "session/start %s is_new=%s recovery=%s",
+        req.session_id,
+        is_new,
+        recovery["unclosed_sessions_found"] if recovery else 0,
+    )
+
+    return {
+        "session_id": req.session_id,
+        "is_new": is_new,
+        "recovery": recovery,
+    }
+
+
+@app.post("/session/end")
+async def session_end(req: _SessionEndRequest):
+    """Mark a session completed.  Phase 1: no LLM / no flush."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+
+    from bible_cc_plugin.daemon.buffer import get_session, mark_session_completed
+
+    row = get_session(conn, req.session_id)
+    if row is None:
+        raise HTTPException(404, f"session not found: {req.session_id}")
+    if row["status"] != "active":
+        _logger.info("session/end %s already %s", req.session_id, row["status"])
+        return {
+            "session_id": req.session_id,
+            "moments_flushed": 0,
+            "status": "already_completed",
+        }
+
+    mark_session_completed(conn, req.session_id)
+    _logger.info("session/end %s completed", req.session_id)
+    return {
+        "session_id": req.session_id,
+        "moments_flushed": 0,
+        "status": "completed",
+    }
+
+
+@app.post("/turn/user")
+async def turn_user(req: _TurnUserRequest):
+    """Buffer a user message.  Returns immediately (<50ms)."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+
+    from bible_cc_plugin.daemon.buffer import (
+        get_session,
+        increment_turn_count,
+        insert_turn_user,
+    )
+
+    row = get_session(conn, req.session_id)
+    if row is None:
+        raise HTTPException(400, f"session not found: {req.session_id}")
+    if row["status"] != "active":
+        raise HTTPException(400, f"session {req.session_id} is {row['status']}")
+
+    turn_id = insert_turn_user(conn, req.session_id, req.message)
+    increment_turn_count(conn, req.session_id, len(req.message))
+    _logger.debug("turn/user %s seq=%d", req.session_id, turn_id)
+    return {"turn_id": turn_id, "queued": False}
+
+
+@app.post("/turn/tool")
+async def turn_tool(req: _TurnToolRequest):
+    """Buffer a tool invocation.  Stores full output verbatim."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+
+    from bible_cc_plugin.daemon.buffer import (
+        get_session,
+        increment_turn_count,
+        insert_turn_tool,
+    )
+
+    row = get_session(conn, req.session_id)
+    if row is None:
+        raise HTTPException(400, f"session not found: {req.session_id}")
+    if row["status"] != "active":
+        raise HTTPException(400, f"session {req.session_id} is {row['status']}")
+
+    turn_id = insert_turn_tool(conn, req.session_id, req.tool_name, req.arguments, req.output)
+    increment_turn_count(conn, req.session_id, len(req.output))
+    _logger.debug("turn/tool %s seq=%d tool=%s", req.session_id, turn_id, req.tool_name)
+    return {"turn_id": turn_id, "queued": False}
+
+
+@app.get("/daemon/sessions")
+async def list_sessions():
+    """Return all sessions ordered by created_at (newest first)."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+
+    rows = conn.execute(
+        "SELECT session_id, status, created_at, closed_at, turn_count "
+        "FROM sessions ORDER BY created_at DESC LIMIT 50"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 
 
 def _read_port() -> int:

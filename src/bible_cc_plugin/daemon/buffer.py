@@ -344,6 +344,41 @@ def count_total_turns(conn: sqlite3.Connection) -> int:
     return row[0] if row else 0
 
 
+# -- Recovery (Phase 1b) ------------------------------------------------------
+
+
+def get_recovery(conn: sqlite3.Connection, current_session_id: str) -> dict | None:
+    """Scan for unclosed sessions and collect recovery data.
+
+    Fast path (sync) — only reads SQLite, no LLM calls.
+    Returns ``None`` if no unclosed sessions are found (other than *current_session_id*).
+    """
+    unclosed = conn.execute(
+        "SELECT session_id FROM sessions WHERE status='active' AND session_id != ?",
+        (current_session_id,),
+    ).fetchall()
+    if not unclosed:
+        return None
+
+    unclosed_ids = [r["session_id"] for r in unclosed]
+    placeholders = ",".join("?" for _ in unclosed_ids)
+    moments_row = conn.execute(
+        f"SELECT COUNT(*) FROM moments WHERE session_id IN ({placeholders}) AND flushed IN (0, -1)",
+        unclosed_ids,
+    ).fetchone()
+    moments_recovered = moments_row[0] if moments_row else 0
+
+    _logger.info(
+        "crash recovery scan: %d unclosed sessions, %d moments recovered",
+        len(unclosed_ids),
+        moments_recovered,
+    )
+    return {
+        "unclosed_sessions_found": len(unclosed_ids),
+        "moments_recovered": moments_recovered,
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Feature 1a.3: Migration Engine
 # ══════════════════════════════════════════════════════════════════════════════
