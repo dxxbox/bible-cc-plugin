@@ -11,23 +11,17 @@ Graceful degradation: hook failures must never block Claude Code.
 from __future__ import annotations
 
 import argparse
-import logging
-import subprocess  # TODO: remove after deleting _ensure_daemon
+import json
 import sys
-import time  # TODO: remove after deleting _ensure_daemon
 from pathlib import Path
 
 import httpx
 
 from bible_cc_plugin.config import load_config
 from bible_cc_plugin.daemon.daemon_launcher import ensure_daemon_started
+from bible_cc_plugin.logging_config import configure_logging, get_logger
 
-logger = logging.getLogger("bible-cc.hook")
-logging.basicConfig(
-    level=logging.WARNING,
-    format="[bible-cc] %(levelname)s: %(message)s",
-    stream=sys.stderr,
-)
+_logger = get_logger("hook")
 
 _DAEMON_LOG = Path.home() / ".bible-cc" / "daemon.log"
 
@@ -47,93 +41,29 @@ def _tail_log(path: Path, lines: int = 20) -> str:
         return ""
 
 
-def _ensure_daemon(port: int) -> None:
-    """Idempotent: start daemon if not already running.
-
-    Checks health endpoint first. If unreachable, spawns uvicorn and
-    waits up to 5s for health check. Daemon output goes to
-    ~/.bible-cc/daemon.log. On failure, the log tail is printed.
-    Graceful degradation: failure prints warning to stderr
-    but does NOT exit non-zero.
-    """
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        r = _local_client(timeout=2).get(f"{base_url}/daemon/health")
-        if r.status_code == 200:
-            return  # already running
-    except Exception:
-        pass
-
-    # Ensure log directory exists
-    _DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
-
-    # Open log file for append — survives daemon restarts
-    log_fh = open(str(_DAEMON_LOG), "a")
-
-    # Start uvicorn in background, output → log file
-    try:
-        subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "bible_cc_plugin.daemon.server:app",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
-                "--log-level",
-                "info",
-            ],
-            stdout=log_fh,
-            stderr=log_fh,
-        )
-    except Exception as e:
-        print(f"[bible-cc] WARNING: daemon start failed: {e}", file=sys.stderr)
-        log_fh.close()
-        return
-
-    # Wait for health check
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        ok = False
-        try:
-            r = _local_client(timeout=1).get(f"{base_url}/daemon/health")
-            ok = r.status_code == 200
-        except httpx.ConnectError:
-            logger.debug("daemon not ready (connection refused)")
-        except Exception:
-            logger.warning("health check error: %s", sys.exc_info()[1])
-        if ok:
-            log_fh.close()
-            return  # started successfully
-        time.sleep(0.3)
-
-    # Timeout — show log tail for diagnosis
-    log_fh.close()
-    tail = _tail_log(_DAEMON_LOG)
-    print("[bible-cc] WARNING: daemon health check timed out", file=sys.stderr)
-    if tail:
-        print(f"[bible-cc] Last 20 lines of {_DAEMON_LOG}:", file=sys.stderr)
-        print(tail, file=sys.stderr)
-    else:
-        print(f"[bible-cc] (no log output at {_DAEMON_LOG})", file=sys.stderr)
-
-
 # ── Phase 2a action handlers ──────────────────────────────────────────────
 
 
 def _handle_session_start(config, args) -> None:
-    """三步流程：ensure daemon → register session → inject context → stdout."""
-    base_url = f"http://127.0.0.1:{config.daemon.port}"
-    if not args.session_id:
-        print("[bible-cc] WARNING: session-start missing --session-id", file=sys.stderr)
-        return
+    """三步流程：ensure daemon → register session → inject context → stdout.
 
-    # 1. Ensure daemon running
+    Daemon start is session-agnostic — it runs even when session_id is
+    absent (e.g. startup event fires before a session exists).
+    """
+    # 1. Ensure daemon running（session-agnostic, must run first）
     ok = ensure_daemon_started(config.daemon.port, _DAEMON_LOG)
     if not ok:
-        print("[bible-cc] WARNING: daemon failed to start", file=sys.stderr)
+        _logger.warning("daemon failed to start")
+        return
+
+    base_url = f"http://127.0.0.1:{config.daemon.port}"
+
+    # startup event: no session_id — daemon is running, skip session ops
+    if not args.session_id:
+        _logger.warning(
+            "session-start missing --session-id (startup event — "
+            "daemon started, session registration deferred)"
+        )
         return
 
     # 2. Register session
@@ -145,9 +75,9 @@ def _handle_session_start(config, args) -> None:
         r.raise_for_status()
         body = r.json()
         is_new = body.get("is_new")
-        print(f"[hook:session-start] POST /session/start... OK (is_new={is_new})", file=sys.stderr)
+        _logger.info("POST /session/start... OK (is_new=%s)", is_new)
     except Exception as e:
-        print(f"[bible-cc] WARNING: /session/start failed: {e}", file=sys.stderr)
+        _logger.error("/session/start failed: %s", e)
         return
 
     # 3. Inject context
@@ -161,17 +91,17 @@ def _handle_session_start(config, args) -> None:
         context = body.get("context", "")
         if context:
             print(context)  # stdout → CC inject（依赖 hooks.json inject:true）
-        print("[hook:session-start] POST /context/inject... OK", file=sys.stderr)
+        _logger.info("POST /context/inject... OK")
     except Exception as e:
-        print(f"[bible-cc] WARNING: /context/inject failed: {e}", file=sys.stderr)
+        _logger.error("/context/inject failed: %s", e)
 
-    print("[hook:session-start] DONE", file=sys.stderr)
+    _logger.info("session-start DONE")
 
 
 def _handle_turn_user(config, args) -> None:
     """POST /turn/user {session_id, message}."""
     if not args.session_id:
-        print("[bible-cc] WARNING: turn-user missing --session-id", file=sys.stderr)
+        _logger.error("turn-user missing --session-id")
         return
     base_url = f"http://127.0.0.1:{config.daemon.port}"
     try:
@@ -184,15 +114,15 @@ def _handle_turn_user(config, args) -> None:
         sid = args.session_id[:8]
         mlen = len(args.message or "")
         tid = body.get("turn_id")
-        print(f"[hook:turn-user] {sid} msg_len={mlen} → OK turn_id={tid}", file=sys.stderr)
+        _logger.info("turn-user %s msg_len=%d → OK turn_id=%s", sid, mlen, tid)
     except Exception as e:
-        print(f"[hook:turn-user] daemon unreachable → skipping ({e})", file=sys.stderr)
+        _logger.warning("turn-user daemon unreachable → skipping (%s)", e)
 
 
 def _handle_turn_tool(config, args) -> None:
     """POST /turn/tool {session_id, tool_name, arguments, output}."""
     if not args.session_id or not args.tool:
-        print("[bible-cc] WARNING: turn-tool missing --session-id or --tool", file=sys.stderr)
+        _logger.error("turn-tool missing --session-id or --tool")
         return
     # Parse CLAUDE_TOOL_INPUT JSON string → dict
     arguments = {}
@@ -215,15 +145,15 @@ def _handle_turn_tool(config, args) -> None:
         r.raise_for_status()
         olen = len(args.output or "")
         sid = args.session_id[:8]
-        print(f"[hook:turn-tool] {sid} {args.tool} out={olen} → OK", file=sys.stderr)
+        _logger.info("turn-tool %s %s out=%d → OK", sid, args.tool, olen)
     except Exception as e:
-        print(f"[hook:turn-tool] daemon unreachable → skipping ({e})", file=sys.stderr)
+        _logger.warning("turn-tool daemon unreachable → skipping (%s)", e)
 
 
 def _handle_session_end(config, args) -> None:
     """POST /session/end {session_id}."""
     if not args.session_id:
-        print("[bible-cc] WARNING: session-end missing --session-id", file=sys.stderr)
+        _logger.error("session-end missing --session-id")
         return
     base_url = f"http://127.0.0.1:{config.daemon.port}"
     try:
@@ -232,15 +162,26 @@ def _handle_session_end(config, args) -> None:
             json={"session_id": args.session_id},
         )
         r.raise_for_status()
-        print("[hook:session-end] POST /session/end... OK", file=sys.stderr)
+        _logger.info("POST /session/end... OK")
     except Exception as e:
-        print(f"[hook:session-end] daemon unreachable → skipping ({e})", file=sys.stderr)
+        _logger.warning("session-end daemon unreachable → skipping (%s)", e)
 
 
 # ── main ───────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
+    # 1. Read stdin JSON — Claude Code hooks deliver all data via stdin
+    stdin_data: dict = {}
+    if not sys.stdin.isatty():
+        try:
+            raw = sys.stdin.read()
+            if raw.strip():
+                stdin_data = json.loads(raw)
+        except Exception:
+            _logger.debug("stdin parse failed (non-JSON or empty)", exc_info=True)
+
+    # 2. CLI args（测试/手动调用时使用；action 始终从 CLI 获取）
     parser = argparse.ArgumentParser(description="bible-cc hook bridge")
     parser.add_argument(
         "action",
@@ -253,20 +194,50 @@ def main() -> None:
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
+    # 3. Config + logging（必须在任何 _logger.info 之前，否则文件 handler 未就绪）
     try:
         config = load_config()
+        configure_logging(**config.logging.model_dump())
     except Exception as e:
-        print(f"[bible-cc] WARNING: config load failed: {e}", file=sys.stderr)
+        _logger.error("config load failed: %s", e)
         sys.exit(0)
 
-    if args.action == "session-start":
-        _handle_session_start(config, args)
-    elif args.action == "turn-user":
-        _handle_turn_user(config, args)
-    elif args.action == "turn-tool":
-        _handle_turn_tool(config, args)
-    elif args.action == "session-end":
-        _handle_session_end(config, args)
+    # 4. Merge: CLI 优先（测试覆盖），stdin 兜底（Claude Code hook 数据）
+    session_id = args.session_id or stdin_data.get("session_id", "")
+    message = args.message or stdin_data.get("prompt", "")
+    tool = args.tool or stdin_data.get("tool_name", "")
+    tool_input = args.input
+    if not tool_input and "tool_input" in stdin_data:
+        tool_input = json.dumps(stdin_data["tool_input"])
+    tool_output = args.output or stdin_data.get("tool_output", "")
+
+    merged = argparse.Namespace(
+        action=args.action,
+        session_id=session_id,
+        message=message,
+        tool=tool,
+        input=tool_input,
+        output=tool_output,
+    )
+
+    _logger.info(
+        "hook=%s stdin_sid=%s cli_sid=%s merged_sid=%s msg_len=%d",
+        args.action,
+        stdin_data.get("session_id", "<none>") or "<empty>",
+        args.session_id or "<none>",
+        session_id or "<empty>",
+        len(message or ""),
+    )
+
+    # 5. Dispatch（不变）
+    if merged.action == "session-start":
+        _handle_session_start(config, merged)
+    elif merged.action == "turn-user":
+        _handle_turn_user(config, merged)
+    elif merged.action == "turn-tool":
+        _handle_turn_tool(config, merged)
+    elif merged.action == "session-end":
+        _handle_session_end(config, merged)
 
 
 if __name__ == "__main__":

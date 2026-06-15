@@ -13,6 +13,10 @@ from pathlib import Path
 
 import httpx
 
+from bible_cc_plugin.logging_config import get_logger
+
+_logger = get_logger(__name__)
+
 
 def _local_client(timeout: int = 2) -> httpx.Client:
     """httpx client that bypasses proxy for 127.0.0.1."""
@@ -79,7 +83,7 @@ def ensure_daemon_started(
             stderr=log_fh,
         )
     except Exception as e:
-        print(f"[bible-cc] WARNING: daemon start failed: {e}", file=sys.stderr)
+        _logger.warning("daemon start failed: %s", e)
         log_fh.close()
         return False
 
@@ -93,7 +97,7 @@ def ensure_daemon_started(
         except httpx.ConnectError:
             pass  # daemon not ready yet — expected
         except Exception:
-            print(f"[bible-cc] WARNING: health check error: {sys.exc_info()[1]}", file=sys.stderr)
+            _logger.warning("health check error: %s", sys.exc_info()[1])
         if ok:
             log_fh.close()
             return True
@@ -102,11 +106,10 @@ def ensure_daemon_started(
     # Timeout — show log tail for diagnosis
     log_fh.close()
     tail = _tail_log(log_path)
-    print("[bible-cc] WARNING: daemon health check timed out", file=sys.stderr)
+    _logger.warning("daemon health check timed out")
     if tail:
-        print(f"[bible-cc] Last 20 lines of {log_path}:", file=sys.stderr)
-        print(tail, file=sys.stderr)
+        _logger.warning("Last 20 lines of %s:\n%s", log_path, tail)
     else:
-        print(f"[bible-cc] (no log output at {log_path})", file=sys.stderr)
+        _logger.warning("(no log output at %s)", log_path)
 
     return False

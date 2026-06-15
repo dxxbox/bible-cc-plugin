@@ -110,7 +110,10 @@ json.dump(cfg, open(spath, 'w'), indent=4)
            sleep 1; uv run python -m bible_cc_plugin.scripts.daemon start "$@" ;;
   status)  uv run python -m bible_cc_plugin.scripts.daemon status ;;
   logs)    _DAEMON_LOG="$HOME/.bible-cc/daemon.log"
-           if [ -f "$_DAEMON_LOG" ]; then
+           if [ "${1:-}" = "--reset" ]; then
+             :> "$_DAEMON_LOG"
+             echo "Log cleared."
+           elif [ -f "$_DAEMON_LOG" ]; then
              tail -n 50 "$_DAEMON_LOG"
            else
              echo "(no daemon log at $_DAEMON_LOG)"

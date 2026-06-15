@@ -1,5 +1,5 @@
 {
-  "description": "BiBLE CC Plugin hooks — bridge Claude Code lifecycle to daemon HTTP API",
+  "description": "BiBLE CC Plugin hooks — bridge Claude Code lifecycle to daemon HTTP API. All hook data (session_id, prompt, tool_name, etc.) is read from stdin JSON — no shell variables needed.",
   "hooks": {
     "Setup": [
       {
@@ -14,11 +14,11 @@
     ],
     "SessionStart": [
       {
-        "matcher": "startup|clear|compact",
+        "matcher": "startup|resume|clear|compact",
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-start --session-id \"$CLAUDE_SESSION_ID\"",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-start",
             "timeout": 60,
             "inject": true
           }
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-user --session-id \"$CLAUDE_SESSION_ID\" --message \"$USER_PROMPT\"",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-user",
             "timeout": 3
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-tool --session-id \"$CLAUDE_SESSION_ID\" --tool \"$CLAUDE_TOOL_NAME\" --input \"$CLAUDE_TOOL_INPUT\" --output \"$CLAUDE_TOOL_OUTPUT\"",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-tool",
             "timeout": 3
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-end --session-id \"$CLAUDE_SESSION_ID\"",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-end",
             "timeout": 30
           }
         ]

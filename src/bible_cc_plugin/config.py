@@ -104,6 +104,14 @@ class BypassConfig(BaseModel):
     session_patterns: list[str] = []
 
 
+class LoggingConfig(BaseModel):
+    level: str = "INFO"
+    file: str = "~/.bible-cc/daemon.log"
+    format: str = "text"  # "json" | "text"
+    rotation_when: str = "midnight"  # "midnight" | "H" | "D" | ...
+    rotation_backup_count: int = 7
+
+
 class AppConfig(BaseModel):
     bible: BibleConfig = Field(default_factory=BibleConfig)
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
@@ -112,6 +120,7 @@ class AppConfig(BaseModel):
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)
     bypass: BypassConfig = Field(default_factory=BypassConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -149,20 +158,40 @@ def load_config(config_path: Path | None = None, *, debug: bool = False) -> AppC
         config.capture.enabled = v.lower() in ("1", "true", "yes")
     if v := os.getenv("BIBLE_CC_DETECTION_MODEL"):
         config.detection.model = v
+    if v := os.getenv("BIBLE_CC_LOG_LEVEL"):
+        config.logging.level = v.upper()
+    if v := os.getenv("BIBLE_CC_LOG_FILE"):
+        config.logging.file = v
+    if v := os.getenv("BIBLE_CC_LOG_FORMAT"):
+        config.logging.format = v
 
     if debug:
-        _debug_trace(config, config_path, file=sys.stderr)
+        _debug_trace(config, config_path)
 
     return config
 
 
-def _debug_trace(config: AppConfig, config_path: Path, *, file) -> None:
-    """Print config source trace for debugging."""
-    print(f"[config] loading from: {config_path}", file=file)
-    print(f"[config] bible.base_url = {config.bible.base_url!r}", file=file)
-    print(f"[config] bible.token = {'<set>' if config.bible.token else '<none>'}", file=file)
-    print(f"[config] daemon.port = {config.daemon.port}", file=file)
-    print(f"[config] daemon.db_path = {config.daemon.db_path}", file=file)
-    print(f"[config] daemon.port_auto_fallback = {config.daemon.port_auto_fallback}", file=file)
-    print(f"[config] capture.enabled = {config.capture.enabled}", file=file)
-    print(f"[config] capture.hint_format = {config.capture.hint_format}", file=file)
+def _debug_trace(config: AppConfig, config_path: Path) -> None:
+    """Log config source trace for debugging (logger + print fallback)."""
+    from bible_cc_plugin.logging_config import get_logger
+
+    log = get_logger("config")
+    lines = [
+        f"loading from: {config_path}",
+        f"bible.base_url = {config.bible.base_url!r}",
+        f"bible.token = {'<set>' if config.bible.token else '<none>'}",
+        f"daemon.port = {config.daemon.port}",
+        f"daemon.db_path = {config.daemon.db_path}",
+        f"daemon.port_auto_fallback = {config.daemon.port_auto_fallback}",
+        f"capture.enabled = {config.capture.enabled}",
+        f"capture.hint_format = {config.capture.hint_format}",
+        f"logging.level = {config.logging.level}",
+        f"logging.file = {config.logging.file}",
+    ]
+    for line in lines:
+        log.debug("[config] %s", line)
+        # Fallback: if no handlers configured yet, also print to stderr
+        import logging as _logging
+
+        if not log.handlers and not _logging.getLogger("bible_cc").handlers:
+            print(f"[config] {line}", file=sys.stderr)

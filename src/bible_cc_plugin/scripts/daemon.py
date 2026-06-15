@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import logging
 import subprocess
 import sys
 import time
@@ -20,9 +19,9 @@ from pathlib import Path
 import httpx
 
 from bible_cc_plugin.config import load_config
+from bible_cc_plugin.logging_config import configure_logging, get_logger
 
-logger = logging.getLogger("bible-cc.daemon")
-logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+_logger = get_logger("daemon")
 
 _DAEMON_LOG = Path.home() / ".bible-cc" / "daemon.log"
 
@@ -52,6 +51,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(debug=args.debug)
+    configure_logging(**config.logging.model_dump())
     port = config.daemon.port
     base_url = f"http://127.0.0.1:{port}"
 
@@ -73,7 +73,7 @@ def _do_start(port: int, *, debug: bool) -> None:
         r = _local_client(timeout=2).get(f"{base_url}/daemon/health")
         if r.status_code == 200:
             data = r.json()
-            print(f"Daemon already running (pid={data['pid']}, port={port})")
+            _logger.info("Daemon already running (pid=%s, port=%d)", data["pid"], port)
             return
     except Exception:
         pass
@@ -82,21 +82,20 @@ def _do_start(port: int, *, debug: bool) -> None:
     log_fh = open(str(_DAEMON_LOG), "a")
 
     log_level = "debug" if debug else "info"
-    cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "bible_cc_plugin.daemon.server:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(port),
-        "--log-level",
-        log_level,
-    ]
-    print(f"[daemon] Starting on 127.0.0.1:{port}...", end=" ", flush=True)
+    _logger.info("Starting on 127.0.0.1:%d...", port)
     subprocess.Popen(
-        cmd,
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "bible_cc_plugin.daemon.server:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            log_level,
+        ],
         stdout=log_fh,
         stderr=log_fh,
     )
@@ -107,22 +106,21 @@ def _do_start(port: int, *, debug: bool) -> None:
             r = _local_client(timeout=1).get(f"{base_url}/daemon/health")
             ok = r.status_code == 200
         except httpx.ConnectError:
-            logger.debug("daemon not ready (connection refused)")
+            _logger.debug("daemon not ready (connection refused)")
         except Exception:
-            logger.warning("health check error: %s", sys.exc_info()[1])
+            _logger.warning("health check error: %s", sys.exc_info()[1])
         if ok:
             log_fh.close()
             data = r.json()
-            print(f"OK (pid={data['pid']}, port={port})")
+            _logger.info("OK (pid=%s, port=%d)", data["pid"], port)
             return
         time.sleep(0.3)
 
     log_fh.close()
     tail = _tail_log(_DAEMON_LOG)
-    print("FAILED (health check timed out)")
+    _logger.error("FAILED (health check timed out)")
     if tail:
-        print(f"Last 20 lines of {_DAEMON_LOG}:")
-        print(tail)
+        _logger.error("Last 20 lines of %s:\n%s", _DAEMON_LOG, tail)
     sys.exit(1)
 
 
@@ -130,13 +128,13 @@ def _do_stop(base_url: str, *, force: bool = False) -> None:
     try:
         r = _local_client(timeout=5).post(f"{base_url}/daemon/stop")
         if r.status_code == 200:
-            print("Daemon stopped.")
+            _logger.info("Daemon stopped.")
             return
     except Exception as e:
         if force:
             pass  # graceful stop failed — falling through to force-kill
         else:
-            print(f"Daemon is not running (stop failed: {e})")
+            _logger.warning("Daemon is not running (stop failed: %s)", e)
             return
 
     if force:
@@ -148,12 +146,12 @@ def _do_stop(base_url: str, *, force: bool = False) -> None:
             for pid in result.stdout.strip().split("\n"):
                 if pid:
                     subprocess.run(["kill", "-9", pid])
-                    print(f"Daemon force-killed (pid={pid}, port={port}).")
+                    _logger.warning("Daemon force-killed (pid=%s, port=%d).", pid, port)
                     return
         except Exception:
             pass
 
-    print("Daemon is not running.")
+    _logger.info("Daemon is not running.")
 
 
 def _do_status(base_url: str) -> None:
@@ -163,15 +161,18 @@ def _do_status(base_url: str) -> None:
             data = r.json()
             uptime_m = data["uptime"] // 60
             uptime_s = data["uptime"] % 60
-            print("Daemon: running")
-            print(f"  PID:    {data['pid']}")
-            print(f"  Port:   {data['port']}")
-            print(f"  Uptime: {uptime_m}m {uptime_s}s")
+            _logger.info(
+                "Daemon: running (PID=%s, Port=%s, Uptime=%dm%ds)",
+                data["pid"],
+                data["port"],
+                uptime_m,
+                uptime_s,
+            )
             return
     except Exception as e:
-        print(f"Daemon: not running ({e})")
+        _logger.info("Daemon: not running (%s)", e)
         return
-    print(f"Daemon: not running (HTTP {r.status_code})")
+    _logger.info("Daemon: not running (HTTP %d)", r.status_code)
 
 
 if __name__ == "__main__":

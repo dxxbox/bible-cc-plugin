@@ -23,6 +23,10 @@ from pathlib import Path
 
 import httpx
 
+from bible_cc_plugin.logging_config import configure_logging, get_logger
+
+_logger = get_logger("setup")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="bible-cc-plugin setup wizard")
@@ -40,6 +44,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     debug = args.debug
+
+    configure_logging("DEBUG" if debug else "INFO", "~/.bible-cc/daemon.log")
 
     config_dir = Path.home() / ".bible-cc"
     config_path = config_dir / "config.json"
@@ -88,6 +94,9 @@ def _do_reset(config_dir: Path, *, force: bool = False, non_interactive: bool = 
     # ── Confirmation ─────────────────────────────────────
     if not force:
         if non_interactive:
+            _logger.error(
+                "--reset in non-interactive mode requires --force (would DELETE: ~/.bible-cc/)"
+            )
             print(
                 "Error: --reset in non-interactive mode requires --force.\n"
                 "  This operation will DELETE: ~/.bible-cc/ (all config + data)\n"
@@ -102,6 +111,7 @@ def _do_reset(config_dir: Path, *, force: bool = False, non_interactive: bool = 
                 print("Aborted.")
                 sys.exit(0)
 
+    _logger.info("Removing %s...", config_dir)
     print(f"Removing {config_dir}...")
     shutil.rmtree(config_dir)
     # Also kill any running daemon on default port
@@ -115,6 +125,7 @@ def _kill_daemon_if_running() -> None:
     try:
         r = httpx.Client(trust_env=False, timeout=3).post("http://127.0.0.1:9777/daemon/stop")
         if r.status_code == 200:
+            _logger.info("Daemon stopped gracefully.")
             print("Daemon stopped gracefully.")
             return
     except Exception:
@@ -127,6 +138,7 @@ def _kill_daemon_if_running() -> None:
         for pid in pids:
             if pid:
                 subprocess.run(["kill", "-9", pid])
+                _logger.warning("Daemon force-killed (pid=%s).", pid)
                 print(f"Daemon force-killed (pid={pid}).")
     except Exception:
         pass
@@ -152,6 +164,7 @@ def _write_mcp_json(base_url: str, token: str) -> None:
     }
     mcp_path = project_root / ".mcp.json"
     mcp_path.write_text(json.dumps(mcp, indent=2) + "\n")
+    _logger.info(".mcp.json written to %s", mcp_path)
     print(f"  .mcp.json written to {mcp_path}")
 
 
@@ -175,6 +188,7 @@ def _write_and_test(
 
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2) + "\n")
+    _logger.info("Config written to %s", config_path)
     print(f"\nConfig written to {config_path}")
 
     # Generate .mcp.json in project root (for Claude Code MCP discovery)
@@ -186,10 +200,13 @@ def _write_and_test(
         r = httpx.get(f"{base_url.rstrip('/')}/health", timeout=5)
         latency = r.elapsed.total_seconds() * 1000
         if r.status_code == 200:
+            _logger.info("BiBLE connectivity OK (%s, %.0fms)", base_url, latency)
             print(f"OK ({latency:.0f}ms)")
         else:
+            _logger.warning("BiBLE connectivity: HTTP %d (%s)", r.status_code, base_url)
             print(f"WARNING: HTTP {r.status_code}")
     except Exception as e:
+        _logger.warning("BiBLE unreachable: %s (%s)", e, base_url)
         print(f"UNREACHABLE ({e})")
         if debug:
             import traceback
