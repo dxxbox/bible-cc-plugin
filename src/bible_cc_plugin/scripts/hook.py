@@ -242,12 +242,13 @@ def main() -> None:
     )
 
     _logger.info(
-        "hook=%s stdin_sid=%s cli_sid=%s merged_sid=%s msg_len=%d",
+        "hook=%s stdin_sid=%s cli_sid=%s merged_sid=%s msg_len=%d stdin_keys=%s",
         args.action,
         stdin_data.get("session_id", "<none>") or "<empty>",
         args.session_id or "<none>",
         session_id or "<empty>",
         len(message or ""),
+        sorted(stdin_data.keys()) if stdin_data else "[]",
     )
 
     # 5. Dispatch（不变）
