@@ -115,6 +115,8 @@ def _handle_turn_user(config, args) -> None:
         mlen = len(args.message or "")
         tid = body.get("turn_id")
         _logger.info("turn-user %s msg_len=%d → OK turn_id=%s", sid, mlen, tid)
+    except httpx.HTTPStatusError as e:
+        _logger.warning("turn-user daemon returned %d → skipping (%s)", e.response.status_code, e)
     except Exception as e:
         _logger.warning("turn-user daemon unreachable → skipping (%s)", e)
 
@@ -145,9 +147,22 @@ def _handle_turn_tool(config, args) -> None:
         r.raise_for_status()
         olen = len(args.output or "")
         sid = args.session_id[:8]
-        _logger.info("turn-tool %s %s out=%d → OK", sid, args.tool, olen)
+        cmd = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
+        _logger.info("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
+    except httpx.HTTPStatusError as e:
+        _logger.warning("turn-tool daemon returned %d → skipping (%s)", e.response.status_code, e)
     except Exception as e:
         _logger.warning("turn-tool daemon unreachable → skipping (%s)", e)
+
+
+def _handle_turn_stop(config, args) -> None:
+    """Stop hook handler — no-op placeholder for Phase 2b mid-session detection.
+
+    Claude Code Stop fires after every assistant response ("once per turn").
+    This handler exists as a wiring point — Phase 2b will queue async
+    moment detection here.  Currently returns immediately.
+    """
+    _logger.info("turn-stop — TODO(Phase 2b): queue async mid-session moment detection")
 
 
 def _handle_session_end(config, args) -> None:
@@ -185,7 +200,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="bible-cc hook bridge")
     parser.add_argument(
         "action",
-        choices=["session-start", "turn-user", "turn-tool", "session-end"],
+        choices=["session-start", "turn-user", "turn-tool", "turn-stop", "session-end"],
     )
     parser.add_argument("--session-id", default=None)
     parser.add_argument("--message", default=None)
@@ -209,7 +224,13 @@ def main() -> None:
     tool_input = args.input
     if not tool_input and "tool_input" in stdin_data:
         tool_input = json.dumps(stdin_data["tool_input"])
-    tool_output = args.output or stdin_data.get("tool_output", "")
+    raw_output = args.output or stdin_data.get("tool_response", "")
+    if isinstance(raw_output, dict):
+        tool_output = json.dumps(raw_output, ensure_ascii=False)
+    elif isinstance(raw_output, str):
+        tool_output = raw_output
+    else:
+        tool_output = str(raw_output) if raw_output else ""
 
     merged = argparse.Namespace(
         action=args.action,
@@ -236,6 +257,8 @@ def main() -> None:
         _handle_turn_user(config, merged)
     elif merged.action == "turn-tool":
         _handle_turn_tool(config, merged)
+    elif merged.action == "turn-stop":
+        _handle_turn_stop(config, merged)
     elif merged.action == "session-end":
         _handle_session_end(config, merged)
 

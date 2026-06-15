@@ -176,6 +176,21 @@ def insert_session(conn: sqlite3.Connection, session_id: str) -> bool:
         return False
 
 
+def reactivate_session(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Reactivate a completed session so turns can be recorded again.
+
+    Returns True if the row was updated (status was 'completed'),
+    False if the session was already active or doesn't exist.
+    """
+    cur = conn.execute(
+        "UPDATE sessions SET status='active', closed_at=NULL "
+        "WHERE session_id=? AND status='completed'",
+        (session_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def mark_session_completed(conn: sqlite3.Connection, session_id: str) -> None:
     """Mark a session as completed.  Phase 1: only updates status + closed_at."""
     conn.execute(

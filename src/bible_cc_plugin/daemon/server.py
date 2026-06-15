@@ -240,11 +240,13 @@ async def session_start(req: _SessionStartRequest):
     from bible_cc_plugin.daemon.buffer import (
         get_recovery,
         insert_session,
+        reactivate_session,
     )
 
     # crash recovery scan — collect unclosed session ids
     try:
         recovery = get_recovery(conn, current_session_id=req.session_id)
+        _logger.info("Collect unclosed session: %s", req.session_id)
     except Exception as exc:
         _logger.warning("crash recovery scan failed: %s", exc)
         recovery = None
@@ -254,11 +256,16 @@ async def session_start(req: _SessionStartRequest):
         _recovery_cache[req.session_id] = recovery
 
     is_new = insert_session(conn, req.session_id)
+    if not is_new:
+        reactivated = reactivate_session(conn, req.session_id)
+        if reactivated:
+            _logger.info("session/start %s reactivated (was completed)", req.session_id)
+
     _logger.info(
         "session/start %s is_new=%s recovery=%s",
         req.session_id,
         is_new,
-        recovery["unclosed_sessions_found"] if recovery else 0,
+        recovery["unclosed_sessions_found"] if recovery else 0
     )
 
     return {

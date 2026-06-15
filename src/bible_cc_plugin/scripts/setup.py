@@ -23,6 +23,7 @@ from pathlib import Path
 
 import httpx
 
+from bible_cc_plugin.config import AppConfig
 from bible_cc_plugin.logging_config import configure_logging, get_logger
 
 _logger = get_logger("setup")
@@ -177,14 +178,9 @@ def _write_and_test(
     debug: bool,
 ) -> None:
     """Write config.json and test BiBLE connectivity."""
-    config = {
-        "bible": {
-            "base_url": base_url.rstrip("/"),
-            "token": token if token else None,
-            "kb_index": "bible-cc",
-        },
-        "daemon": {"port": 9777, "port_auto_fallback": False},
-    }
+    config = AppConfig().model_dump()
+    config["bible"]["base_url"] = base_url.rstrip("/")
+    config["bible"]["token"] = token if token else None
 
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2) + "\n")

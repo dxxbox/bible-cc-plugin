@@ -439,7 +439,7 @@ class TestStdinJsonParsing:
             "session_id": "ghi-789",
             "tool_name": "Bash",
             "tool_input": {"command": "pytest"},
-            "tool_output": "All tests passed.",
+            "tool_response": "All tests passed.",
         })
         called_with = {}
 

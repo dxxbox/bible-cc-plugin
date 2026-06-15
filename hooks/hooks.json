@@ -52,6 +52,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-stop",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-end",
             "timeout": 30
           }

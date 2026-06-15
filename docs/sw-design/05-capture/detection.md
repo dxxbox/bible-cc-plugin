@@ -26,6 +26,24 @@
 6. 重置阈值计数器
 ```
 
+### 1.2.1 数据完整性：Assistant Response 缺失
+
+当前 hook 覆盖范围：
+
+| 数据 | Hook | 状态 |
+|------|------|------|
+| 用户消息 | UserPromptSubmit → `prompt` 字段 | ✅ 已捕获 |
+| 工具调用 + 输出 | PostToolUse → `tool_name` + `tool_output` | ✅ 已捕获 |
+| Assistant 文本回复 | **无 hook 捕获** | ❌ 缺失 |
+
+Stop hook（`turn-stop`）当前为 no-op——仅触发时机标记，不携带 response 内容。
+Phase 2b 实现 `_process_detection_task` 时，如果把 assistant 回复文本纳入 prompt 构建，
+需要额外机制获取该文本（Stop 事件的 stdin JSON 中是否有 `response` 字段待验证，
+或需要额外的 hook 事件）。如果不可用，detection prompt 只能基于 user 消息 + tool 输出，
+缺少 assistant 的推理/决策过程上下文。
+
+> **记录于**: 2026-06-15，Phase 2a 真实环境测试期间。
+
 ### 1.3 异步模型
 
 ```
