@@ -10,7 +10,7 @@ packages = ["src/bible_cc_plugin"]
 
 [project]
 name = "bible-cc-plugin"
-version = "0.1.0"
+version = "0.11.0"
 description = "Claude Code plugin — BiBLE Atlas memory + knowledge broker"
 requires-python = ">=3.10"
 dependencies = [
@@ -30,6 +30,7 @@ bible-cc-hook = "bible_cc_plugin.scripts.hook:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
+    "pytest-asyncio>=1.4.0",
     "pytest-html>=4.0.0",
     "ruff>=0.8.0",
 ]
@@ -48,3 +49,4 @@ quote-style = "double"
 testpaths = ["tests"]
 log_cli = true
 log_cli_level = "INFO"
+asyncio_mode = "auto"

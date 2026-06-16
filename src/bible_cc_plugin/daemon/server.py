@@ -9,28 +9,50 @@ Phase 1d: request-id middleware, verbose health, debug endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from bible_cc_plugin.logging_config import setup_logging
+from bible_cc_plugin.config import load_config
+from bible_cc_plugin.logging_config import get_logger, setup_logging
 
 _logger = setup_logging(level="INFO")
+_worker_logger = get_logger("detection.worker")
 _START_TIME = time.time()
-
-from bible_cc_plugin.config import load_config
 
 _config = load_config()
 
-app = FastAPI(title="bible-cc-daemon", version="0.1.0")
-
 _startup_timings: dict[str, int] = {}  # Phase 1d: step → ms
 _debug_mode: bool = os.getenv("BIBLE_CC_DEBUG", "") in ("1", "true", "yes")
+
+# ── Phase 2b detection infrastructure ─────────────────────────────────────
+_detection_queue: asyncio.Queue = asyncio.Queue()
+_threshold_state: dict[str, dict] = {}  # session_id → {turns, chars}
+_app_config = _config  # may be updated by lifespan startup
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # pragma: no cover — tested via integration
+    """FastAPI lifespan: start detection worker on startup, graceful stop."""
+    global _app_config
+    _app_config = load_config()
+    worker_task = asyncio.create_task(_detection_worker(), name="detection-worker")
+    _worker_logger.info("detection worker started — queue ready")
+    yield
+    _worker_logger.info("detection worker stopping — sentinel sent")
+    await _detection_queue.put(None)
+    await worker_task
+    _worker_logger.info("detection worker stopped")
+
+
+app = FastAPI(title="bible-cc-daemon", version="0.1.0", lifespan=lifespan)
 
 _logger.info("daemon starting on port %s", _config.daemon.port)
 
@@ -63,6 +85,99 @@ async def request_id_middleware(request: Request, call_next):
         rid,
     )
     return response
+
+
+# ── Detection worker + threshold (Phase 2b) ────────────────────────────────
+
+
+async def _detection_worker():
+    """Background worker: picks up detection tasks from the queue.
+
+    Crash-safe: any exception in _process_detection_task is caught, logged,
+    and the worker continues.  The sentinel (None) triggers graceful exit.
+    """
+    _worker_logger.info("detection worker loop started")
+    while True:
+        task = None
+        try:
+            qsize = _detection_queue.qsize()
+            if qsize > 100:
+                _worker_logger.warning(
+                    "detection queue size=%d — possible API rate limit or worker slowdown",
+                    qsize,
+                )
+            task = await _detection_queue.get()
+            if task is None:  # sentinel
+                _worker_logger.info("detection worker received sentinel — exiting")
+                break
+
+            _worker_logger.debug(
+                "detection task: session=%s phase=%s queue_depth=%d",
+                task.get("session_id", "?")[:8],
+                task.get("phase", "?"),
+                qsize,
+            )
+            await _process_detection_task(task)
+            _worker_logger.debug(
+                "detection task done: session=%s phase=%s",
+                task.get("session_id", "?")[:8],
+                task.get("phase", "?"),
+            )
+        except Exception:
+            _worker_logger.error(
+                "detection worker crashed, restarting...", exc_info=True
+            )
+            await asyncio.sleep(1)
+        finally:
+            if task is not None:
+                _detection_queue.task_done()
+
+
+async def _process_detection_task(task: dict):
+    """Placeholder for Phase 2b.3 — process a single detection task.
+
+    Currently a no-op.  2b.3 replaces this with the full pipeline:
+    read turns → call LLM → dedup → insert moment.
+    """
+    # TODO(2b.3): implement detection pipeline
+    _worker_logger.debug(
+        "detection task placeholder: session=%s phase=%s",
+        task.get("session_id", "?")[:8],
+        task.get("phase", "?"),
+    )
+
+
+def check_threshold(session_id: str, turns: int = 1, chars: int = 0) -> bool:
+    """Check and update the per-session detection threshold counter.
+
+    Returns True when either ``turns >= commit_threshold_turns`` or
+    ``chars >= commit_threshold_chars`` (first-to-trigger).  On trigger
+    the counter is reset to 0 so the next window starts fresh.
+
+    The counter is in-memory only — daemon restart resets all counters.
+    """
+    state = _threshold_state.setdefault(session_id, {"turns": 0, "chars": 0})
+    state["turns"] += turns
+    state["chars"] += chars
+
+    cfg = _app_config.capture
+    if not cfg.enabled:
+        return False
+
+    if state["turns"] >= cfg.commit_threshold_turns or state["chars"] >= cfg.commit_threshold_chars:
+        state["turns"] = 0
+        state["chars"] = 0
+        return True
+    return False
+
+
+def reset_threshold(session_id: str) -> None:
+    """Reset the threshold counter for a session.
+
+    Called on /clear and /compact so detection windows don't carry over
+    stale counts from before the context reset.
+    """
+    _threshold_state.pop(session_id, None)
 
 
 # ── lazy SQLite init (Phase 1a) ───────────────────────────────────────
