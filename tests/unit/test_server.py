@@ -764,6 +764,77 @@ class TestPhase2Detection:
         assert r.json()["status"] == "completed"
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2c.3: PUT/DELETE /daemon/moments
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestMomentsCRUD:
+    """PUT/DELETE /daemon/moments/{id} — edit and delete pending moments."""
+
+    def test_put_updates_title(self, client):
+        """PUT changes title, GET reflects new value."""
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+        )
+        import bible_cc_plugin.daemon.server as server_mod
+
+        conn = server_mod._get_db()
+        insert_moment(
+            conn, "s1", "decision", "Old", "N", compute_content_hash("s1", "Old", "N")
+        )
+        # Find the moment id
+        r = client.get("/daemon/moments?session_id=s1")
+        mid = r.json()["moments"][0]["id"]
+
+        r = client.put(
+            f"/daemon/moments/{mid}", json={"title": "New Title", "narrative": "N2"}
+        )
+        assert r.status_code == 200
+        assert r.json()["title"] == "New Title"
+
+    def test_delete_removes(self, client):
+        """DELETE removes moment, GET returns empty."""
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+        )
+        import bible_cc_plugin.daemon.server as server_mod
+
+        conn = server_mod._get_db()
+        insert_moment(
+            conn, "s2", "decision", "T", "N", compute_content_hash("s2", "T", "N")
+        )
+        r = client.get("/daemon/moments?session_id=s2")
+        mid = r.json()["moments"][0]["id"]
+
+        r = client.delete(f"/daemon/moments/{mid}")
+        assert r.status_code == 200
+
+        r = client.get("/daemon/moments?session_id=s2")
+        assert len(r.json()["moments"]) == 0
+
+    def test_edit_flushed_returns_409(self, client):
+        """Flushed moment cannot be edited."""
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+        )
+        import bible_cc_plugin.daemon.server as server_mod
+
+        conn = server_mod._get_db()
+        mid = insert_moment(
+            conn, "s3", "decision", "T", "N", compute_content_hash("s3", "T", "N")
+        )
+        # Mark as flushed
+        conn.execute("UPDATE moments SET flushed=1 WHERE id=?", (mid,))
+        conn.commit()
+
+        r = client.put(f"/daemon/moments/{mid}", json={"title": "X"})
+        assert r.status_code == 409
+
+
 class TestDebugDetectionEndpoints:
     """Debug endpoints for detection history — only when BIBLE_CC_DEBUG=true."""
 

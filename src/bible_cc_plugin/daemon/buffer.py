@@ -378,6 +378,38 @@ def insert_moment(
         return None
 
 
+def update_moment(
+    conn: sqlite3.Connection,
+    moment_id: int,
+    title: str,
+    narrative: str,
+) -> bool:
+    """Update a moment's title and narrative.  Only allowed for flushed=0.
+
+    Returns True if the row was updated, False if the moment does not exist
+    or is already flushed.
+    """
+    cur = conn.execute(
+        "UPDATE moments SET title=?, narrative=? WHERE id=? AND flushed=0",
+        (title, narrative, moment_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_moment(conn: sqlite3.Connection, moment_id: int) -> bool:
+    """Delete a moment.  Only allowed for flushed=0.
+
+    Returns True if the row was deleted, False otherwise.
+    """
+    cur = conn.execute(
+        "DELETE FROM moments WHERE id=? AND flushed=0",
+        (moment_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def get_unflushed_moments(conn: sqlite3.Connection, session_id: str) -> list[dict]:
     """Return all pending (flushed=0) moments for a session, newest first."""
     rows = conn.execute(

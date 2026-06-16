@@ -625,6 +625,44 @@ async def list_moments(session_id: str):
     return {"moments": get_moments_by_session(conn, session_id)}
 
 
+class _UpdateMomentRequest(BaseModel):
+    title: str = ""
+    narrative: str = ""
+
+
+@app.put("/daemon/moments/{moment_id}")
+async def update_moment(moment_id: int, body: _UpdateMomentRequest):
+    """Edit a pending moment's title/narrative. 409 if already flushed."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+    from bible_cc_plugin.daemon.buffer import get_moments_by_session, update_moment
+
+    ok = update_moment(
+        conn,
+        moment_id,
+        title=body.title,
+        narrative=body.narrative,
+    )
+    if not ok:
+        raise HTTPException(409, "moment not found or already flushed")
+    return {"id": moment_id, "title": body.title, "narrative": body.narrative}
+
+
+@app.delete("/daemon/moments/{moment_id}")
+async def delete_moment(moment_id: int):
+    """Delete a pending moment. 409 if already flushed, 404 if not found."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+    from bible_cc_plugin.daemon.buffer import delete_moment
+
+    ok = delete_moment(conn, moment_id)
+    if not ok:
+        raise HTTPException(409, "moment not found or already flushed")
+    return {"deleted": True}
+
+
 @app.get("/daemon/sessions")
 async def list_sessions():
     """Return all sessions ordered by created_at (newest first)."""
