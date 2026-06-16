@@ -520,7 +520,13 @@ async def turn_user(req: _TurnUserRequest):
     turn_id = insert_turn_user(conn, req.session_id, req.message)
     increment_turn_count(conn, req.session_id, len(req.message))
     _logger.debug("turn/user %s seq=%d", req.session_id, turn_id)
-    return {"turn_id": turn_id, "queued": False}
+
+    queued = False
+    if _app_config.capture.enabled:
+        if check_threshold(req.session_id, turns=1, chars=len(req.message)):
+            await _detection_queue.put({"session_id": req.session_id, "phase": 1})
+            queued = True
+    return {"turn_id": turn_id, "queued": queued}
 
 
 @app.post("/turn/tool")
@@ -545,7 +551,13 @@ async def turn_tool(req: _TurnToolRequest):
     turn_id = insert_turn_tool(conn, req.session_id, req.tool_name, req.arguments, req.output)
     increment_turn_count(conn, req.session_id, len(req.output))
     _logger.debug("turn/tool %s seq=%d tool=%s", req.session_id, turn_id, req.tool_name)
-    return {"turn_id": turn_id, "queued": False}
+
+    queued = False
+    if _app_config.capture.enabled:
+        if check_threshold(req.session_id, turns=1, chars=len(req.output)):
+            await _detection_queue.put({"session_id": req.session_id, "phase": 1})
+            queued = True
+    return {"turn_id": turn_id, "queued": queued}
 
 
 @app.post("/context/inject")

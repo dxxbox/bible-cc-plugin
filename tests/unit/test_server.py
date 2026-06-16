@@ -241,6 +241,40 @@ class TestTurnEndpoints:
         elapsed = (time.monotonic() - start) * 1000
         assert elapsed < 200, f"turn/user took {elapsed:.0f}ms"
 
+    def test_turn_user_queues_on_threshold(self, client):
+        """8th turn triggers threshold → queued=true."""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        client.post("/session/start", json={"session_id": "s2b4"})
+        # 7 turns → queued=false
+        for _ in range(7):
+            r = client.post(
+                "/turn/user", json={"session_id": "s2b4", "message": "msg"}
+            )
+            assert r.json()["queued"] is False
+        # 8th turn → threshold → queued=true
+        r = client.post(
+            "/turn/user", json={"session_id": "s2b4", "message": "trigger"}
+        )
+        assert r.json()["queued"] is True
+        # Clean up threshold state
+        server_mod.reset_threshold("s2b4")
+
+    def test_turn_user_no_queue_when_capture_disabled(self, client):
+        """capture.enabled=false → never queues."""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._app_config.capture.enabled = False
+        client.post("/session/start", json={"session_id": "s2b4-d"})
+        for _ in range(10):
+            r = client.post(
+                "/turn/user", json={"session_id": "s2b4-d", "message": "msg"}
+            )
+            assert r.json()["queued"] is False
+
+        server_mod._app_config.capture.enabled = True
+        server_mod.reset_threshold("s2b4-d")
+
 
 class TestSessionsList:
     """GET /daemon/sessions — list active/completed sessions."""

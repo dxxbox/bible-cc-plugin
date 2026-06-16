@@ -12,11 +12,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-DAEMON_LOG = Path.home() / ".bible-cc" / "daemon.log"
+
+@pytest.fixture(scope="module")
+def daemon_log(tmp_path_factory):
+    """Temp log path — never touch ~/.bible-cc/daemon.log in tests."""
+    return tmp_path_factory.mktemp("daemon") / "daemon.log"
 
 
 @pytest.fixture(scope="module")
-def daemon_url():
+def daemon_url(daemon_log):
     """Start the daemon and return its base URL."""
     port = 19777
     base_url = f"http://127.0.0.1:{port}"
@@ -29,8 +33,8 @@ def daemon_url():
     except Exception:
         pass
 
-    DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
-    log_fh = open(str(DAEMON_LOG), "a")
+    daemon_log.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(str(daemon_log), "a")
     proc = subprocess.Popen(
         [
             sys.executable, "-m", "uvicorn",
