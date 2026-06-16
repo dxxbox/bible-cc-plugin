@@ -119,12 +119,17 @@ def _do_reset(config_dir: Path, *, force: bool = False, non_interactive: bool = 
     _kill_daemon_if_running()
 
 
-def _kill_daemon_if_running() -> None:
+def _kill_daemon_if_running(port: int | None = None) -> None:
     """Try to stop a running daemon via HTTP, then force-kill if needed."""
     import subprocess
 
+    if port is None:
+        port = AppConfig().daemon.port
+
     try:
-        r = httpx.Client(trust_env=False, timeout=3).post("http://127.0.0.1:9777/daemon/stop")
+        r = httpx.Client(trust_env=False, timeout=3).post(
+            f"http://127.0.0.1:{port}/daemon/stop"
+        )
         if r.status_code == 200:
             _logger.info("Daemon stopped gracefully.")
             print("Daemon stopped gracefully.")
@@ -134,7 +139,7 @@ def _kill_daemon_if_running() -> None:
 
     # Fallback: find by port
     try:
-        result = subprocess.run(["lsof", "-ti", ":9777"], capture_output=True, text=True)
+        result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True)
         pids = result.stdout.strip().split("\n")
         for pid in pids:
             if pid:

@@ -107,7 +107,7 @@ Env override: `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
-| `model` | string | `"claude-sonnet-4-5"` | Moment detection 使用的 Anthropic 模型 |
+| `model` | string | `"deepseek-v4-flash"` | Moment detection 使用的模型 |
 | `max_tokens` | int | `512` | 每次 detection LLM 调用的 max_tokens |
 | `temperature` | float（0.0-1.0） | `0.0` | Temperature（确定性输出） |
 

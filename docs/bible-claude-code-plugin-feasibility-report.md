@@ -721,7 +721,7 @@ stdlib `json` module handles parsing with zero additional packages.
     "tool_result_max_chars": 250
   },
   "detection": {
-    "model": "claude-sonnet-4-5",
+    "model": "deepseek-v4-flash",
     "max_tokens": 512,
     "temperature": 0.0
   },

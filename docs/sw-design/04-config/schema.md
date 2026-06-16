@@ -44,7 +44,7 @@ class CaptureConfig(BaseModel):
     tool_result_max_chars: int = 250
 
 class DetectionConfig(BaseModel):
-    model: str = "claude-sonnet-4-5"
+    model: str = "deepseek-v4-flash"
     max_tokens: int = 512
     temperature: float = 0.0
 
@@ -159,7 +159,7 @@ def validate_hint_format(cls, v: str) -> str:
 
 | 键 | Type | Default | Range | Env Override | Validation |
 |----|------|---------|-------|-------------|------------|
-| `model` | `str` | `"claude-sonnet-4-5"` | Anthropic model ID | — | 实现时优先取 `ANTHROPIC_SMALL_FAST_MODEL` → `ANTHROPIC_MODEL` → config default。 |
+| `model` | `str` | `"deepseek-v4-flash"` | Anthropic model ID | — | 实现时优先取 `ANTHROPIC_SMALL_FAST_MODEL` → `ANTHROPIC_MODEL` → `BIBLE_CC_DETECTION_MODEL` → config default。 |
 | `max_tokens` | `int` | `512` | 1–4096 | — | 非法值回退到 512。 |
 | `temperature` | `float` | `0.0` | 0.0–1.0 | — | 建议保持 0.0。 |
 
@@ -167,12 +167,18 @@ def validate_hint_format(cls, v: str) -> str:
 
 ```python
 def resolve_detection_model(config_model: str) -> str:
+    """Resolution order: ANTHROPIC_SMALL_FAST_MODEL > ANTHROPIC_MODEL > BIBLE_CC_DETECTION_MODEL > config_model > default.
+    
+    Note: BIBLE_CC_DETECTION_MODEL is applied first in load_config(),
+    then ANTHROPIC_SMALL_FAST_MODEL/ANTHROPIC_MODEL override it.
+    """
     import os
     return (
         os.getenv("ANTHROPIC_SMALL_FAST_MODEL") or
         os.getenv("ANTHROPIC_MODEL") or
+        os.getenv("BIBLE_CC_DETECTION_MODEL") or
         config_model or
-        "claude-sonnet-4-5"
+        "deepseek-v4-flash"
     )
 ```
 
@@ -203,7 +209,7 @@ def is_bypassed(session_id: str, patterns: list[str]) -> bool:
   "injection": {"enabled": true, "token_budget": 1200, "include_turns_summary": true, "include_moments": true, "crash_recovery_moments": true, "inject_fallback": "skip"},
   "search": {"default_top_k": 8, "default_min_score": 0.35},
   "capture": {"enabled": true, "mode": "key_moments", "commit_threshold_turns": 8, "commit_threshold_chars": 16000, "mid_session_detection": true, "mid_session_upload": false, "hint_format": "quote_with_command", "tool_result_max_chars": 250},
-  "detection": {"model": "claude-sonnet-4-5", "max_tokens": 512, "temperature": 0.0},
+  "detection": {"model": "deepseek-v4-flash", "max_tokens": 512, "temperature": 0.0},
   "bypass": {"session_patterns": []}
 }
 ```

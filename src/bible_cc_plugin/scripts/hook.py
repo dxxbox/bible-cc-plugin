@@ -23,7 +23,9 @@ from bible_cc_plugin.logging_config import configure_logging, get_logger
 
 _logger = get_logger("hook")
 
-_DAEMON_LOG = Path.home() / ".bible-cc" / "daemon.log"
+def _resolve_log_path(config) -> Path:
+    """Return the expanded log file path from config."""
+    return Path(config.logging.file).expanduser()
 
 
 def _local_client(timeout: int = 5) -> httpx.Client:
@@ -51,7 +53,7 @@ def _handle_session_start(config, args) -> None:
     absent (e.g. startup event fires before a session exists).
     """
     # 1. Ensure daemon running（session-agnostic, must run first）
-    ok = ensure_daemon_started(config.daemon.port, _DAEMON_LOG)
+    ok = ensure_daemon_started(config.daemon.port, _resolve_log_path(config))
     if not ok:
         _logger.warning("daemon failed to start")
         return

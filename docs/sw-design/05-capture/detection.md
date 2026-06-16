@@ -170,7 +170,7 @@ Now identify:
 
 | 参数 | Phase 1 | Phase 2 |
 |------|---------|---------|
-| model | detection.model (default claude-sonnet-4-5) | same |
+| model | detection.model (default deepseek-v4-flash) | same |
 | max_tokens | detection.max_tokens (default 512) | detection.max_tokens × 2（自动推导，不单独配置） |
 | temperature | 0.0 | 0.0 |
 | API key | ANTHROPIC_API_KEY (from env) | same |

@@ -220,7 +220,7 @@ def _handle_session_end(config: AppConfig, args) -> None:
 
 | # | 当前代码 | 目标 | 原因 |
 |---|---------|------|------|
-| 1 | `detection.model = "claude-sonnet-4-5"` | `"deepseek-v4-flash"` | 用户指定，计划与代码都不对 |
+| 1 | `detection.model = "deepseek-v4-flash"` | 设计文档已更新 | ✅ 2026-06-16 已对齐 |
 | 2 | `capture.mode: str = "key_moments"` | `Literal["key_moments", "all"]` | `all` 是合法用户选项，需类型约束 |
 | 3 | `load_config()` Tier 3 无 capture/detection env override | 补 `BIBLE_CC_CAPTURE_ENABLED`、`BIBLE_CC_DETECTION_MODEL` 等 | 与 Phase 0 已有的三层加载模式保持一致 |
 

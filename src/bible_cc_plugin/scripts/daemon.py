@@ -23,7 +23,9 @@ from bible_cc_plugin.logging_config import configure_logging, get_logger
 
 _logger = get_logger("daemon")
 
-_DAEMON_LOG = Path.home() / ".bible-cc" / "daemon.log"
+def _resolve_log_path(config) -> Path:
+    """Return the expanded log file path from config."""
+    return Path(config.logging.file).expanduser()
 
 
 def _local_client(timeout: int = 5) -> httpx.Client:
@@ -56,7 +58,7 @@ def main() -> None:
     base_url = f"http://127.0.0.1:{port}"
 
     if args.action == "start":
-        _do_start(port, debug=args.debug)
+        _do_start(port, config, debug=args.debug)
     elif args.action == "stop":
         _do_stop(base_url, force=args.force)
     elif args.action == "status":
@@ -64,10 +66,11 @@ def main() -> None:
     elif args.action == "restart":
         _do_stop(base_url)
         time.sleep(1)
-        _do_start(port, debug=args.debug)
+        _do_start(port, config, debug=args.debug)
 
 
-def _do_start(port: int, *, debug: bool) -> None:
+def _do_start(port: int, config, *, debug: bool) -> None:
+    log_path = _resolve_log_path(config)
     base_url = f"http://127.0.0.1:{port}"
     try:
         r = _local_client(timeout=2).get(f"{base_url}/daemon/health")
@@ -78,8 +81,8 @@ def _do_start(port: int, *, debug: bool) -> None:
     except Exception:
         pass
 
-    _DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
-    log_fh = open(str(_DAEMON_LOG), "a")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(str(log_path), "a")
 
     log_level = "debug" if debug else "info"
     _logger.info("Starting on 127.0.0.1:%d...", port)
@@ -117,10 +120,10 @@ def _do_start(port: int, *, debug: bool) -> None:
         time.sleep(0.3)
 
     log_fh.close()
-    tail = _tail_log(_DAEMON_LOG)
+    tail = _tail_log(log_path)
     _logger.error("FAILED (health check timed out)")
     if tail:
-        _logger.error("Last 20 lines of %s:\n%s", _DAEMON_LOG, tail)
+        _logger.error("Last 20 lines of %s:\n%s", log_path, tail)
     sys.exit(1)
 
 

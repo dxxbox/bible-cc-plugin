@@ -96,7 +96,7 @@ def _get_db():
             verify_integrity,
         )
 
-        db_path = os.getenv("BIBLE_CC_DB_PATH", str(Path.home() / ".bible-cc" / "daemon.db"))
+        db_path = load_config().daemon.db_path
         conn = open_database(db_path)
         apply_pragmas(conn)
         run_migrations(conn)
@@ -165,9 +165,9 @@ async def daemon_health(verbose: bool = False):
         pending = count_pending_moments(conn)
         integrity = verify_integrity(conn)
         schema_ver = get_schema_version(conn)
-        db_path_str = os.getenv("BIBLE_CC_DB_PATH", str(Path.home() / ".bible-cc" / "daemon.db"))
+        db_path_str = load_config().daemon.db_path
         try:
-            db_size = Path(db_path_str).stat().st_size
+            db_size = Path(db_path_str).expanduser().stat().st_size
         except OSError:
             db_size = -1
     else:

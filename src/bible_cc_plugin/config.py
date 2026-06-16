@@ -158,6 +158,11 @@ def load_config(config_path: Path | None = None, *, debug: bool = False) -> AppC
         config.capture.enabled = v.lower() in ("1", "true", "yes")
     if v := os.getenv("BIBLE_CC_DETECTION_MODEL"):
         config.detection.model = v
+    if v := os.getenv("ANTHROPIC_SMALL_FAST_MODEL"):
+        config.detection.model = v
+    if v := os.getenv("ANTHROPIC_MODEL"):
+        if not os.getenv("ANTHROPIC_SMALL_FAST_MODEL"):
+            config.detection.model = v
     if v := os.getenv("BIBLE_CC_LOG_LEVEL"):
         config.logging.level = v.upper()
     if v := os.getenv("BIBLE_CC_LOG_FILE"):
