@@ -165,6 +165,56 @@ class TestSessionEnd:
         r = client.post("/session/end", json={})
         assert r.status_code in (400, 422)
 
+    def test_queues_phase2_detection(self, client):
+        """Active session end → detection='queued'."""
+        client.post("/session/start", json={"session_id": "s2c1"})
+        r = client.post("/session/end", json={"session_id": "s2c1"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "completed"
+        assert r.json().get("detection") == "queued"
+
+    def test_capture_disabled_no_queue(self, client):
+        """enabled=false → detection=null."""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._app_config.capture.enabled = False
+        client.post("/session/start", json={"session_id": "s2c1-d"})
+        r = client.post("/session/end", json={"session_id": "s2c1-d"})
+        assert r.json().get("detection") is None
+
+        server_mod._app_config.capture.enabled = True
+
+    def test_already_completed_no_queue(self, client):
+        """Already completed → no queue."""
+        client.post("/session/start", json={"session_id": "s2c1-ac"})
+        client.post("/session/end", json={"session_id": "s2c1-ac"})
+        r = client.post("/session/end", json={"session_id": "s2c1-ac"})
+        assert r.json()["status"] == "already_completed"
+        assert r.json().get("detection") is None
+
+    def test_returns_before_detection_completes(self, client):
+        """Endpoint returns <200ms."""
+        import time
+
+        client.post("/session/start", json={"session_id": "s2c1-async"})
+        start = time.monotonic()
+        r = client.post("/session/end", json={"session_id": "s2c1-async"})
+        elapsed = (time.monotonic() - start) * 1000
+        assert r.status_code == 200
+        assert elapsed < 200, f"/session/end took {elapsed:.0f}ms"
+
+    def test_resets_threshold_counter(self, client):
+        """End clears threshold state for resource cleanup."""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        client.post("/session/start", json={"session_id": "s2c1-rst"})
+        for _ in range(3):
+            client.post(
+                "/turn/user", json={"session_id": "s2c1-rst", "message": "m"}
+            )
+        client.post("/session/end", json={"session_id": "s2c1-rst"})
+        assert "s2c1-rst" not in server_mod._threshold_state
+
 
 class TestTurnEndpoints:
     """POST /turn/user + POST /turn/tool — buffer turns."""

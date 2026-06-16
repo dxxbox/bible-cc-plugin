@@ -489,12 +489,19 @@ async def session_end(req: _SessionEndRequest):
         }
 
     mark_session_completed(conn, req.session_id)
-    _recovery_cache.pop(req.session_id, None)  # DRIFT #1: prevent unbounded growth
+    _recovery_cache.pop(req.session_id, None)
+    reset_threshold(req.session_id)
     _logger.info("session/end %s completed", req.session_id)
+
+    detection = None
+    if _app_config.capture.enabled:
+        await _detection_queue.put({"session_id": req.session_id, "phase": 2})
+        detection = "queued"
     return {
         "session_id": req.session_id,
         "moments_flushed": 0,
         "status": "completed",
+        "detection": detection,
     }
 
 
