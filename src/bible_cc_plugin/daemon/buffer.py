@@ -248,6 +248,30 @@ def _require_active_session(conn: sqlite3.Connection, session_id: str) -> None:
         raise ValueError(f"session {session_id} is {row['status']}, expected 'active'")
 
 
+def get_recent_turns(
+    conn: sqlite3.Connection, session_id: str, limit: int = 3
+) -> list[dict]:
+    """Return the most recent *limit* turns for *session_id* (descending seq).
+
+    Used by the Phase 1 detection pipeline to build the LLM prompt.
+    Each returned dict has keys: role, content, tool_name, tool_output, seq.
+    """
+    rows = conn.execute(
+        "SELECT role, content, tool_name, tool_output, seq "
+        "FROM turns WHERE session_id=? "
+        "ORDER BY seq DESC LIMIT ?",
+        (session_id, limit),
+    ).fetchall()
+    result = [dict(r) for r in rows]  # most recent first (DESC)
+    _logger.debug(
+        "get_recent_turns: session=%s limit=%d → %d turns",
+        session_id[:8],
+        limit,
+        len(result),
+    )
+    return result
+
+
 def insert_turn_user(conn: sqlite3.Connection, session_id: str, message: str) -> int:
     """Insert a user turn.  Returns the turn seq number."""
     _require_active_session(conn, session_id)

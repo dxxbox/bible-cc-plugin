@@ -133,18 +133,92 @@ async def _detection_worker():
                 _detection_queue.task_done()
 
 
-async def _process_detection_task(task: dict):
-    """Placeholder for Phase 2b.3 — process a single detection task.
+# ── Detection stats (in-memory, for debug endpoint) ──────────────────
 
-    Currently a no-op.  2b.3 replaces this with the full pipeline:
-    read turns → call LLM → dedup → insert moment.
+_detection_stats: dict[str, int] = {
+    "total": 0,
+    "phase1": 0,
+    "dedup_hits": 0,
+}
+_detection_latencies: list[float] = []  # rolling window for avg latency
+
+
+async def _process_detection_task(task: dict):
+    """Full Phase 1 detection pipeline (2b.3).
+
+    Data flow: SQLite turns → LLM detect → content-hash dedup → INSERT moment.
+    Non-key moment types are filtered.  capture.enabled=false skips entirely.
     """
-    # TODO(2b.3): implement detection pipeline
-    _worker_logger.debug(
-        "detection task placeholder: session=%s phase=%s",
-        task.get("session_id", "?")[:8],
-        task.get("phase", "?"),
+    session_id = task["session_id"]
+    phase = task.get("phase", 1)
+
+    if not _app_config.capture.enabled:
+        _worker_logger.debug("detection skipped — capture disabled")
+        return
+
+    conn = _get_db()
+    if conn is None:
+        _worker_logger.warning("detection skipped — database unavailable")
+        return
+
+    from bible_cc_plugin.daemon.buffer import (
+        compute_content_hash,
+        get_recent_turns,
+        insert_moment,
     )
+    from bible_cc_plugin.daemon.detector import detect_moments
+
+    # 1. Get recent turns
+    if phase == 1:
+        turns = get_recent_turns(conn, session_id, limit=3)
+        if not turns:
+            _worker_logger.debug("detection skipped — no turns for session=%s", session_id[:8])
+            return
+    else:
+        # Phase 2 (2c): all session turns + known moments
+        _worker_logger.warning("Phase 2 detection not yet implemented")
+        return
+
+    # 2. Call LLM detection
+    config = _app_config.detection
+    start = time.monotonic()
+    candidates = detect_moments(turns, known_moments=None, phase=phase, config=config)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    _detection_stats["total"] += 1
+    if phase == 1:
+        _detection_stats["phase1"] += 1
+    _detection_latencies.append(elapsed_ms)
+
+    # 3. Store moments with dedup
+    inserted = 0
+    dedup = 0
+    for c in candidates:
+        # Guard: only key moment types
+        if c.type not in ("session_start", "decision", "accomplishment"):
+            _worker_logger.debug("detect: filtered non-key type=%r title=%s", c.type, c.title)
+            continue
+
+        content_hash = compute_content_hash(session_id, c.title, c.narrative)
+        mid = insert_moment(
+            conn, session_id, c.type, c.title, c.narrative, content_hash, phase=str(phase)
+        )
+        if mid is None:
+            dedup += 1
+            _detection_stats["dedup_hits"] += 1
+            _worker_logger.debug("detect: dedup skipped — %s", c.title)
+        else:
+            inserted += 1
+            _worker_logger.info(
+                "detect: phase=%d session=%s type=%s title=%s dedup=INSERTED",
+                phase, session_id[:8], c.type, c.title,
+            )
+
+    if inserted or dedup:
+        _worker_logger.info(
+            "detection complete: session=%s inserted=%d dedup=%d latency=%dms",
+            session_id[:8], inserted, dedup, elapsed_ms,
+        )
 
 
 def check_threshold(session_id: str, turns: int = 1, chars: int = 0) -> bool:
@@ -598,6 +672,38 @@ if _debug_mode:
             (session_id, limit),
         ).fetchall()
         return {"turns": [dict(r) for r in rows]}
+
+
+# ── Detection debug endpoints (Phase 2b, always registered) ──────────────
+
+
+@app.get("/daemon/debug/detections")
+async def debug_detections(session_id: str):
+    """Return detection results for a session (Phase 2b)."""
+    if not _debug_mode:
+        raise HTTPException(404, "debug mode disabled")
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "database unavailable")
+    from bible_cc_plugin.daemon.buffer import get_moments_by_session
+
+    moments = get_moments_by_session(conn, session_id)
+    return {"detections": moments}
+
+
+@app.get("/daemon/debug/detections/stats")
+async def debug_detection_stats():
+    """Return cumulative detection statistics (Phase 2b)."""
+    if not _debug_mode:
+        raise HTTPException(404, "debug mode disabled")
+    latencies = _detection_latencies
+    avg = sum(latencies) / len(latencies) if latencies else 0.0
+    return {
+        "total": _detection_stats["total"],
+        "phase1": _detection_stats["phase1"],
+        "dedup_hits": _detection_stats["dedup_hits"],
+        "avg_latency_ms": round(avg, 1),
+    }
 
 
 def _read_port() -> int:

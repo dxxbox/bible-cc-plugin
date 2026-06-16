@@ -6,6 +6,10 @@ Uses FastAPI TestClient with a temporary SQLite database.
 
 from __future__ import annotations
 
+import asyncio
+import sys
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -377,6 +381,274 @@ class TestContextInject:
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 1d: Operability
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2b.3: Detection Pipeline
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDetectionPipeline:
+    """_process_detection_task — full pipeline: turns→LLM→hash→INSERT."""
+
+    @pytest.mark.asyncio
+    async def test_stores_moment(self, tmp_path, monkeypatch):
+        """Mock detector returns 1 candidate → written to moments table."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import insert_session, insert_turn_user, session_seq
+        session_seq.clear()
+
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s1")
+        # Must have turns for detection to work
+        insert_turn_user(conn, "s1", "hello")
+
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [MomentCandidate(type="decision", title="T", narrative="N")]
+
+        with patch(
+            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
+        ):
+            task = {"session_id": "s1", "phase": 1}
+            await server_mod._process_detection_task(task)
+
+        from bible_cc_plugin.daemon.buffer import get_moments_by_session
+
+        moments = get_moments_by_session(conn, "s1")
+        assert len(moments) == 1
+        assert moments[0]["moment_type"] == "decision"
+
+        conn.close()
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_dedup_same_hash(self, tmp_path, monkeypatch):
+        """Duplicate detection → content-hash collides → only 1 row."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import insert_session, insert_turn_user, session_seq
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s1")
+        insert_turn_user(conn, "s1", "hello")
+
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [MomentCandidate(type="decision", title="D", narrative="N")]
+
+        with patch(
+            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
+        ):
+            task = {"session_id": "s1", "phase": 1}
+            await server_mod._process_detection_task(task)
+            await server_mod._process_detection_task(task)
+
+        from bible_cc_plugin.daemon.buffer import get_moments_by_session
+
+        moments = get_moments_by_session(conn, "s1")
+        assert len(moments) == 1
+
+        conn.close()
+        server_mod._db_conn = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_none_result_skips(self, tmp_path, monkeypatch):
+        """Detector returns [] → no moment written."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import insert_session, session_seq
+        session_seq.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "s1")
+
+        def mock_detect(turns, known_moments, phase, config):
+            return []
+
+        with patch(
+            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
+        ):
+            await server_mod._process_detection_task({"session_id": "s1", "phase": 1})
+
+        from bible_cc_plugin.daemon.buffer import get_moments_by_session
+
+        moments = get_moments_by_session(conn, "s1")
+        assert len(moments) == 0
+
+        conn.close()
+        server_mod._db_conn = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_capture_disabled_skips(self, tmp_path, monkeypatch):
+        """capture.enabled=false → early return, detector not called."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        server_mod._app_config.capture.enabled = False
+        call_count = 0
+
+        def mock_detect(turns, known_moments, phase, config):
+            nonlocal call_count
+            call_count += 1
+            return []
+
+        with patch(
+            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
+        ):
+            await server_mod._process_detection_task({"session_id": "s1", "phase": 1})
+            assert call_count == 0
+
+        server_mod._app_config.capture.enabled = True
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_non_key_moment_types_filtered(self, tmp_path, monkeypatch):
+        """Non-key type (bug_fix) → filtered, not stored."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import insert_session, session_seq
+        session_seq.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "s1")
+
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [MomentCandidate(type="bug_fix", title="F", narrative="N")]
+
+        with patch(
+            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
+        ):
+            await server_mod._process_detection_task({"session_id": "s1", "phase": 1})
+
+        from bible_cc_plugin.daemon.buffer import get_moments_by_session
+
+        moments = get_moments_by_session(conn, "s1")
+        assert len(moments) == 0
+
+        conn.close()
+        server_mod._db_conn = None
+        session_seq.clear()
+
+
+class TestDebugDetectionEndpoints:
+    """Debug endpoints for detection history — only when BIBLE_CC_DEBUG=true."""
+
+    def test_requires_debug_mode(self, client):
+        """Without debug mode, endpoint returns 404."""
+        r = client.get("/daemon/debug/detections?session_id=x")
+        assert r.status_code == 404
+
+    def test_returns_history(self, tmp_path, monkeypatch):
+        """With debug mode, returns detection records."""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._debug_mode = True
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+            session_seq,
+        )
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "det-s1")
+        ch = compute_content_hash("det-s1", "Test", "Narrative")
+        insert_moment(conn, "det-s1", "decision", "Test", "Narrative", ch, phase="1")
+
+        with TestClient(server_mod.app) as c:
+            r = c.get("/daemon/debug/detections?session_id=det-s1")
+            assert r.status_code == 200
+            data = r.json()
+            assert "detections" in data
+            assert len(data["detections"]) >= 1
+
+        server_mod._debug_mode = False
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    def test_stats_returns_counters(self, tmp_path, monkeypatch):
+        """GET /daemon/debug/detections/stats returns aggregated counters."""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._debug_mode = True
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+
+        from bible_cc_plugin.daemon.buffer import session_seq
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+
+        with TestClient(server_mod.app) as c:
+            r = c.get("/daemon/debug/detections/stats")
+            assert r.status_code == 200
+            data = r.json()
+            assert "total" in data
+            assert "phase1" in data
+            assert "dedup_hits" in data
+            assert "avg_latency_ms" in data
+
+        server_mod._debug_mode = False
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
 
 
 class TestRequestIDMiddleware:

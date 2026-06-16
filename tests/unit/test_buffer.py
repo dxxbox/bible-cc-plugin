@@ -703,6 +703,44 @@ class TestDedupIsSilent:
         assert len(warnings_or_worse) == 0, "Dedup must not produce WARNING+ log records."
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Feature 2b.3: get_recent_turns (READ helper for detection pipeline)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestGetRecentTurns:
+    """get_recent_turns() — fetch last N turns for detection prompt."""
+
+    def test_returns_limited(self, conn_wal):
+        """Returns most recent turns up to limit, in descending seq order."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_recent_turns,
+            insert_session,
+            insert_turn_user,
+        )
+
+        insert_session(conn_wal, "s1")
+        for msg in ["m1", "m2", "m3", "m4", "m5"]:
+            insert_turn_user(conn_wal, "s1", msg)
+
+        turns = get_recent_turns(conn_wal, "s1", limit=3)
+        assert len(turns) == 3
+        assert turns[0]["content"] == "m5"
+        assert turns[2]["content"] == "m3"
+        for t in turns:
+            assert "role" in t
+            assert "content" in t
+            assert "tool_name" in t
+            assert "tool_output" in t
+
+    def test_empty_session_returns_empty_list(self, conn_wal):
+        """Non-existent session → [] without error."""
+        from bible_cc_plugin.daemon.buffer import get_recent_turns
+
+        turns = get_recent_turns(conn_wal, "nonexistent", limit=3)
+        assert turns == []
+
+
 class TestNullByteDelimiter:
     """意图: hash 安全性——\\0 分隔符防止字段拼接碰撞。"""
 
