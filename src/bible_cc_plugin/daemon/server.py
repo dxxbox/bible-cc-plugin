@@ -23,12 +23,16 @@ from bible_cc_plugin.logging_config import setup_logging
 _logger = setup_logging(level="INFO")
 _START_TIME = time.time()
 
+from bible_cc_plugin.config import load_config
+
+_config = load_config()
+
 app = FastAPI(title="bible-cc-daemon", version="0.1.0")
 
 _startup_timings: dict[str, int] = {}  # Phase 1d: step → ms
 _debug_mode: bool = os.getenv("BIBLE_CC_DEBUG", "") in ("1", "true", "yes")
 
-_logger.info("daemon starting on port %s", os.getenv("BIBLE_CC_DAEMON_PORT", "9777"))
+_logger.info("daemon starting on port %s", _config.daemon.port)
 
 app.add_middleware(
     CORSMiddleware,
@@ -376,10 +380,10 @@ async def context_inject(req: _ContextInjectRequest):
         conn,
         session_id=req.session_id,
         recovery_data=recovery,
-        fallback_mode="skip",
-        token_budget=1200,
-        include_turns_summary=True,
-        include_moments=True,
+        fallback_mode=_config.injection.inject_fallback,
+        token_budget=_config.injection.token_budget,
+        include_turns_summary=_config.injection.include_turns_summary,
+        include_moments=_config.injection.include_moments,
     )
     return {"context": ctx, "sources": sources}
 
@@ -431,12 +435,11 @@ def _build_sqlite_detailed(conn) -> dict:
 def _build_config_sources() -> dict:
     """Build config_sources section — key→source mapping, token masked."""
     sources = {
-        "bible.base_url": os.getenv("BIBLE_ATLAS_BASE_URL") or "default",
-        "daemon.port": os.getenv("BIBLE_CC_DAEMON_PORT") or "default(9777)",
-        "daemon.db_path": os.getenv("BIBLE_CC_DB_PATH") or "default(~/.bible-cc/daemon.db)",
+        "bible.base_url": _config.bible.base_url,
+        "daemon.port": str(_config.daemon.port),
+        "daemon.db_path": _config.daemon.db_path,
     }
-    token = os.getenv("BIBLE_ATLAS_TOKEN")
-    sources["bible.token"] = "***" if token else "<none>"
+    sources["bible.token"] = "***" if _config.bible.token else "<none>"
     return sources
 
 
@@ -483,4 +486,4 @@ if _debug_mode:
 
 
 def _read_port() -> int:
-    return int(os.getenv("BIBLE_CC_DAEMON_PORT", "9777"))
+    return _config.daemon.port

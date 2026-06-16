@@ -60,7 +60,7 @@ class InjectionConfig(BaseModel):
     include_turns_summary: bool = True
     include_moments: bool = True
     crash_recovery_moments: bool = True
-    inject_fallback: str = "skip"
+    inject_fallback: str = "empty"
 
     @field_validator("inject_fallback")
     @classmethod

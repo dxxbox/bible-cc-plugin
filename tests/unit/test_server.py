@@ -342,6 +342,37 @@ class TestContextInject:
         r = client.post("/context/inject", json={})
         assert r.status_code in (400, 422)
 
+    def test_empty_fallback_returns_xml_block(self, client):
+        """When inject_fallback='empty', new session returns <relevant-memories></relevant-memories>."""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._config.injection.inject_fallback = "empty"
+        client.post("/session/start", json={"session_id": "sess-empty"})
+        r = client.post(
+            "/context/inject",
+            json={"session_id": "sess-empty", "user_message": "hi"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["context"] == "<relevant-memories></relevant-memories>"
+        assert data["sources"]["turns"] == 0
+        assert data["sources"]["moments"] == 0
+
+    def test_skip_fallback_returns_empty_string(self, client):
+        """When inject_fallback='skip', new session returns empty string."""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._config.injection.inject_fallback = "skip"
+        client.post("/session/start", json={"session_id": "sess-skip"})
+        r = client.post(
+            "/context/inject",
+            json={"session_id": "sess-skip", "user_message": "hi"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["context"] == ""
+        assert data["sources"]["turns"] == 0
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 1d: Operability
