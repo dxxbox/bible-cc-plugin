@@ -750,3 +750,33 @@ class TestNullByteDelimiter:
         h1 = compute_content_hash("ab", "c", "d")
         h2 = compute_content_hash("a", "bc", "d")
         assert h1 != h2, f"\\0 delimiter failed: h1={h1[:16]}... h2={h2[:16]}..."
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Feature 2c.2: get_all_session_turns
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestGetAllSessionTurns:
+    """get_all_session_turns() — fetch ALL turns for Phase 2 retrospective."""
+
+    def test_returns_all_turns(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import (
+            get_all_session_turns,
+            insert_session,
+            insert_turn_user,
+        )
+
+        insert_session(conn_wal, "s1")
+        for msg in ["m1", "m2", "m3"]:
+            insert_turn_user(conn_wal, "s1", msg)
+
+        turns = get_all_session_turns(conn_wal, "s1")
+        assert len(turns) == 3
+        assert turns[0]["content"] == "m1"
+        assert turns[2]["content"] == "m3"
+
+    def test_empty_session_returns_empty_list(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import get_all_session_turns
+
+        assert get_all_session_turns(conn_wal, "nonexistent") == []

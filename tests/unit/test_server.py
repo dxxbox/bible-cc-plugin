@@ -658,6 +658,112 @@ class TestDetectionPipeline:
         session_seq.clear()
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2c.2: Phase 2 Retrospective Detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPhase2Detection:
+    """Phase 2 retrospective detection pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_inserts_new_moments(self, tmp_path, monkeypatch):
+        """Stub Phase 2 detector → new moments written."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+        import asyncio
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            insert_session,
+            insert_turn_user,
+            session_seq,
+        )
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "p2-s1")
+        insert_turn_user(conn, "p2-s1", "hello")
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [
+                MomentCandidate(type="decision", title="New1", narrative="N1"),
+                MomentCandidate(type="accomplishment", title="New2", narrative="N2"),
+            ]
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {"session_id": "p2-s1", "phase": 2}
+            )
+
+        from bible_cc_plugin.daemon.buffer import get_moments_by_session
+
+        moments = get_moments_by_session(conn, "p2-s1")
+        assert len(moments) == 2
+
+        conn.close()
+        server_mod._db_conn = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_dedup_known_moments(self, tmp_path, monkeypatch):
+        """Duplicate hash → only 1 row stored."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+        import asyncio
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            insert_session,
+            insert_turn_user,
+            session_seq,
+        )
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "p2-dedup")
+        insert_turn_user(conn, "p2-dedup", "hello")
+
+        # Same candidate returned twice → dedup
+        same = MomentCandidate(type="decision", title="Only Once", narrative="Same")
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [same, same]
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {"session_id": "p2-dedup", "phase": 2}
+            )
+
+        from bible_cc_plugin.daemon.buffer import get_moments_by_session
+
+        moments = get_moments_by_session(conn, "p2-dedup")
+        assert len(moments) == 1
+
+        conn.close()
+        server_mod._db_conn = None
+        session_seq.clear()
+
+    def test_detection_does_not_lose_session_completed(self, client):
+        """Phase 2 failure preserves session completed status."""
+        client.post("/session/start", json={"session_id": "p2-no-lose"})
+        # Don't add turns — detection will silently return with no turns
+        r = client.post("/session/end", json={"session_id": "p2-no-lose"})
+        assert r.json()["status"] == "completed"
+
+
 class TestDebugDetectionEndpoints:
     """Debug endpoints for detection history — only when BIBLE_CC_DEBUG=true."""
 

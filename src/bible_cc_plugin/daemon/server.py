@@ -163,26 +163,41 @@ async def _process_detection_task(task: dict):
 
     from bible_cc_plugin.daemon.buffer import (
         compute_content_hash,
+        get_all_session_turns,
+        get_moments_by_session,
         get_recent_turns,
         insert_moment,
     )
-    from bible_cc_plugin.daemon.detector import detect_moments
+    from bible_cc_plugin.daemon.detector import MomentCandidate, detect_moments
 
-    # 1. Get recent turns
+    # 1. Get turns for this phase
+    known_moments: list[MomentCandidate] = []
     if phase == 1:
         turns = get_recent_turns(conn, session_id, limit=3)
         if not turns:
             _worker_logger.debug("detection skipped — no turns for session=%s", session_id[:8])
             return
     else:
-        # Phase 2 (2c): all session turns + known moments
-        _worker_logger.warning("Phase 2 detection not yet implemented")
-        return
+        turns = get_all_session_turns(conn, session_id)
+        if not turns:
+            _worker_logger.debug("detection skipped — no turns for session=%s", session_id[:8])
+            return
+        # Load Phase 1 known moments for prompt injection (dedup layer 1)
+        for m in get_moments_by_session(conn, session_id):
+            known_moments.append(
+                MomentCandidate(
+                    type=m["moment_type"],
+                    title=m["title"],
+                    narrative=m["narrative"],
+                )
+            )
 
     # 2. Call LLM detection
     config = _app_config.detection
     start = time.monotonic()
-    candidates = detect_moments(turns, known_moments=None, phase=phase, config=config)
+    candidates = detect_moments(
+        turns, known_moments=known_moments or None, phase=phase, config=config
+    )
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
     _detection_stats["total"] += 1

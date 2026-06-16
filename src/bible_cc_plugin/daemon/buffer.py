@@ -248,6 +248,29 @@ def _require_active_session(conn: sqlite3.Connection, session_id: str) -> None:
         raise ValueError(f"session {session_id} is {row['status']}, expected 'active'")
 
 
+def get_all_session_turns(
+    conn: sqlite3.Connection, session_id: str
+) -> list[dict]:
+    """Return ALL turns for *session_id* in chronological order.
+
+    Used by Phase 2 retrospective detection.
+    Each dict has keys: role, content, tool_name, tool_output, seq.
+    Returns empty list for unknown sessions.
+    """
+    rows = conn.execute(
+        "SELECT role, content, tool_name, tool_output, seq "
+        "FROM turns WHERE session_id=? ORDER BY seq ASC",
+        (session_id,),
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    _logger.debug(
+        "get_all_session_turns: session=%s → %d turns",
+        session_id[:8],
+        len(result),
+    )
+    return result
+
+
 def get_recent_turns(
     conn: sqlite3.Connection, session_id: str, limit: int = 3
 ) -> list[dict]:

@@ -130,6 +130,71 @@ def build_phase1_prompt(turns: list[dict]) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Phase 2 Prompt Template (detection.md §3.2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_PHASE2_SYSTEM_PROMPT = """\
+You are reviewing a COMPLETE conversation between a user and an AI agent.
+The session has ended. Provide a synthesis.
+
+Key moment types (SESSION_START excluded from Phase 2):
+- DECISION: the user confirms a choice, approach, or design direction
+- ACCOMPLISHMENT: something was completed, verified, and accepted
+
+Do NOT flag intermediate bug fixes or error corrections.
+
+Output a single JSON object:
+{"result": "moment" | "none", "moments": [{"type": "...", "title": "...", "narrative": "..."}], "assessment": "overall summary"}
+
+If no new key moment occurred, output: {"result": "none"}
+Do NOT include markdown fences or extra text. Output ONLY the JSON object."""
+
+
+def build_phase2_prompt(
+    all_turns: list[dict],
+    known_moments: list[MomentCandidate],
+) -> str:
+    """Build the Phase 2 retrospective prompt (detection.md §3.2).
+
+    Includes known moments with "Do NOT re-report" instruction and
+    the full session transcript.  SESSION_START type excluded.
+    """
+    lines = []
+
+    if known_moments:
+        lines.append(
+            "The following key moments were ALREADY detected during the session."
+        )
+        lines.append(
+            "Do NOT re-report them. Only report NEW moments not covered below:"
+        )
+        lines.append("")
+        for m in known_moments:
+            lines.append(f"- [{m.type}] {m.title}")
+        lines.append("")
+
+    lines.append("Full session transcript:")
+    for i, t in enumerate(all_turns):
+        role = t.get("role", "unknown")
+        lines.append(f"\n--- Turn {i + 1} ({role}) ---")
+        if role == "user":
+            lines.append(t.get("content", ""))
+        elif t.get("tool_name"):
+            lines.append(f"[Used tool: {t['tool_name']}]")
+            lines.append(t.get("tool_output", ""))
+        else:
+            lines.append(t.get("content", ""))
+
+    lines.append("")
+    lines.append("Now identify:")
+    lines.append("1. Overall session assessment — what was accomplished?")
+    lines.append("2. Any ADDITIONAL key moments missed by mid-session detection")
+    lines.append("3. What should be remembered for future sessions?")
+
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Stub detector (CI zero-cost)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -189,7 +254,7 @@ def call_detection_llm(
             model=config.model,
             max_tokens=max_tokens,
             temperature=config.temperature,
-            system=_PHASE1_SYSTEM_PROMPT,
+            system=_PHASE1_SYSTEM_PROMPT if phase == 1 else _PHASE2_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as exc:
@@ -259,9 +324,8 @@ def detect_moments(
             prompt = build_phase1_prompt(turns)
             return call_detection_llm(prompt, config, phase=1)
         else:
-            # Phase 2 prompt — to be implemented in 2c.
-            _logger.warning("Phase 2 detection not yet implemented — returning []")
-            return []
+            prompt = build_phase2_prompt(turns, known_moments or [])
+            return call_detection_llm(prompt, config, phase=2)
     except Exception:
         _logger.error("detect_moments crashed", exc_info=True)
         return []

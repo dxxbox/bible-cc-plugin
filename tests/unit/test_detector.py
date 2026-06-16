@@ -203,6 +203,50 @@ class TestDetectorNeverCrashes:
             assert result == []
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Feature 2c.2: Phase 2 Prompt
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestBuildPhase2Prompt:
+    """build_phase2_prompt() — retrospective prompt with known moments."""
+
+    def test_contains_known_moments(self):
+        """Known moments appear in 'ALREADY detected' section."""
+        from bible_cc_plugin.daemon.detector import (
+            MomentCandidate,
+            build_phase2_prompt,
+        )
+
+        known = [
+            MomentCandidate(type="decision", title="Use Postgres", narrative="...")
+        ]
+        turns = [_make_turn("user", content="started work")]
+        prompt = build_phase2_prompt(turns, known)
+        assert "ALREADY detected" in prompt or "already detected" in prompt.lower()
+        assert "Use Postgres" in prompt
+
+    def test_contains_dont_re_report(self):
+        """Prompt instructs LLM NOT to re-report known moments."""
+        from bible_cc_plugin.daemon.detector import (
+            MomentCandidate,
+            build_phase2_prompt,
+        )
+
+        known = [MomentCandidate(type="decision", title="T", narrative="N")]
+        turns = [_make_turn("user", content="x")]
+        prompt = build_phase2_prompt(turns, known)
+        assert "Do NOT re-report" in prompt or "do not re-report" in prompt.lower()
+
+    def test_excludes_session_start(self):
+        """Phase 2 prompt must NOT include SESSION_START type."""
+        from bible_cc_plugin.daemon.detector import build_phase2_prompt
+
+        turns = [_make_turn("user", content="hello")]
+        prompt = build_phase2_prompt(turns, known_moments=[])
+        assert "SESSION_START" not in prompt
+
+
 class TestNoRealAPICallInCI:
     """Intent: CI 零成本 — stub mode prevents any real API usage."""
 
