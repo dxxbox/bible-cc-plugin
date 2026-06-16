@@ -100,6 +100,27 @@ def _handle_session_start(config, args) -> None:
     _logger.info("session-start DONE")
 
 
+def _print_hints(session_id: str, base_url: str, hint_format: str) -> None:
+    """Fetch moments → format_hint → stdout (best-effort).
+
+    Fails silently — hint output must never block turn flow.
+    """
+    try:
+        r = _local_client(timeout=3).get(
+            f"{base_url}/daemon/moments",
+            params={"session_id": session_id},
+        )
+        r.raise_for_status()
+        moments = r.json().get("moments", [])
+        from bible_cc_plugin.hint_system import format_hint
+
+        for m in moments:
+            hint = format_hint(m, hint_format)
+            print(hint, flush=True)
+    except Exception:
+        pass
+
+
 def _handle_turn_user(config, args) -> None:
     """POST /turn/user {session_id, message}."""
     if not args.session_id:
@@ -117,6 +138,7 @@ def _handle_turn_user(config, args) -> None:
         mlen = len(args.message or "")
         tid = body.get("turn_id")
         _logger.info("turn-user %s msg_len=%d → OK turn_id=%s", sid, mlen, tid)
+        _print_hints(args.session_id, base_url, config.capture.hint_format)
     except httpx.HTTPStatusError as e:
         _logger.warning("turn-user daemon returned %d → skipping (%s)", e.response.status_code, e)
     except Exception as e:
@@ -151,6 +173,7 @@ def _handle_turn_tool(config, args) -> None:
         sid = args.session_id[:8]
         cmd = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
         _logger.info("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
+        _print_hints(args.session_id, base_url, config.capture.hint_format)
     except httpx.HTTPStatusError as e:
         _logger.warning("turn-tool daemon returned %d → skipping (%s)", e.response.status_code, e)
     except Exception as e:
