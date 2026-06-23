@@ -383,18 +383,24 @@ def update_moment(
     moment_id: int,
     title: str,
     narrative: str,
+    content_hash: str,
 ) -> bool:
-    """Update a moment's title and narrative.  Only allowed for flushed=0.
+    """Update a moment's title, narrative, and content_hash.  Only allowed for flushed=0.
 
-    Returns True if the row was updated, False if the moment does not exist
-    or is already flushed.
+    Returns True if the row was updated, False if the moment does not exist,
+    is already flushed, or the new content_hash collides with an existing moment
+    (UNIQUE constraint — TOCTOU race or duplicate content).
     """
-    cur = conn.execute(
-        "UPDATE moments SET title=?, narrative=? WHERE id=? AND flushed=0",
-        (title, narrative, moment_id),
-    )
-    conn.commit()
-    return cur.rowcount > 0
+    try:
+        cur = conn.execute(
+            "UPDATE moments SET title=?, narrative=?, content_hash=? "
+            "WHERE id=? AND flushed=0",
+            (title, narrative, content_hash, moment_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    except sqlite3.IntegrityError:
+        return False
 
 
 def delete_moment(conn: sqlite3.Connection, moment_id: int) -> bool:

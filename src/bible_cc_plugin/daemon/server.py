@@ -17,7 +17,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from bible_cc_plugin.config import load_config
@@ -52,7 +54,7 @@ async def lifespan(app: FastAPI):  # pragma: no cover — tested via integration
     _worker_logger.info("detection worker stopped")
 
 
-app = FastAPI(title="bible-cc-daemon", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="bible-cc-daemon", version="0.22.0", lifespan=lifespan)
 
 _logger.info("daemon starting on port %s", _config.daemon.port)
 
@@ -62,6 +64,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Error envelope (02-interfaces.md §1.6) ───────────────────────────────
+
+_STATUS_TO_CODE = {
+    400: "BAD_REQUEST",
+    404: "NOT_FOUND",
+    409: "CONFLICT",
+    500: "INTERNAL_ERROR",
+    503: "SERVICE_UNAVAILABLE",
+}
+
+
+@app.exception_handler(HTTPException)
+async def _http_error_handler(request: Request, exc: HTTPException):
+    code = _STATUS_TO_CODE.get(exc.status_code, "INTERNAL_ERROR")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": code, "message": exc.detail}},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"error": {"code": "BAD_REQUEST", "message": str(exc)}},
+    )
 
 
 # ── Request-ID middleware (Phase 1d) ─────────────────────────────────────
@@ -544,7 +573,7 @@ async def turn_user(req: _TurnUserRequest):
     _logger.debug("turn/user %s seq=%d", req.session_id, turn_id)
 
     queued = False
-    if _app_config.capture.enabled:
+    if _app_config.capture.enabled and _app_config.capture.mid_session_detection and req.message:
         if check_threshold(req.session_id, turns=1, chars=len(req.message)):
             await _detection_queue.put({"session_id": req.session_id, "phase": 1})
             queued = True
@@ -575,7 +604,7 @@ async def turn_tool(req: _TurnToolRequest):
     _logger.debug("turn/tool %s seq=%d tool=%s", req.session_id, turn_id, req.tool_name)
 
     queued = False
-    if _app_config.capture.enabled:
+    if _app_config.capture.enabled and _app_config.capture.mid_session_detection and req.output:
         if check_threshold(req.session_id, turns=1, chars=len(req.output)):
             await _detection_queue.put({"session_id": req.session_id, "phase": 1})
             queued = True
@@ -595,6 +624,9 @@ async def context_inject(req: _ContextInjectRequest):
     if conn is None:
         raise HTTPException(503, "daemon database unavailable")
 
+    if not _config.injection.enabled:
+        return {"context": "", "sources": {"turns": 0, "moments": 0, "crash_recovery": 0}}
+
     from bible_cc_plugin.daemon.injector import build_context
 
     recovery = _recovery_cache.pop(req.session_id, None)
@@ -607,6 +639,7 @@ async def context_inject(req: _ContextInjectRequest):
         token_budget=_config.injection.token_budget,
         include_turns_summary=_config.injection.include_turns_summary,
         include_moments=_config.injection.include_moments,
+        include_crash_recovery_moments=_config.injection.crash_recovery_moments,
     )
     return {"context": ctx, "sources": sources}
 
@@ -616,37 +649,65 @@ async def context_inject(req: _ContextInjectRequest):
 
 @app.get("/daemon/moments")
 async def list_moments(session_id: str):
-    """Return all moments for a session, newest first."""
+    """Return pending (unflushed) moments for a session, newest first."""
     conn = _get_db()
     if conn is None:
         raise HTTPException(503, "daemon database unavailable")
-    from bible_cc_plugin.daemon.buffer import get_moments_by_session
+    from bible_cc_plugin.daemon.buffer import get_unflushed_moments
 
-    return {"moments": get_moments_by_session(conn, session_id)}
+    return {"moments": get_unflushed_moments(conn, session_id)}
 
 
 class _UpdateMomentRequest(BaseModel):
-    title: str = ""
-    narrative: str = ""
+    title: str | None = None
+    narrative: str | None = None
 
 
 @app.put("/daemon/moments/{moment_id}")
 async def update_moment(moment_id: int, body: _UpdateMomentRequest):
     """Edit a pending moment's title/narrative. 409 if already flushed."""
+    if body.title is None and body.narrative is None:
+        raise HTTPException(400, "At least one of title or narrative must be provided")
+
     conn = _get_db()
     if conn is None:
         raise HTTPException(503, "daemon database unavailable")
-    from bible_cc_plugin.daemon.buffer import get_moments_by_session, update_moment
 
+    # 1. Read current moment to merge partial update + get session_id for hash
+    row = conn.execute(
+        "SELECT session_id, title, narrative FROM moments WHERE id=? AND flushed=0",
+        (moment_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(409, "moment not found or already flushed")
+
+    new_title = body.title if body.title is not None else row["title"]
+    new_narrative = body.narrative if body.narrative is not None else row["narrative"]
+
+    # 2. Recompute content_hash (http-api.md §6.3 step 3)
+    from bible_cc_plugin.daemon.buffer import compute_content_hash, update_moment
+
+    new_hash = compute_content_hash(row["session_id"], new_title, new_narrative)
+
+    # 3. Check for hash collision with another moment
+    conflict = conn.execute(
+        "SELECT id FROM moments WHERE content_hash=? AND id!=?",
+        (new_hash, moment_id),
+    ).fetchone()
+    if conflict is not None:
+        raise HTTPException(409, "Edited content duplicates an existing moment")
+
+    # 4. Update with new values + hash
     ok = update_moment(
         conn,
         moment_id,
-        title=body.title,
-        narrative=body.narrative,
+        title=new_title,
+        narrative=new_narrative,
+        content_hash=new_hash,
     )
     if not ok:
         raise HTTPException(409, "moment not found or already flushed")
-    return {"id": moment_id, "title": body.title, "narrative": body.narrative}
+    return {"id": moment_id, "title": new_title, "narrative": new_narrative}
 
 
 @app.delete("/daemon/moments/{moment_id}")

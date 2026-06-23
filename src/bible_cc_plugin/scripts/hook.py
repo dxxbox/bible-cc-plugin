@@ -100,10 +100,36 @@ def _handle_session_start(config, args) -> None:
     _logger.info("session-start DONE")
 
 
+def _hint_cursor_path(session_id: str) -> Path:
+    """Return the path to the per-session hint cursor file."""
+    return Path.home() / ".bible-cc" / f".hint_cursor_{session_id}"
+
+
+def _read_hint_cursor(session_id: str) -> int:
+    """Return the last hinted moment id, or 0 if none."""
+    try:
+        return int(_hint_cursor_path(session_id).read_text().strip())
+    except Exception:
+        return 0
+
+
+def _write_hint_cursor(session_id: str, moment_id: int) -> None:
+    """Persist the last hinted moment id."""
+    try:
+        p = _hint_cursor_path(session_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(moment_id))
+    except Exception:
+        pass
+
+
 def _print_hints(session_id: str, base_url: str, hint_format: str) -> None:
     """Fetch moments → format_hint → stdout (best-effort).
 
-    Fails silently — hint output must never block turn flow.
+    Only prints moments with id > last hinted cursor, then updates cursor.
+    Prevents the same moment being hinted on every turn.
+    Per-moment errors are isolated — one bad moment won't block others.
+    GET / JSON failures are caught at the outer level and logged.
     """
     try:
         r = _local_client(timeout=3).get(
@@ -112,13 +138,38 @@ def _print_hints(session_id: str, base_url: str, hint_format: str) -> None:
         )
         r.raise_for_status()
         moments = r.json().get("moments", [])
-        from bible_cc_plugin.hint_system import format_hint
-
-        for m in moments:
-            hint = format_hint(m, hint_format)
-            print(hint, flush=True)
     except Exception:
-        pass
+        _logger.warning("_print_hints: GET /daemon/moments failed", exc_info=True)
+        return
+
+    if not moments:
+        return
+
+    cursor = _read_hint_cursor(session_id)
+    from bible_cc_plugin.daemon.detector import MomentCandidate
+    from bible_cc_plugin.hint_system import format_hint
+
+    max_id = cursor
+    for m in moments:
+        mid = m.get("id", 0)
+        if mid <= cursor:
+            continue
+        try:
+            candidate = MomentCandidate(
+                type=str(m.get("moment_type") or m.get("type") or ""),
+                title=str(m.get("title") or ""),
+                narrative=str(m.get("narrative") or ""),
+                tool_summary=str(m.get("tool_summary") or ""),
+            )
+            hint = format_hint(candidate, hint_format)
+            print(hint, flush=True)
+            if mid > max_id:
+                max_id = mid
+        except Exception:
+            _logger.warning("_print_hints: format failed for moment", exc_info=True)
+
+    if max_id > cursor:
+        _write_hint_cursor(session_id, max_id)
 
 
 def _handle_turn_user(config, args) -> None:

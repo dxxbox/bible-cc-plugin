@@ -281,7 +281,8 @@ MCP Server（`src/bible_cc_plugin/mcp/server.py`）通过 stdio transport 暴露
 | **SessionStart** | `POST /daemon/start` → `POST /session/start` → `POST /context/inject` | 60s | daemon 起不来 → error hint（stdout, inject:true）。后续 hooks 静默跳过。 |
 | **UserPromptSubmit** | `POST /turn/user` | 3s | daemon 不可达 → 静默跳过。不阻塞 Claude Code。 |
 | **PostToolUse** | `POST /turn/tool` | 3s | daemon 不可达 → 静默跳过。 |
-| **Stop** | `POST /session/end` | 30s | daemon 不可达 → 静默跳过。数据留在 SQLite，下次 SessionStart recovery。 |
+| **Stop** | （无 daemon 调用，no-op 占位，Phase 2b 预留 mid-session detection） | 3s | per-turn 事件，当前仅 log。 |
+| **SessionEnd** | `POST /session/end` | 30s | daemon 不可达 → 静默跳过。数据留在 SQLite，下次 SessionStart recovery。 |
 
 ### 4.2 Hook 响应约定
 
@@ -324,6 +325,10 @@ Hook 脚本通过 stdout JSON 向 Claude Code 返回结构化结果：
       "timeout": 3000
     }],
     "Stop": [{
+      "command": "uv run python -m bible_cc_plugin.scripts.hook turn-stop --session-id \"$CLAUDE_SESSION_ID\"",
+      "timeout": 3000
+    }],
+    "SessionEnd": [{
       "command": "uv run python -m bible_cc_plugin.scripts.hook session-end --session-id \"$CLAUDE_SESSION_ID\"",
       "timeout": 30000
     }]
@@ -353,7 +358,7 @@ Hook 脚本通过 stdout JSON 向 Claude Code 返回结构化结果：
 |------|------|
 | Daemon 端口被占 | SessionStart hook 检测 → stdout error hint（transcript + system prompt）。用户看到 `❌` 标记错误。 |
 | BiBLE Atlas 不可达 | Flush 延迟（moments 留 SQLite）。MCP tools 返回结构化错误给 model。CLI hint 通知用户。`/bible-cc:check-bible` 返回当前状态。 |
-| Daemon 在 session 中途 crash | UserPromptSubmit/PostToolUse hooks 尝试调 daemon 失败 → 首次输出 hint "daemon unreachable"，同 session 后续静默跳过（cooldown）。Stop hook 失败 → 数据留 SQLite。下次 SessionStart 自动 recovery。 |
+| Daemon 在 session 中途 crash | UserPromptSubmit/PostToolUse hooks 尝试调 daemon 失败 → 首次输出 hint "daemon unreachable"，同 session 后续静默跳过（cooldown）。SessionEnd hook 失败 → 数据留 SQLite。下次 SessionStart 自动 recovery。 |
 | Phase 1 LLM 调用失败 | Log 错误，跳过本轮检测。不影响 buffer。下轮 threshold 到达时重试。 |
 | Phase 2 LLM 调用失败 | Log 错误，仅 flush Phase 1 已有的 moments。不阻塞 session close。 |
 | BiBLE import（flush）失败 | Moments 保持 `flushed=0`。用户可通过 `/bible-cc:retry-push` 手动重试，或等下次 push。 |

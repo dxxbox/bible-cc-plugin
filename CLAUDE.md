@@ -207,7 +207,7 @@ The `moments` table has `content_hash TEXT UNIQUE NOT NULL`. Before inserting an
 - `mid_session_upload` (default `false`): if `true`, upload each moment to BiBLE immediately when detected. If `false`, moments accumulate as `flushed=0` and are uploaded as a group on session end
 - `hint_format`: how the CLI hint is presented when a key moment is detected mid-session
 - `tool_result_max_chars` (default `250`): max chars of tool output精华 extracted by moment detector LLM. Hook sends full tool output to daemon (no mechanical truncation); the LLM extracts the most relevant ≤N chars as part of its moment detection run.
-- `inject_fallback` (default `skip`): behavior when local buffer is empty during context injection. `skip` — return nothing, continue silently. `empty` — return an empty `<relevant-memories>` block.
+- `inject_fallback` (default `empty`): behavior when local buffer is empty during context injection. `empty` — return an empty `<relevant-memories>` block. `skip` — return nothing, continue silently.
 
 ## Review Command (`/bible-cc:review`)
 

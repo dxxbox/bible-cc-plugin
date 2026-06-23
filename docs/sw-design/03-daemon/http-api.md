@@ -107,7 +107,7 @@ HTTP 状态码：
 |------|------|------|
 | Daemon 未运行 | `DAEMON_NOT_RUNNING` | 400 |
 
-**调用方**：用户手动 `POST /daemon/stop`（通常通过 `/bible-cc:stop-daemon` 命令或直接 curl）。注意此端点不由 hook 调用——Stop hook 调用的是 `/session/end`。
+**调用方**：用户手动 `POST /daemon/stop`（通常通过 `/bible-cc:stop-daemon` 命令或直接 curl）。注意此端点不由 hook 调用——SessionEnd hook 调用的是 `/session/end`。
 
 ---
 
@@ -255,9 +255,9 @@ HTTP 状态码：
 | Phase 2 LLM 失败 | （不报错）flush Phase 1 moments 后返回 | 200 |
 | BiBLE flush 失败 | （不报错）moments 保持 flushed=0 | 200 |
 
-**⚠️ 这是唯一会阻塞等待 LLM 的端点**。Stop hook 的 timeout 设为 30s 以覆盖此阻塞。如果 LLM 调用超过 30s，hook 被 kill，但 daemon 端可能仍在执行——需要任务追踪机制防止孤儿任务。
+**⚠️ 这是唯一会阻塞等待 LLM 的端点**。SessionEnd hook 的 timeout 设为 30s 以覆盖此阻塞。如果 LLM 调用超过 30s，hook 被 kill，但 daemon 端可能仍在执行——需要任务追踪机制防止孤儿任务。
 
-**调用方**：Stop hook。
+**调用方**：SessionEnd hook。
 
 ---
 

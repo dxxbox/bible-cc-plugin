@@ -143,6 +143,7 @@ def build_context(
     token_budget: int,
     include_turns_summary: bool,
     include_moments: bool,
+    include_crash_recovery_moments: bool = True,
 ) -> tuple[str, dict]:
     """Return ``(context, sources)`` for a context injection request."""
     scenario = determine_injection_scenario(conn, session_id, recovery_data)
@@ -163,8 +164,8 @@ def build_context(
         if recovery_data is None:
             _logger.warning("crash_recovery scenario with no recovery_data — falling back to empty")
             return build_empty_context(fallback_mode), sources
-        moments = recovery_data.get("_moments", [])
-        turns = recovery_data.get("_turns", [])
+        moments = recovery_data.get("_moments", []) if include_crash_recovery_moments else []
+        turns = recovery_data.get("_turns", []) if include_turns_summary else []
         ctx = build_crash_recovery_context(moments, turns)
         sources["crash_recovery"] = recovery_data.get("unclosed_sessions_found", 0)
         return apply_token_budget(ctx, token_budget), sources

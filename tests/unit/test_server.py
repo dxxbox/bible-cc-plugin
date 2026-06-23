@@ -310,6 +310,15 @@ class TestTurnEndpoints:
         # Clean up threshold state
         server_mod.reset_threshold("s2b4")
 
+    def test_turn_user_empty_message_no_threshold(self, client):
+        """Empty message → turn written but threshold not incremented."""
+        client.post("/session/start", json={"session_id": "s2b4-empty"})
+        for _ in range(10):
+            r = client.post(
+                "/turn/user", json={"session_id": "s2b4-empty", "message": ""}
+            )
+            assert r.json()["queued"] is False, "empty message must not trigger"
+
     def test_turn_user_no_queue_when_capture_disabled(self, client):
         """capture.enabled=false → never queues."""
         import bible_cc_plugin.daemon.server as server_mod
@@ -793,6 +802,104 @@ class TestMomentsCRUD:
         )
         assert r.status_code == 200
         assert r.json()["title"] == "New Title"
+
+    def test_title_only_preserves_narrative(self, client):
+        """PUT with only title leaves narrative unchanged."""
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
+        import bible_cc_plugin.daemon.server as server_mod
+
+        conn = server_mod._get_db()
+        insert_moment(
+            conn, "st1", "decision", "Old", "Original narrative",
+            compute_content_hash("st1", "Old", "Original narrative"),
+        )
+        r = client.get("/daemon/moments?session_id=st1")
+        mid = r.json()["moments"][0]["id"]
+
+        r = client.put(f"/daemon/moments/{mid}", json={"title": "New Title"})
+        assert r.status_code == 200
+        assert r.json()["title"] == "New Title"
+        assert r.json()["narrative"] == "Original narrative"
+
+    def test_narrative_only_preserves_title(self, client):
+        """PUT with only narrative leaves title unchanged."""
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
+        import bible_cc_plugin.daemon.server as server_mod
+
+        conn = server_mod._get_db()
+        insert_moment(
+            conn, "st2", "decision", "Keep Title", "Old narrative",
+            compute_content_hash("st2", "Keep Title", "Old narrative"),
+        )
+        r = client.get("/daemon/moments?session_id=st2")
+        mid = r.json()["moments"][0]["id"]
+
+        r = client.put(f"/daemon/moments/{mid}", json={"narrative": "New narrative"})
+        assert r.status_code == 200
+        assert r.json()["title"] == "Keep Title"
+        assert r.json()["narrative"] == "New narrative"
+
+    def test_hash_changes_after_edit(self, client):
+        """Editing a moment produces a different content_hash."""
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
+        import bible_cc_plugin.daemon.server as server_mod
+
+        conn = server_mod._get_db()
+        old_hash = compute_content_hash("st3", "Old", "Old narrative")
+        insert_moment(conn, "st3", "decision", "Old", "Old narrative", old_hash)
+
+        r = client.get("/daemon/moments?session_id=st3")
+        mid = r.json()["moments"][0]["id"]
+
+        r = client.put(f"/daemon/moments/{mid}", json={"title": "Changed"})
+        assert r.status_code == 200
+
+        new_hash = compute_content_hash("st3", "Changed", "Old narrative")
+        row = conn.execute(
+            "SELECT content_hash FROM moments WHERE id=?", (mid,)
+        ).fetchone()
+        assert row["content_hash"] == new_hash
+        assert row["content_hash"] != old_hash
+
+    def test_duplicate_edited_content_returns_409(self, client):
+        """Editing a moment to duplicate another moment's content → 409."""
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
+        import bible_cc_plugin.daemon.server as server_mod
+
+        conn = server_mod._get_db()
+        insert_moment(
+            conn, "st4", "decision", "First", "Narrative",
+            compute_content_hash("st4", "First", "Narrative"),
+        )
+        insert_moment(
+            conn, "st4", "decision", "Second", "Other narrative",
+            compute_content_hash("st4", "Second", "Other narrative"),
+        )
+
+        r = client.get("/daemon/moments?session_id=st4")
+        moments = r.json()["moments"]
+        second_mid = next(m["id"] for m in moments if m["title"] == "Second")
+
+        r = client.put(
+            f"/daemon/moments/{second_mid}",
+            json={"title": "First", "narrative": "Narrative"},
+        )
+        assert r.status_code == 409
+
+    def test_both_fields_empty_returns_400(self, client):
+        """PUT with neither title nor narrative → 400."""
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
+        import bible_cc_plugin.daemon.server as server_mod
+
+        conn = server_mod._get_db()
+        insert_moment(
+            conn, "st5", "decision", "T", "N", compute_content_hash("st5", "T", "N")
+        )
+        r = client.get("/daemon/moments?session_id=st5")
+        mid = r.json()["moments"][0]["id"]
+
+        r = client.put(f"/daemon/moments/{mid}", json={})
+        assert r.status_code == 400
 
     def test_delete_removes(self, client):
         """DELETE removes moment, GET returns empty."""

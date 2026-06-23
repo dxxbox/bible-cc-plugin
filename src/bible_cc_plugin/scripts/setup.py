@@ -150,12 +150,19 @@ def _kill_daemon_if_running(port: int | None = None) -> None:
         pass
 
 
-def _write_mcp_json(base_url: str, token: str) -> None:
-    """Generate .mcp.json in project root so Claude Code discovers the MCP server.
+def _find_project_root() -> Path:
+    """Walk up from this file until we find pyproject.toml or .claude-plugin/plugin.json."""
+    start = Path(__file__).resolve().parent
+    for d in [start] + list(start.parents):
+        if (d / "pyproject.toml").exists() or (d / ".claude-plugin" / "plugin.json").exists():
+            return d
+    # Fallback: go up three levels (scripts → bible_cc_plugin → src → root)
+    return start.parent.parent.parent
 
-    Uses __file__ location to resolve the project root (scripts/setup.py → project root).
-    """
-    project_root = Path(__file__).resolve().parent.parent
+
+def _write_mcp_json(base_url: str, token: str) -> None:
+    """Generate .mcp.json in project root so Claude Code discovers the MCP server."""
+    project_root = _find_project_root()
     mcp = {
         "mcpServers": {
             "bible-cc": {

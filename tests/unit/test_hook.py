@@ -367,6 +367,195 @@ class TestHookSessionEnd:
             _handle_session_end(config, args)  # should NOT raise
 
 
+class TestPrintHints:
+    """Unit tests for _print_hints() — dict → MomentCandidate adapter."""
+
+    def test_formats_daemon_json_with_moment_type_key(self, monkeypatch, capsys):
+        """dict with 'moment_type' key → hint printed to stdout."""
+        # Trigger anthropic import before monkeypatching httpx.Client.
+        from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
+        from bible_cc_plugin.scripts.hook import _print_hints, _hint_cursor_path
+
+        session_id = "test-hint-1"
+        # Clean up cursor from prior runs
+        try:
+            _hint_cursor_path(session_id).unlink()
+        except FileNotFoundError:
+            pass
+
+        get_calls = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "moments": [
+                        {
+                            "id": 1,
+                            "moment_type": "decision",
+                            "title": "Use Postgres",
+                            "narrative": "Chose PostgreSQL for auth storage",
+                        }
+                    ]
+                }
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get(url, params=None, **kwargs):
+            get_calls.append(("get", url, params))
+            return FakeResponse()
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", fake_get)
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        _print_hints(session_id, "http://127.0.0.1:9777", "quote_with_command")
+
+        output = capsys.readouterr().out
+        assert "/daemon/moments" in get_calls[0][1]
+        assert "Postgres" in output
+        assert "Decision" in output
+        assert "⎿ ⏳" in output
+        assert "/bible-cc:review" in output
+
+    def test_one_bad_moment_does_not_block_subsequent(self, monkeypatch, capsys):
+        """Bad moment (None keys) → skipped, next moment still prints."""
+        from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
+        from bible_cc_plugin.scripts.hook import _print_hints, _hint_cursor_path
+
+        session_id = "test-hint-2"
+        try:
+            _hint_cursor_path(session_id).unlink()
+        except FileNotFoundError:
+            pass
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "moments": [
+                        {"id": 1, "moment_type": None, "title": None, "narrative": None},
+                        {
+                            "id": 2,
+                            "moment_type": "accomplishment",
+                            "title": "Rate limiting done",
+                            "narrative": "Implemented rate limiter",
+                        },
+                    ]
+                }
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
+
+        output = capsys.readouterr().out
+        assert "Rate limiting done" in output
+        # first moment is bad but won't crash; second still appears
+
+    def test_cursor_prevents_duplicate_hints(self, monkeypatch, capsys):
+        """Second call with same session_id skips already-hinted moments."""
+        from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
+        from bible_cc_plugin.scripts.hook import _print_hints, _hint_cursor_path
+
+        session_id = "test-hint-cursor"
+        try:
+            _hint_cursor_path(session_id).unlink()
+        except FileNotFoundError:
+            pass
+
+        call_count = [0]
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                call_count[0] += 1
+                return {
+                    "moments": [
+                        {"id": 1, "moment_type": "decision", "title": "Only once", "narrative": "Only once"},
+                    ]
+                }
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
+        out1 = capsys.readouterr().out
+        assert "Only once" in out1, "first call should print hint"
+
+        _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
+        out2 = capsys.readouterr().out
+        assert "Only once" not in out2, "second call should skip already-hinted moment"
+
+    def test_get_failure_logs_warning_and_returns(self, monkeypatch, caplog):
+        """GET /daemon/moments fails → logged, no crash, no hints."""
+        import logging
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: (_ for _ in ()).throw(
+            httpx.ConnectError("connection refused")))
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        from bible_cc_plugin.scripts.hook import _print_hints
+
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.WARNING)
+        _print_hints("abc-123", "http://127.0.0.1:9777", "quote_with_command")
+        root.propagate = False
+
+        assert any(
+            "_print_hints: GET /daemon/moments failed" in r.message
+            for r in caplog.records
+        )
+
+    def test_non_200_response_logs_and_returns(self, monkeypatch, caplog):
+        """HTTP 500 from daemon → logged, no crash."""
+        import logging
+
+        class FakeResponse:
+            status_code = 500
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(
+                    "Server Error",
+                    request=MagicMock(),
+                    response=MagicMock(status_code=500),
+                )
+
+            def json(self):
+                return {}
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        from bible_cc_plugin.scripts.hook import _print_hints
+
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.WARNING)
+        _print_hints("abc-123", "http://127.0.0.1:9777", "quote_with_command")
+        root.propagate = False
+
+        assert any(
+            "_print_hints: GET /daemon/moments failed" in r.message
+            for r in caplog.records
+        )
+
+
 class TestStdinJsonParsing:
     """Verify main() reads hook event data from stdin JSON."""
 

@@ -140,40 +140,56 @@ def load_config(config_path: Path | None = None, *, debug: bool = False) -> AppC
 
     # Tier 2: config file
     if config_path is None:
-        config_path = Path.home() / ".bible-cc" / "config.json"
+        config_path = Path(os.getenv("BIBLE_CC_CONFIG_PATH", Path.home() / ".bible-cc" / "config.json"))
+    file_data: dict = {}
     if config_path.exists():
         file_data = json.loads(config_path.read_text())
-        config = AppConfig(**file_data)
 
-    # Tier 3: env var override
-    if v := os.getenv("BIBLE_ATLAS_BASE_URL"):
-        config.bible.base_url = v
-    if v := os.getenv("BIBLE_ATLAS_TOKEN"):
-        config.bible.token = v
-    if v := os.getenv("BIBLE_CC_DAEMON_PORT"):
-        config.daemon.port = int(v)
-    if v := os.getenv("BIBLE_CC_DB_PATH"):
-        config.daemon.db_path = v
-    if v := os.getenv("BIBLE_CC_CAPTURE_ENABLED"):
-        config.capture.enabled = v.lower() in ("1", "true", "yes")
-    if v := os.getenv("BIBLE_CC_DETECTION_MODEL"):
-        config.detection.model = v
-    if v := os.getenv("ANTHROPIC_SMALL_FAST_MODEL"):
-        config.detection.model = v
-    if v := os.getenv("ANTHROPIC_MODEL"):
-        if not os.getenv("ANTHROPIC_SMALL_FAST_MODEL"):
-            config.detection.model = v
-    if v := os.getenv("BIBLE_CC_LOG_LEVEL"):
-        config.logging.level = v.upper()
-    if v := os.getenv("BIBLE_CC_LOG_FILE"):
-        config.logging.file = v
-    if v := os.getenv("BIBLE_CC_LOG_FORMAT"):
-        config.logging.format = v
+    # Tier 3: env var override — merge into file_data so Pydantic validators run
+    _apply_env_overrides(file_data)
+
+    # Build with Pydantic validation (covers both file + env values)
+    config = AppConfig(**file_data) if file_data else AppConfig()
 
     if debug:
         _debug_trace(config, config_path)
 
     return config
+
+
+def _apply_env_overrides(data: dict) -> None:
+    """Merge env var overrides into *data* dict (mutates in place).
+
+    All values are set as raw strings/ints — Pydantic validation fires when
+    AppConfig(**data) is constructed, so invalid env values fall back to
+    the field defaults instead of crashing.
+    """
+    if v := os.getenv("BIBLE_ATLAS_BASE_URL"):
+        data.setdefault("bible", {})["base_url"] = v
+    if v := os.getenv("BIBLE_ATLAS_TOKEN"):
+        data.setdefault("bible", {})["token"] = v
+    if v := os.getenv("BIBLE_CC_DAEMON_PORT"):
+        try:
+            data.setdefault("daemon", {})["port"] = int(v)
+        except ValueError:
+            pass  # invalid → fall back to default via Pydantic
+    if v := os.getenv("BIBLE_CC_DB_PATH"):
+        data.setdefault("daemon", {})["db_path"] = v
+    if v := os.getenv("BIBLE_CC_CAPTURE_ENABLED"):
+        data.setdefault("capture", {})["enabled"] = v.lower() in ("1", "true", "yes")
+    if v := os.getenv("BIBLE_CC_DETECTION_MODEL"):
+        data.setdefault("detection", {})["model"] = v
+    if v := os.getenv("ANTHROPIC_SMALL_FAST_MODEL"):
+        data.setdefault("detection", {})["model"] = v
+    if v := os.getenv("ANTHROPIC_MODEL"):
+        if not os.getenv("ANTHROPIC_SMALL_FAST_MODEL"):
+            data.setdefault("detection", {})["model"] = v
+    if v := os.getenv("BIBLE_CC_LOG_LEVEL"):
+        data.setdefault("logging", {})["level"] = v
+    if v := os.getenv("BIBLE_CC_LOG_FILE"):
+        data.setdefault("logging", {})["file"] = v
+    if v := os.getenv("BIBLE_CC_LOG_FORMAT"):
+        data.setdefault("logging", {})["format"] = v
 
 
 def _debug_trace(config: AppConfig, config_path: Path) -> None:
