@@ -143,11 +143,17 @@ class TestErrorFormatContract:
         r = httpx.post(f"{daemon_url}/session/start", json={})
         assert r.status_code in (400, 422)
         data = r.json()
-        assert "detail" in data
+        assert "error" in data
+        assert data["error"]["code"] == "BAD_REQUEST"
+        assert "session_id" in data["error"]["message"]
 
     def test_session_end_missing_id_has_detail(self, daemon_url):
         r = httpx.post(f"{daemon_url}/session/end", json={})
         assert r.status_code in (400, 422)
+        data = r.json()
+        assert "error" in data
+        assert data["error"]["code"] == "BAD_REQUEST"
+        assert "session_id" in data["error"]["message"]
 
 
 class TestContextInjectContract:

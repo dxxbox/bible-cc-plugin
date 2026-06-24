@@ -254,8 +254,32 @@ def _handle_session_end(config, args) -> None:
         )
         r.raise_for_status()
         _logger.info("POST /session/end... OK")
+    except httpx.HTTPStatusError as e:
+        # Try to read the daemon error envelope to determine the cause.
+        try:
+            body = e.response.json()
+            msg = body.get("error", {}).get("message", "")
+        except Exception:
+            msg = str(e.response.text)[:200] if e.response.text else ""
+        if e.response.status_code == 404 and "session not found" in msg:
+            _logger.warning(
+                "session-end failed: session %s was never registered "
+                "(daemon may have restarted after SessionStart or session may "
+                "have been lost)",
+                args.session_id,
+            )
+        else:
+            _logger.warning(
+                "session-end failed: HTTP %d — %s",
+                e.response.status_code,
+                msg or "(no detail)",
+            )
+    except httpx.RequestError:
+        # httpx.RequestError covers ConnectError, TimeoutException,
+        # NetworkError, etc. — all mean daemon is truly unreachable.
+        _logger.warning("session-end daemon unreachable → skipping")
     except Exception as e:
-        _logger.warning("session-end daemon unreachable → skipping (%s)", e)
+        _logger.warning("session-end failed: %s", e)
 
 
 # ── main ───────────────────────────────────────────────────────────────────

@@ -348,8 +348,119 @@ class TestHookSessionEnd:
         assert len(calls) == 1
         assert calls[0][2] == {"session_id": "abc-123"}
 
-    def test_graceful_skip_when_daemon_unreachable(self, monkeypatch):
-        """session-end → httpx.ConnectError → no raise."""
+    def test_session_not_found_404_logs_clear_message(self, monkeypatch, caplog):
+        """404 with 'session not found' → specific log message, no raise."""
+        import logging
+
+        def fake_post(*a, **kw):
+            resp = MagicMock()
+            resp.status_code = 404
+            resp.json.return_value = {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": "session not found: abc-123",
+                }
+            }
+            resp.text = '{"error":{"code":"NOT_FOUND","message":"session not found: abc-123"}}'
+            raise httpx.HTTPStatusError("Not Found", request=MagicMock(), response=resp)
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", fake_post)
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        from bible_cc_plugin.scripts.hook import _handle_session_end
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        args = argparse.Namespace(session_id="abc-123")
+
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.WARNING)
+        with patch("builtins.print"):
+            _handle_session_end(config, args)
+        root.propagate = False
+
+        assert any(
+            "was never registered" in r.message
+            for r in caplog.records
+        ), "should log 'was never registered' for session-not-found 404"
+
+    def test_unknown_404_logs_with_body_detail(self, monkeypatch, caplog):
+        """404 without 'session not found' → logs HTTP status + body detail."""
+        import logging
+
+        def fake_post(*a, **kw):
+            resp = MagicMock()
+            resp.status_code = 404
+            resp.json.return_value = {"detail": "Not Found"}
+            resp.text = '{"detail":"Not Found"}'
+            raise httpx.HTTPStatusError("Not Found", request=MagicMock(), response=resp)
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", fake_post)
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        from bible_cc_plugin.scripts.hook import _handle_session_end
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        args = argparse.Namespace(session_id="abc-123")
+
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.WARNING)
+        with patch("builtins.print"):
+            _handle_session_end(config, args)
+        root.propagate = False
+
+        assert any(
+            "HTTP 404" in r.message
+            for r in caplog.records
+        ), "should log HTTP status code for unknown 404"
+
+    def test_server_error_includes_body_detail(self, monkeypatch, caplog):
+        """HTTP 500 → logs status code AND body message for debugging."""
+        import logging
+
+        def fake_post(*a, **kw):
+            resp = MagicMock()
+            resp.status_code = 500
+            resp.json.return_value = {
+                "error": {
+                    "code": "INTERNAL",
+                    "message": "database connection lost",
+                }
+            }
+            resp.text = '{"error":{"code":"INTERNAL","message":"database connection lost"}}'
+            raise httpx.HTTPStatusError("Server Error", request=MagicMock(), response=resp)
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", fake_post)
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        from bible_cc_plugin.scripts.hook import _handle_session_end
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        args = argparse.Namespace(session_id="abc-123")
+
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.WARNING)
+        with patch("builtins.print"):
+            _handle_session_end(config, args)
+        root.propagate = False
+
+        assert any(
+            "HTTP 500" in r.message and "database connection lost" in r.message
+            for r in caplog.records
+        ), "should log HTTP 500 AND body message detail"
+
+    def test_request_error_logs_unreachable(self, monkeypatch, caplog):
+        """httpx.RequestError (ConnectError/Timeout/NetworkError) → 'unreachable'."""
+        import logging
+
         def fake_post(*a, **kw):
             raise httpx.ConnectError("connection refused")
 
@@ -363,8 +474,38 @@ class TestHookSessionEnd:
         config.daemon.port = 9777
         args = argparse.Namespace(session_id="abc-123")
 
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.WARNING)
         with patch("builtins.print"):
-            _handle_session_end(config, args)  # should NOT raise
+            _handle_session_end(config, args)
+        root.propagate = False
+
+        assert any(
+            "unreachable" in r.message
+            for r in caplog.records
+        ), "should log 'unreachable' for transport errors"
+
+    def test_missing_session_id_logs_error(self, caplog):
+        """No session_id → error log, no HTTP call."""
+        import logging
+
+        from bible_cc_plugin.scripts.hook import _handle_session_end
+
+        config = MagicMock()
+        args = argparse.Namespace(session_id=None)
+
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.ERROR)
+        with patch("builtins.print"):
+            _handle_session_end(config, args)
+        root.propagate = False
+
+        assert any(
+            "missing --session-id" in r.message
+            for r in caplog.records
+        ), "should log error for missing session-id"
 
 
 class TestPrintHints:
