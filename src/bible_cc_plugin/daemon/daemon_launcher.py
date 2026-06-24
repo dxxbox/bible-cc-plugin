@@ -76,6 +76,7 @@ def ensure_daemon_started(
                 "127.0.0.1",
                 "--port",
                 str(port),
+                "--no-access-log",
                 "--log-level",
                 "info",
             ],

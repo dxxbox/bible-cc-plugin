@@ -12,9 +12,9 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
-from bible_cc_plugin.logging_config import setup_logging
+from bible_cc_plugin.logging_config import get_logger
 
-_logger = setup_logging(level="INFO")
+_logger = get_logger("buffer")
 
 # ── per-session turn sequence counters (in-memory, recovered from DB on start) ─
 session_seq: dict[str, int] = {}

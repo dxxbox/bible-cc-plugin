@@ -23,13 +23,17 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from bible_cc_plugin.config import load_config
-from bible_cc_plugin.logging_config import get_logger, setup_logging
+from bible_cc_plugin.logging_config import configure_logging, get_logger, setup_logging
 
 _logger = setup_logging(level="INFO")
 _worker_logger = get_logger("detection.worker")
 _START_TIME = time.time()
 
 _config = load_config()
+try:
+    configure_logging(**_config.logging.model_dump())
+except Exception:
+    pass  # fault-tolerant: file handler is best-effort, stderr still works
 
 _startup_timings: dict[str, int] = {}  # Phase 1d: step → ms
 _debug_mode: bool = os.getenv("BIBLE_CC_DEBUG", "") in ("1", "true", "yes")

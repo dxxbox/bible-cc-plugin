@@ -8,9 +8,9 @@ from __future__ import annotations
 import socket
 import subprocess
 
-from bible_cc_plugin.logging_config import setup_logging
+from bible_cc_plugin.logging_config import get_logger
 
-_logger = setup_logging(level="INFO")
+_logger = get_logger("port_manager")
 
 
 class PortExhaustedError(Exception):

@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from bible_cc_plugin.logging_config import setup_logging
+from bible_cc_plugin.logging_config import get_logger
 
-_logger = setup_logging(level="INFO")
+_logger = get_logger("injector")
 
 _TOKEN_CHARS_ESTIMATE = 3  # ~3 chars per token (rough heuristic)
 

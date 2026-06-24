@@ -53,16 +53,20 @@ class MomentCandidate:
 
 
 def _create_client() -> anthropic.Anthropic:
-    """Create an Anthropic client from the ANTHROPIC_API_KEY environment variable.
+    """Create an Anthropic client, resolving the API key from environment.
+
+    Resolution order:
+      1. ANTHROPIC_API_KEY
+      2. ANTHROPIC_AUTH_TOKEN (Claude Code's own auth token)
 
     Raises:
-        ValueError: if ANTHROPIC_API_KEY is not set.
+        ValueError: if neither env var is set.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    api_key = os.getenv("ANTHROPIC_API_KEY", "") or os.getenv("ANTHROPIC_AUTH_TOKEN", "")
     if not api_key:
         raise ValueError(
-            "ANTHROPIC_API_KEY not set. "
-            "Set the env var or enable DETECTOR_TEST_MODE for CI."
+            "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN not set. "
+            "Set one of the env vars or enable DETECTOR_TEST_MODE for CI."
         )
     return anthropic.Anthropic(api_key=api_key)
 
@@ -273,6 +277,16 @@ def call_detection_llm(
     if response.content:
         block = response.content[0]
         text = getattr(block, "text", "")
+        if not text:
+            _logger.warning(
+                "detection response text empty: stop_reason=%s content_count=%d "
+                "block_type=%s block_keys=%s block_repr=%.500s",
+                getattr(response, "stop_reason", "?"),
+                len(response.content),
+                type(block).__name__,
+                [k for k in dir(block) if not k.startswith("_")],
+                repr(block)[:500],
+            )
 
     usage = getattr(response, "usage", None)
     input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
