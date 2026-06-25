@@ -198,7 +198,7 @@ async def _process_detection_task(task: dict):
         compute_content_hash,
         get_all_session_turns,
         get_moments_by_session,
-        get_recent_turns,
+        get_phase1_detection_window,
         insert_moment,
     )
     from bible_cc_plugin.daemon.detector import MomentCandidate, detect_moments
@@ -206,7 +206,13 @@ async def _process_detection_task(task: dict):
     # 1. Get turns for this phase
     known_moments: list[MomentCandidate] = []
     if phase == 1:
-        turns = get_recent_turns(conn, session_id, limit=3)
+        turns = get_phase1_detection_window(
+            conn,
+            session_id,
+            limit=8,
+            max_seq=task.get("max_seq"),
+            include_previous_user=bool(task.get("include_previous_user")),
+        )
         if not turns:
             _worker_logger.debug("detection skipped — no turns for session=%s", session_id[:8])
             return
@@ -579,7 +585,14 @@ async def turn_user(req: _TurnUserRequest):
     queued = False
     if _app_config.capture.enabled and _app_config.capture.mid_session_detection and req.message:
         if check_threshold(req.session_id, turns=1, chars=len(req.message)):
-            await _detection_queue.put({"session_id": req.session_id, "phase": 1})
+            await _detection_queue.put(
+                {
+                    "session_id": req.session_id,
+                    "phase": 1,
+                    "max_seq": turn_id,
+                    "include_previous_user": True,
+                }
+            )
             queued = True
     return {"turn_id": turn_id, "queued": queued}
 
@@ -610,7 +623,9 @@ async def turn_tool(req: _TurnToolRequest):
     queued = False
     if _app_config.capture.enabled and _app_config.capture.mid_session_detection and req.output:
         if check_threshold(req.session_id, turns=1, chars=len(req.output)):
-            await _detection_queue.put({"session_id": req.session_id, "phase": 1})
+            await _detection_queue.put(
+                {"session_id": req.session_id, "phase": 1, "max_seq": turn_id}
+            )
             queued = True
     return {"turn_id": turn_id, "queued": queued}
 

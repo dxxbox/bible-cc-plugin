@@ -123,7 +123,9 @@ def _write_hint_cursor(session_id: str, moment_id: int) -> None:
         pass
 
 
-def _print_hints(session_id: str, base_url: str, hint_format: str) -> None:
+def _print_hints(
+    session_id: str, base_url: str, hint_format: str, timeout: float = 1.0
+) -> None:
     """Fetch moments → format_hint → stdout (best-effort).
 
     Only prints moments with id > last hinted cursor, then updates cursor.
@@ -132,7 +134,7 @@ def _print_hints(session_id: str, base_url: str, hint_format: str) -> None:
     GET / JSON failures are caught at the outer level and logged.
     """
     try:
-        r = _local_client(timeout=3).get(
+        r = _local_client(timeout=timeout).get(
             f"{base_url}/daemon/moments",
             params={"session_id": session_id},
         )
@@ -172,6 +174,11 @@ def _print_hints(session_id: str, base_url: str, hint_format: str) -> None:
         _write_hint_cursor(session_id, max_id)
 
 
+def _should_poll_hints(config) -> bool:
+    """Return whether hook handlers should poll pending moment hints."""
+    return bool(config.capture.enabled and config.capture.mid_session_detection)
+
+
 def _handle_turn_user(config, args) -> None:
     """POST /turn/user {session_id, message}."""
     if not args.session_id:
@@ -189,7 +196,8 @@ def _handle_turn_user(config, args) -> None:
         mlen = len(args.message or "")
         tid = body.get("turn_id")
         _logger.info("turn-user %s msg_len=%d → OK turn_id=%s", sid, mlen, tid)
-        _print_hints(args.session_id, base_url, config.capture.hint_format)
+        if _should_poll_hints(config):
+            _print_hints(args.session_id, base_url, config.capture.hint_format)
     except httpx.HTTPStatusError as e:
         _logger.warning("turn-user daemon returned %d → skipping (%s)", e.response.status_code, e)
     except Exception as e:
@@ -224,7 +232,8 @@ def _handle_turn_tool(config, args) -> None:
         sid = args.session_id[:8]
         cmd = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
         _logger.info("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
-        _print_hints(args.session_id, base_url, config.capture.hint_format)
+        if _should_poll_hints(config):
+            _print_hints(args.session_id, base_url, config.capture.hint_format)
     except httpx.HTTPStatusError as e:
         _logger.warning("turn-tool daemon returned %d → skipping (%s)", e.response.status_code, e)
     except Exception as e:
@@ -232,13 +241,21 @@ def _handle_turn_tool(config, args) -> None:
 
 
 def _handle_turn_stop(config, args) -> None:
-    """Stop hook handler — no-op placeholder for Phase 2b mid-session detection.
+    """Stop hook handler — poll for hints after assistant responses.
 
     Claude Code Stop fires after every assistant response ("once per turn").
-    This handler exists as a wiring point — Phase 2b will queue async
-    moment detection here.  Currently returns immediately.
+    Detection runs asynchronously after user/tool hooks, so Stop is a useful
+    low-cost place to surface any moments that finished in the background.
     """
-    _logger.info("turn-stop — TODO(Phase 2b): queue async mid-session moment detection")
+    if not args.session_id:
+        _logger.warning("turn-stop missing --session-id")
+        return
+    if not _should_poll_hints(config):
+        _logger.debug("turn-stop %s → hint polling disabled", args.session_id[:8])
+        return
+    base_url = f"http://127.0.0.1:{config.daemon.port}"
+    _print_hints(args.session_id, base_url, config.capture.hint_format)
+    _logger.info("turn-stop %s → hints polled", args.session_id[:8])
 
 
 def _handle_session_end(config, args) -> None:

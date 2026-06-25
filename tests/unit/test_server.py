@@ -7,7 +7,6 @@ Uses FastAPI TestClient with a temporary SQLite database.
 from __future__ import annotations
 
 import asyncio
-import sys
 from unittest.mock import patch
 
 import pytest
@@ -19,11 +18,18 @@ def client(tmp_path, monkeypatch):
     """Return a TestClient pointed at a temporary SQLite database."""
     db_path = str(tmp_path / "daemon.db")
     monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+    monkeypatch.setattr(
+        "bible_cc_plugin.daemon.detector.detect_moments",
+        lambda turns, known_moments, phase, config: [],
+    )
 
     import bible_cc_plugin.daemon.server as server_mod
 
     server_mod._db_conn = None
     server_mod._db_error = None
+    server_mod._threshold_state.clear()
+    server_mod._config = server_mod.load_config()
+    server_mod._app_config = server_mod._config
 
     # Clear per-session seq counters to avoid cross-test pollution
     from bible_cc_plugin.daemon.buffer import session_seq
@@ -39,6 +45,9 @@ def client(tmp_path, monkeypatch):
     conn.close()
     server_mod._db_conn = None
     server_mod._db_error = None
+    server_mod._threshold_state.clear()
+    server_mod._config = server_mod.load_config()
+    server_mod._app_config = server_mod._config
     session_seq.clear()
 
 
@@ -521,6 +530,109 @@ class TestDetectionPipeline:
         moments = get_moments_by_session(conn, "s1")
         assert len(moments) == 1
         assert moments[0]["moment_type"] == "decision"
+
+        conn.close()
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_phase1_task_uses_queued_max_seq_window(self, tmp_path, monkeypatch):
+        """Lagging Phase 1 task must not analyze turns after its queued max_seq."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s-window")
+        insert_turn_user(conn, "s-window", "First decision")
+        trigger_seq = insert_turn_tool(conn, "s-window", "Read", {}, "first-tool")
+        insert_turn_user(conn, "s-window", "Later unrelated prompt")
+        insert_turn_tool(conn, "s-window", "Read", {}, "later-tool")
+
+        captured = []
+
+        def mock_detect(turns, known_moments, phase, config):
+            captured.extend(turns)
+            return []
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {"session_id": "s-window", "phase": 1, "max_seq": trigger_seq}
+            )
+
+        assert [t["content"] or t["tool_output"] for t in captured] == [
+            "First decision",
+            "first-tool",
+        ]
+
+        conn.close()
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_user_triggered_phase1_includes_previous_window(self, tmp_path, monkeypatch):
+        """User-triggered task should include prior user/tool context plus new prompt."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s-user-window")
+        insert_turn_user(conn, "s-user-window", "First decision")
+        insert_turn_tool(conn, "s-user-window", "Read", {}, "first-tool")
+        trigger_seq = insert_turn_user(conn, "s-user-window", "Follow-up prompt")
+
+        captured = []
+
+        def mock_detect(turns, known_moments, phase, config):
+            captured.extend(turns)
+            return []
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {
+                    "session_id": "s-user-window",
+                    "phase": 1,
+                    "max_seq": trigger_seq,
+                    "include_previous_user": True,
+                }
+            )
+
+        assert [t["content"] or t["tool_output"] for t in captured] == [
+            "First decision",
+            "first-tool",
+            "Follow-up prompt",
+        ]
 
         conn.close()
         server_mod._db_conn = None

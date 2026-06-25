@@ -196,7 +196,7 @@ Response: {success: true, task_id: string, domain: string, kb_index: string, tag
 
 **⚠️ Flush 序列化设计待定**：daemon 的 flush 操作需要将 moments（结构化 JSON 对象，含 title/narrative/moment_type 等字段）通过 `multipart/form-data` 的 `files[]` 上传到 `/api/import/memory`。具体方案：
 - 将 moments 序列化为 JSON 文件后作为 `files[]` 上传（一个文件含多条 moments，或一个文件一条 moment）
-- `kb_index` 从 config 读取（待定义 `bible.kb_index` 或 `capture.kb_index`）
+- `kb_index` 从 config 读取（`bible.kb_index`，默认 `"bible-cc"`，见 `04-config/schema.md`）
 - `tag` 固定为 `"memory"`
 此设计需在 `05-capture/flush.md`（L3）中落实。
 

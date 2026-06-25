@@ -10,7 +10,7 @@ packages = ["src/bible_cc_plugin"]
 
 [project]
 name = "bible-cc-plugin"
-version = "0.22.2"
+version = "0.22.3"
 description = "Claude Code plugin — BiBLE Atlas memory + knowledge broker"
 requires-python = ">=3.10"
 dependencies = [
@@ -31,6 +31,7 @@ bible-cc-hook = "bible_cc_plugin.scripts.hook:main"
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=1.4.0",
+    "pytest-httpx>=0.30.0",
     "pytest-html>=4.0.0",
     "ruff>=0.8.0",
 ]

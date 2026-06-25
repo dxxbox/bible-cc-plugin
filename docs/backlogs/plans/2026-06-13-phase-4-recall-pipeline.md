@@ -25,12 +25,12 @@
 | **依赖** | client.py（BiBLE API calls）、config.py（base_url）、types.py |
 
 6 个 tool 实现：
-- `bible_memory_search(query, limit)`: `POST /api/search/memory` → 返回记忆列表
-- `bible_memory_save(title, content, tags?)`: `POST /api/import/memory` → 保存新记忆
-- `bible_memory_get(memory_id)`: `POST /api/download/memory/{id}` → 返回完整记忆
-- `bible_knowledge_search(query, limit)`: `POST /api/search/knowledge` → 返回知识条目
-- `bible_skill_search(query, limit)`: `POST /api/search/skill` → 返回技能列表
-- `bible_skill_get(skill_id)`: `POST /api/download/skill/{id}` → 返回完整技能定义
+- `bible_memory_search(query, tag="memory", top_k=None, search_type=None)`: `POST /api/search/memory` → 返回 `results.memory` 域键结果
+- `bible_memory_save(messages[], title?, abstract?)`: `POST /api/import/memory`（multipart: `files[]`, `kb_index`, `tag="memory"`）→ 返回 task_id
+- `bible_memory_get(storage_path)`: `POST /api/download/memory/file` → 轮询 `GET /api/control/admin/tasks/{task_id}` → `GET /api/download/memory/artifact/{artifact_id}` 返回文件内容
+- `bible_knowledge_search(query, tag, top_k=None, search_type=None)`: `POST /api/search/knowledge-base` → 返回 `results.knowledge_base` 域键结果
+- `bible_skill_search(query, tag="skill", top_k=None, search_type=None)`: `POST /api/search/skill` → 返回 `results.skill` 域键结果
+- `bible_skill_get(storage_path)`: `POST /api/download/skill/file` → 轮询 task → `GET /api/download/skill/artifact/{artifact_id}` 返回文件内容
 
 每个 tool 定义 inputSchema（JSON Schema），BiBLE 不可达时返回 structured error（模型可 retry/continue）。
 
@@ -46,9 +46,9 @@
 1. 接收 query（可能为空）
 2. 空 → LLM 读 session turns → 总结 → 生成 search query
 3. 非空 → 直接用 query
-4. 并行 `POST /api/search/memory` + `/api/search/knowledge` + `/api/search/skill`
+4. 并行 `POST /api/search/memory` + `/api/search/knowledge-base` + `/api/search/skill`
 5. 合并结果（按 score 排序）
-6. 返回 `{query_used, context, hits: [{domain, id, title, snippet, score}]}`
+6. 返回 `{query_used, context, hits: [{domain, doc_id, section_title, content, score}]}`
 
 ### F4.3 — Integration Tests（Recall）
 

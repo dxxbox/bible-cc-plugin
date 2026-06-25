@@ -6,12 +6,10 @@ Uses stub mode (DETECTOR_TEST_MODE=true) and mock to avoid real API calls.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from bible_cc_plugin.config import DetectionConfig
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -139,6 +137,38 @@ class TestCallDetectionLLM:
             # Must not raise
             result = call_detection_llm("test", config, phase=1)
             assert result == []
+
+    def test_extracts_text_after_thinking_block(self, monkeypatch):
+        """ThinkingBlock before TextBlock → parse the later JSON text block."""
+        monkeypatch.delenv("DETECTOR_TEST_MODE", raising=False)
+
+        class ThinkingBlock:
+            thinking = "internal reasoning"
+
+        class TextBlock:
+            text = (
+                '{"result":"moment","moments":[{"type":"DECISION",'
+                '"title":"Use V4 contract","narrative":"User confirmed V4 as source."}]}'
+            )
+
+        mock_response = SimpleNamespace(
+            content=[ThinkingBlock(), TextBlock()],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=20),
+        )
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_response
+
+        with patch(
+            "bible_cc_plugin.daemon.detector._create_client", return_value=mock_client
+        ):
+            from bible_cc_plugin.daemon.detector import call_detection_llm
+
+            result = call_detection_llm("test", _default_config(), phase=1)
+
+        assert len(result) == 1
+        assert result[0].type == "decision"
+        assert result[0].title == "Use V4 contract"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

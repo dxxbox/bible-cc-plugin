@@ -295,6 +295,86 @@ def get_recent_turns(
     return result
 
 
+def get_phase1_detection_window(
+    conn: sqlite3.Connection,
+    session_id: str,
+    limit: int = 8,
+    max_seq: int | None = None,
+    include_previous_user: bool = False,
+) -> list[dict]:
+    """Return a chronological Phase 1 detection window anchored on latest user turn.
+
+    The mid-session detector needs the user's most recent intent/decision plus
+    the tool activity that followed it. A plain "last N turns" window can be
+    filled entirely by assistant tool calls, causing the detector to miss
+    user-confirmed decisions.
+
+    ``max_seq`` freezes the window at queue time so a lagging background worker
+    does not drift into a later user prompt.
+
+    When a user turn itself triggers the threshold, ``include_previous_user``
+    keeps the prior user-anchored tool window in scope while still including
+    the new prompt at ``max_seq``.
+    """
+    if max_seq is None:
+        latest_user = conn.execute(
+            "SELECT role, content, tool_name, tool_output, seq "
+            "FROM turns WHERE session_id=? AND role='user' "
+            "ORDER BY seq DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    else:
+        latest_user = conn.execute(
+            "SELECT role, content, tool_name, tool_output, seq "
+            "FROM turns WHERE session_id=? AND role='user' AND seq<=? "
+            "ORDER BY seq DESC LIMIT 1",
+            (session_id, max_seq),
+        ).fetchone()
+        if include_previous_user and latest_user is not None and latest_user["seq"] == max_seq:
+            previous_user = conn.execute(
+                "SELECT role, content, tool_name, tool_output, seq "
+                "FROM turns WHERE session_id=? AND role='user' AND seq<? "
+                "ORDER BY seq DESC LIMIT 1",
+                (session_id, max_seq),
+            ).fetchone()
+            if previous_user is not None:
+                latest_user = previous_user
+    if latest_user is None:
+        if max_seq is None:
+            return list(reversed(get_recent_turns(conn, session_id, limit=limit)))
+        rows = conn.execute(
+            "SELECT role, content, tool_name, tool_output, seq "
+            "FROM turns WHERE session_id=? AND seq<=? "
+            "ORDER BY seq DESC LIMIT ?",
+            (session_id, max_seq, limit),
+        ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    after_limit = max(limit - 1, 0)
+    if max_seq is None:
+        rows_after = conn.execute(
+            "SELECT role, content, tool_name, tool_output, seq "
+            "FROM turns WHERE session_id=? AND seq > ? "
+            "ORDER BY seq DESC LIMIT ?",
+            (session_id, latest_user["seq"], after_limit),
+        ).fetchall()
+    else:
+        rows_after = conn.execute(
+            "SELECT role, content, tool_name, tool_output, seq "
+            "FROM turns WHERE session_id=? AND seq > ? AND seq<=? "
+            "ORDER BY seq DESC LIMIT ?",
+            (session_id, latest_user["seq"], max_seq, after_limit),
+        ).fetchall()
+    result = [dict(latest_user)] + [dict(r) for r in reversed(rows_after)]
+    _logger.debug(
+        "get_phase1_detection_window: session=%s limit=%d → %d turns",
+        session_id[:8],
+        limit,
+        len(result),
+    )
+    return result
+
+
 def insert_turn_user(conn: sqlite3.Connection, session_id: str, message: str) -> int:
     """Insert a user turn.  Returns the turn seq number."""
     _require_active_session(conn, session_id)

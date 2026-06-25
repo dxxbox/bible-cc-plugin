@@ -148,7 +148,11 @@ Key moment types (SESSION_START excluded from Phase 2):
 Do NOT flag intermediate bug fixes or error corrections.
 
 Output a single JSON object:
-{"result": "moment" | "none", "moments": [{"type": "...", "title": "...", "narrative": "..."}], "assessment": "overall summary"}
+{
+  "result": "moment" | "none",
+  "moments": [{"type": "...", "title": "...", "narrative": "..."}],
+  "assessment": "overall summary"
+}
 
 If no new key moment occurred, output: {"result": "none"}
 Do NOT include markdown fences or extra text. Output ONLY the JSON object."""
@@ -272,21 +276,23 @@ def call_detection_llm(
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
-    # Extract text from response
-    text = ""
-    if response.content:
-        block = response.content[0]
-        text = getattr(block, "text", "")
-        if not text:
-            _logger.warning(
-                "detection response text empty: stop_reason=%s content_count=%d "
-                "block_type=%s block_keys=%s block_repr=%.500s",
-                getattr(response, "stop_reason", "?"),
-                len(response.content),
-                type(block).__name__,
-                [k for k in dir(block) if not k.startswith("_")],
-                repr(block)[:500],
-            )
+    # Extract text from all response blocks. Some models emit ThinkingBlock
+    # before TextBlock; looking only at content[0] silently drops valid JSON.
+    text_parts: list[str] = []
+    block_types: list[str] = []
+    for block in response.content or []:
+        block_types.append(type(block).__name__)
+        block_text = getattr(block, "text", "")
+        if block_text:
+            text_parts.append(str(block_text).strip())
+    text = "\n".join(part for part in text_parts if part)
+    if not text:
+        _logger.warning(
+            "detection response text empty: stop_reason=%s content_count=%d block_types=%s",
+            getattr(response, "stop_reason", "?"),
+            len(response.content or []),
+            block_types,
+        )
 
     usage = getattr(response, "usage", None)
     input_tokens = getattr(usage, "input_tokens", 0) if usage else 0

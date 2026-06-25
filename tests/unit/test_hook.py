@@ -216,6 +216,39 @@ class TestHookTurnUser:
         with patch("builtins.print"):
             _handle_turn_user(config, args)  # should NOT raise
 
+    def test_capture_disabled_skips_hint_polling(self, monkeypatch):
+        """turn-user should not poll hints when capture is disabled."""
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"turn_id": 1, "queued": False}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: calls.append(a),
+        )
+
+        from bible_cc_plugin.scripts.hook import _handle_turn_user
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = False
+        config.capture.mid_session_detection = True
+        args = argparse.Namespace(session_id="abc-123", message="hello")
+
+        _handle_turn_user(config, args)
+
+        assert calls == []
+
 
 class TestHookTurnTool:
     """Verify turn-tool handler behaviour."""
@@ -313,6 +346,41 @@ class TestHookTurnTool:
 
         with patch("builtins.print"):
             _handle_turn_tool(config, args)  # should NOT raise
+
+    def test_capture_disabled_skips_hint_polling(self, monkeypatch):
+        """turn-tool should not poll hints when capture is disabled."""
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"turn_id": 2, "queued": False}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: calls.append(a),
+        )
+
+        from bible_cc_plugin.scripts.hook import _handle_turn_tool
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = False
+        config.capture.mid_session_detection = True
+        args = argparse.Namespace(
+            session_id="abc-123", tool="Bash", input=None, output="ok"
+        )
+
+        _handle_turn_tool(config, args)
+
+        assert calls == []
 
 
 class TestHookSessionEnd:
@@ -506,6 +574,71 @@ class TestHookSessionEnd:
             "missing --session-id" in r.message
             for r in caplog.records
         ), "should log error for missing session-id"
+
+
+class TestHookTurnStop:
+    """Verify turn-stop polls already detected moments for hints."""
+
+    def test_polls_hints_for_session(self, monkeypatch):
+        from bible_cc_plugin.scripts.hook import _handle_turn_stop
+
+        calls = []
+
+        def fake_print_hints(session_id, base_url, hint_format):
+            calls.append((session_id, base_url, hint_format))
+
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints", fake_print_hints
+        )
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.hint_format = "quote_with_command"
+        args = argparse.Namespace(session_id="abc-123")
+
+        _handle_turn_stop(config, args)
+
+        assert calls == [
+            ("abc-123", "http://127.0.0.1:9777", "quote_with_command")
+        ]
+
+    def test_missing_session_id_does_not_poll(self, monkeypatch, caplog):
+        import logging
+
+        from bible_cc_plugin.scripts.hook import _handle_turn_stop
+
+        calls = []
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: calls.append(a),
+        )
+
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.WARNING)
+        _handle_turn_stop(MagicMock(), argparse.Namespace(session_id=None))
+        root.propagate = False
+
+        assert calls == []
+        assert any("turn-stop missing --session-id" in r.message for r in caplog.records)
+
+    def test_capture_disabled_does_not_poll(self, monkeypatch):
+        from bible_cc_plugin.scripts.hook import _handle_turn_stop
+
+        calls = []
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: calls.append(a),
+        )
+
+        config = MagicMock()
+        config.capture.enabled = False
+        config.capture.mid_session_detection = True
+        args = argparse.Namespace(session_id="abc-123")
+
+        _handle_turn_stop(config, args)
+
+        assert calls == []
 
 
 class TestPrintHints:

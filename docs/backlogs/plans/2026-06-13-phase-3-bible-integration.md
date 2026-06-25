@@ -25,13 +25,14 @@
 | **依赖** | config.py（base_url, token, kb_index）、types.py |
 
 封装的 API 调用：
-- `import_memory(session_id, moments, metrics)` → `POST /api/import/memory` → 返回 task_id（async import）
-- `search_memory(query, limit)` → `POST /api/search/memory`
-- `search_knowledge(query, limit)` → `POST /api/search/knowledge`
-- `search_skill(query, limit)` → `POST /api/search/skill`
-- `get_memory(id)` → `POST /api/download/memory/{id}`
-- `get_skill(id)` → `POST /api/download/skill/{id}`
-- `get_task_status(task_id)` → `GET /api/control/admin/tasks/{task_id}`
+- `import_memory(session_id, moments, metrics)` → `POST /api/import/memory`（multipart: `files[]`, `kb_index`, `tag="memory"`）→ 返回 task_id（async import）
+- `search_memory(query, tag="memory", top_k=None, search_type=None, kb_index=None, vector_model=None, vector_weight=None)` → `POST /api/search/memory`
+- `search_knowledge_base(query, tag, top_k=None, search_type=None, kb_index=None, vector_model=None, vector_weight=None)` → `POST /api/search/knowledge-base`
+- `search_skill(query, tag="skill", top_k=None, search_type=None, kb_index=None, vector_model=None, vector_weight=None)` → `POST /api/search/skill`
+- `download_memory_file(storage_path, tag="memory")` → `POST /api/download/memory/file`（异步步骤 1/3）→ 轮询 task → `GET /api/download/memory/artifact/{id}` 获取内容
+- `download_skill_file(storage_path, tag="skill")` → `POST /api/download/skill/file`（异步步骤 1/3）→ 轮询 task → `GET /api/download/skill/artifact/{id}` 获取内容
+- `get_task_status(task_id)` → `GET /api/control/admin/tasks/{task_id}`（import 和 download 任务均使用）
+- `get_download_artifact(domain, artifact_id)` → `GET /api/download/{domain}/artifact/{artifact_id}`（异步步骤 3/3）
 - `check_health()` → `GET /health` → 返回 latency_ms
 
 错误处理：timeout（默认 30s）、4xx（auth error, bad request）→ structured error with code + message、5xx（server error, unreachable）→ connectivity error。
@@ -107,8 +108,8 @@
 实现：
 - `tests/contract/test_bible_api.py`：使用 BiBLE test server
   - import memory → 验证 response 含 task_id
-  - search memory/knowledge/skill → 验证 response schema（hits array, score, snippet）
-  - get memory/skill → 验证 response 含完整内容
+  - search memory/knowledge-base/skill → 验证 response schema（domain-keyed results: `[{doc_id, section_id, section_title, score, content}]`）
+  - download memory/skill file → 验证 async 流程：提交任务返回 task_id → 轮询完成 → 拉取 artifact
   - health check → 验证 status + latency
   - Auth: token=null 时验证无 Authorization header
   - Error: 404 → 验证 structured error code + message
@@ -124,12 +125,13 @@
 
 实现：
 
-**BiBLE 请求追踪日志**（client.py 每次调用输出到 daemon stderr）：
+**BiBLE 请求追踪日志**（client.py 通过 Python `logger` 输出，不 `print`；禁止记录 token/query/body）：
 ```
 [bible:req] POST /api/import/memory → 202 (1.2s) task_id=abc-def-123
-[bible:req] POST /api/search/memory → 200 (0.3s) hits=5
+[bible:req] POST /api/search/memory → 200 (0.3s) total=5
+[bible:req] POST /api/search/knowledge-base → 200 (0.3s) total=3
 [bible:req] GET /health → 200 (0.05s)
-[bible:req] POST /api/import/memory → ERROR timeout (30.0s) → BiBLE unreachable
+[bible:req] POST /api/import/memory → ERROR timeout (30.0s) → BibleUnreachableError
 ```
 
 **Flush 诊断日志**（flush 流程每步输出）：

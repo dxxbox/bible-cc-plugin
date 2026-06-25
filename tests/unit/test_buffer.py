@@ -741,6 +741,124 @@ class TestGetRecentTurns:
         assert turns == []
 
 
+class TestPhase1DetectionWindow:
+    """get_phase1_detection_window() — latest user intent plus following tools."""
+
+    def test_keeps_latest_user_turn_when_tools_fill_recent_window(self, conn_wal):
+        """Recent tool-heavy activity must not push the user decision out."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s1")
+        session_seq["s1"] = 0
+        insert_turn_user(conn_wal, "s1", "Use the Atlas V4 contract as source of truth")
+        for i in range(5):
+            insert_turn_tool(conn_wal, "s1", "Read", {"path": f"f{i}.md"}, f"tool-{i}")
+
+        turns = get_phase1_detection_window(conn_wal, "s1", limit=3)
+
+        assert len(turns) == 3
+        assert turns[0]["role"] == "user"
+        assert "V4 contract" in turns[0]["content"]
+        assert [t["tool_output"] for t in turns[1:]] == ["tool-3", "tool-4"]
+
+    def test_returns_chronological_fallback_when_no_user_turn(self, conn_wal):
+        """No user turn → preserve old recent behavior but feed prompt chronologically."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_tool,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s2")
+        session_seq["s2"] = 0
+        for i in range(4):
+            insert_turn_tool(conn_wal, "s2", "Read", {}, f"tool-{i}")
+
+        turns = get_phase1_detection_window(conn_wal, "s2", limit=2)
+
+        assert [t["tool_output"] for t in turns] == ["tool-2", "tool-3"]
+
+    def test_max_seq_freezes_window_before_later_user_turn(self, conn_wal):
+        """A queued detection task should not drift into later user prompts."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s3")
+        session_seq["s3"] = 0
+        insert_turn_user(conn_wal, "s3", "First decision")
+        trigger_seq = insert_turn_tool(conn_wal, "s3", "Read", {}, "first-tool")
+        insert_turn_user(conn_wal, "s3", "Later unrelated prompt")
+        insert_turn_tool(conn_wal, "s3", "Read", {}, "later-tool")
+
+        turns = get_phase1_detection_window(conn_wal, "s3", limit=8, max_seq=trigger_seq)
+
+        assert [t["content"] or t["tool_output"] for t in turns] == [
+            "First decision",
+            "first-tool",
+        ]
+
+    def test_max_seq_freezes_tool_only_fallback(self, conn_wal):
+        """Tool-only fallback should also respect queued max_seq."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_tool,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s4")
+        session_seq["s4"] = 0
+        insert_turn_tool(conn_wal, "s4", "Read", {}, "tool-0")
+        trigger_seq = insert_turn_tool(conn_wal, "s4", "Read", {}, "tool-1")
+        insert_turn_tool(conn_wal, "s4", "Read", {}, "tool-2")
+
+        turns = get_phase1_detection_window(conn_wal, "s4", limit=8, max_seq=trigger_seq)
+
+        assert [t["tool_output"] for t in turns] == ["tool-0", "tool-1"]
+
+    def test_user_trigger_can_include_previous_user_window(self, conn_wal):
+        """User-triggered detection keeps prior tool-backed context in scope."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s5")
+        session_seq["s5"] = 0
+        insert_turn_user(conn_wal, "s5", "First decision")
+        insert_turn_tool(conn_wal, "s5", "Read", {}, "first-tool")
+        trigger_seq = insert_turn_user(conn_wal, "s5", "Follow-up prompt")
+
+        turns = get_phase1_detection_window(
+            conn_wal,
+            "s5",
+            limit=8,
+            max_seq=trigger_seq,
+            include_previous_user=True,
+        )
+
+        assert [t["content"] or t["tool_output"] for t in turns] == [
+            "First decision",
+            "first-tool",
+            "Follow-up prompt",
+        ]
+
+
 class TestNullByteDelimiter:
     """意图: hash 安全性——\\0 分隔符防止字段拼接碰撞。"""
 
