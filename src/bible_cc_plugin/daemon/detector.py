@@ -161,45 +161,180 @@ Do NOT include markdown fences or extra text. Output ONLY the JSON object."""
 def build_phase2_prompt(
     all_turns: list[dict],
     known_moments: list[MomentCandidate],
+    max_input_chars: int = 32000,
 ) -> str:
     """Build the Phase 2 retrospective prompt (detection.md §3.2).
 
     Includes known moments with "Do NOT re-report" instruction and
     the full session transcript.  SESSION_START type excluded.
-    """
-    lines = []
 
+    If the prompt would exceed max_input_chars, truncates to head + tail
+    with an omission note to keep the LLM call lightweight.
+    """
+    # ── Fixed preamble + footer (known moments + instructions) ──────────
+    preamble_lines: list[str] = []
     if known_moments:
-        lines.append(
+        preamble_lines.append(
             "The following key moments were ALREADY detected during the session."
         )
-        lines.append(
+        preamble_lines.append(
             "Do NOT re-report them. Only report NEW moments not covered below:"
         )
-        lines.append("")
-        for m in known_moments:
-            lines.append(f"- [{m.type}] {m.title}")
-        lines.append("")
+        preamble_lines.append("")
+        known_budget = min(4000, max(0, max_input_chars // 4))
+        known_used = 0
+        known_omitted = 0
+        for index, m in enumerate(known_moments):
+            line = f"- [{m.type}] {m.title}"
+            if len(line) > 300:
+                line = line[:297].rstrip() + "..."
 
-    lines.append("Full session transcript:")
-    for i, t in enumerate(all_turns):
+            if known_used + len(line) > known_budget:
+                known_omitted = len(known_moments) - index
+                break
+
+            preamble_lines.append(line)
+            known_used += len(line)
+
+        if known_omitted:
+            preamble_lines.append(
+                f"... [{known_omitted} already-detected moments omitted to fit budget]"
+            )
+        preamble_lines.append("")
+
+    footer_lines = [
+        "",
+        "Now identify:",
+        "1. Overall session assessment — what was accomplished?",
+        "2. Any ADDITIONAL key moments missed by mid-session detection",
+        "3. What should be remembered for future sessions?",
+    ]
+    fixed_overhead = len("\n".join(preamble_lines)) + len("\n".join(footer_lines)) + 2
+
+    def _compose_prompt(body: str) -> str:
+        return "\n".join(preamble_lines + [body] + footer_lines)
+
+    def _fit_body_to_budget(body: str) -> str:
+        """Trim transcript body so the composed prompt respects max_input_chars."""
+        if len(_compose_prompt(body)) <= max_input_chars:
+            return body
+
+        marker = "\n[...phase2 transcript truncated to fit budget...]"
+        low = 0
+        high = len(body)
+        best = ""
+        while low <= high:
+            mid = (low + high) // 2
+            candidate = body[:mid].rstrip() + marker
+            if len(_compose_prompt(candidate)) <= max_input_chars:
+                best = candidate
+                low = mid + 1
+            else:
+                high = mid - 1
+        return best or "Full session transcript:\n[...omitted to fit budget...]"
+
+    # ── Build turn lines with budget awareness ──────────────────────────
+    turn_lines: list[str] = ["Full session transcript:"]
+    budget = max_input_chars - fixed_overhead - len(turn_lines[0])
+
+    def _format_turn(i: int, t: dict, content_max: int | None = None) -> str:
+        """Format a single turn.  If content_max is given, per-turn content is
+        truncated to that limit with a marker."""
         role = t.get("role", "unknown")
-        lines.append(f"\n--- Turn {i + 1} ({role}) ---")
+        header = f"--- Turn {i + 1} ({role}) ---"
         if role == "user":
-            lines.append(t.get("content", ""))
+            body = t.get("content", "")
         elif t.get("tool_name"):
-            lines.append(f"[Used tool: {t['tool_name']}]")
-            lines.append(t.get("tool_output", ""))
+            header += f"\n[Used tool: {t['tool_name']}]"
+            body = t.get("tool_output", "")
         else:
-            lines.append(t.get("content", ""))
+            body = t.get("content", "")
+        if content_max is not None and len(body) > content_max:
+            body = body[:content_max] + "\n[...truncated...]"
+        return header + "\n" + body
 
-    lines.append("")
-    lines.append("Now identify:")
-    lines.append("1. Overall session assessment — what was accomplished?")
-    lines.append("2. Any ADDITIONAL key moments missed by mid-session detection")
-    lines.append("3. What should be remembered for future sessions?")
+    # Format all turns without truncation (for full-char counting)
+    all_formatted = [_format_turn(i, t) for i, t in enumerate(all_turns)]
+    total_turn_chars = sum(len(s) for s in all_formatted)
 
-    return "\n".join(lines)
+    if total_turn_chars <= budget:
+        # No truncation needed — all turns fit
+        prompt_body = "Full session transcript:\n" + "\n\n".join(all_formatted)
+    else:
+        # ── Budget-aware truncation ──────────────────────────────────────
+        # Build head + tail greedily.  Each per-turn content is capped.
+        # Guarantees: omitted >= 0, final prompt <= max_input_chars.
+
+        per_turn_content_max = 4000  # ~1K tokens per turn upper bound
+
+        head_parts: list[str] = []
+        tail_parts: list[str] = []
+        used = 0
+        hi = 0
+        ti = len(all_formatted) - 1
+
+        while hi <= ti and used < budget:
+            remaining = budget - used
+
+            # ── Add head turn ──
+            turn_str = all_formatted[hi]
+            if len(turn_str) > remaining:
+                content_max = min(
+                    max(remaining - 100, 200), per_turn_content_max
+                )
+                turn_str = _format_turn(hi, all_turns[hi], content_max=content_max)
+            head_parts.append(turn_str)
+            used += len(turn_str)
+            hi += 1
+
+            if hi > ti or used >= budget:
+                break
+
+            # ── Add tail turn ──
+            remaining = budget - used
+            turn_str = all_formatted[ti]
+            if len(turn_str) > remaining:
+                content_max = min(
+                    max(remaining - 100, 200), per_turn_content_max
+                )
+                turn_str = _format_turn(ti, all_turns[ti], content_max=content_max)
+            tail_parts.append(turn_str)
+            used += len(turn_str)
+            ti -= 1
+
+        omitted = max(0, ti - hi + 1)
+        omission = (
+            f"--- [{omitted} turns omitted — see transcript for details] ---"
+        )
+        # Reversed so tail turns appear in chronological order
+        segments = ["Full session transcript:"] + head_parts
+        if omitted > 0:
+            segments.append(omission)
+        segments.extend(reversed(tail_parts))
+        prompt_body = "\n\n".join(segments)
+
+        _logger.info(
+            "phase2 prompt truncated: original_chars~%d pre_fit_chars=%d "
+            "head=%d tail=%d omitted=%d",
+            fixed_overhead + total_turn_chars,
+            fixed_overhead + len(prompt_body),
+            len(head_parts),
+            len(tail_parts),
+            omitted,
+        )
+
+    prompt_body = _fit_body_to_budget(prompt_body)
+    prompt = _compose_prompt(prompt_body)
+    if len(prompt) > max_input_chars:
+        _logger.warning(
+            "phase2 prompt fixed sections exceed max_input_chars: "
+            "prompt_chars=%d max_input_chars=%d known_moments=%d",
+            len(prompt),
+            max_input_chars,
+            len(known_moments),
+        )
+        prompt = prompt[:max_input_chars]
+    return prompt
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -344,7 +479,10 @@ def detect_moments(
             prompt = build_phase1_prompt(turns)
             return call_detection_llm(prompt, config, phase=1)
         else:
-            prompt = build_phase2_prompt(turns, known_moments or [])
+            prompt = build_phase2_prompt(
+                turns, known_moments or [],
+                max_input_chars=config.retrospective_max_input_chars,
+            )
             return call_detection_llm(prompt, config, phase=2)
     except Exception:
         _logger.error("detect_moments crashed", exc_info=True)

@@ -43,6 +43,35 @@ def _tail_log(path: Path, lines: int = 20) -> str:
         return ""
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _parse_daemon_error_body(response: httpx.Response) -> tuple[str, str]:
+    """Extract (code, message) from daemon error response.
+
+    Supports multiple formats in priority order:
+    1. daemon envelope: {"error": {"code": "...", "message": "..."}}
+    2. FastAPI default:  {"detail": "..."}
+    3. Generic:          {"message": "..."}
+    4. Fallback:         raw response.text[:200]
+    """
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            err = body.get("error", {})
+            if isinstance(err, dict) and err.get("message"):
+                return (str(err.get("code", "")), str(err["message"]))
+            if "detail" in body:
+                return ("", str(body["detail"]))
+            if "message" in body:
+                return ("", str(body["message"]))
+        # JSON parsed but no known message key — use raw JSON string
+        text = response.text.strip()[:200]
+    except Exception:
+        text = (response.text or "").strip()[:200]
+    return ("", text)
+
+
 # ── Phase 2a action handlers ──────────────────────────────────────────────
 
 
@@ -199,7 +228,43 @@ def _handle_turn_user(config, args) -> None:
         if _should_poll_hints(config):
             _print_hints(args.session_id, base_url, config.capture.hint_format)
     except httpx.HTTPStatusError as e:
-        _logger.warning("turn-user daemon returned %d → skipping (%s)", e.response.status_code, e)
+        code, msg = _parse_daemon_error_body(e.response)
+        _logger.warning(
+            "turn-user daemon returned %d code=%s message=%r → skipping",
+            e.response.status_code, code, msg,
+        )
+        # Self-healing: if session was never registered, recover and retry once.
+        if e.response.status_code == 400 and "session not found" in msg.lower():
+            _logger.info(
+                "turn-user attempting session recovery via /session/start for %s",
+                args.session_id[:8],
+            )
+            try:
+                rr = _local_client().post(
+                    f"{base_url}/session/start",
+                    json={"session_id": args.session_id},
+                )
+                rr.raise_for_status()
+                _logger.info("turn-user recovery OK — retrying current turn")
+                r2 = _local_client().post(
+                    f"{base_url}/turn/user",
+                    json={"session_id": args.session_id, "message": args.message or ""},
+                )
+                r2.raise_for_status()
+                body2 = r2.json()
+                sid2 = args.session_id[:8]
+                mlen2 = len(args.message or "")
+                tid2 = body2.get("turn_id")
+                _logger.info(
+                    "turn-user %s msg_len=%d → OK turn_id=%s (recovered)",
+                    sid2, mlen2, tid2,
+                )
+                if _should_poll_hints(config):
+                    _print_hints(args.session_id, base_url, config.capture.hint_format)
+            except Exception as recovery_err:
+                _logger.warning(
+                    "turn-user recovery failed: %s — turn skipped", recovery_err,
+                )
     except Exception as e:
         _logger.warning("turn-user daemon unreachable → skipping (%s)", e)
 
@@ -235,7 +300,47 @@ def _handle_turn_tool(config, args) -> None:
         if _should_poll_hints(config):
             _print_hints(args.session_id, base_url, config.capture.hint_format)
     except httpx.HTTPStatusError as e:
-        _logger.warning("turn-tool daemon returned %d → skipping (%s)", e.response.status_code, e)
+        code, msg = _parse_daemon_error_body(e.response)
+        _logger.warning(
+            "turn-tool daemon returned %d code=%s message=%r → skipping",
+            e.response.status_code, code, msg,
+        )
+        # Self-healing: if session was never registered, recover and retry once.
+        if e.response.status_code == 400 and "session not found" in msg.lower():
+            _logger.info(
+                "turn-tool attempting session recovery via /session/start for %s",
+                args.session_id[:8],
+            )
+            try:
+                rr = _local_client().post(
+                    f"{base_url}/session/start",
+                    json={"session_id": args.session_id},
+                )
+                rr.raise_for_status()
+                _logger.info("turn-tool recovery OK — retrying current turn")
+                r2 = _local_client().post(
+                    f"{base_url}/turn/tool",
+                    json={
+                        "session_id": args.session_id,
+                        "tool_name": args.tool,
+                        "arguments": arguments,
+                        "output": args.output or "",
+                    },
+                )
+                r2.raise_for_status()
+                olen2 = len(args.output or "")
+                sid2 = args.session_id[:8]
+                cmd2 = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
+                _logger.info(
+                    "turn-tool %s %s %s out=%d → OK (recovered)",
+                    sid2, args.tool, cmd2, olen2,
+                )
+                if _should_poll_hints(config):
+                    _print_hints(args.session_id, base_url, config.capture.hint_format)
+            except Exception as recovery_err:
+                _logger.warning(
+                    "turn-tool recovery failed: %s — turn skipped", recovery_err,
+                )
     except Exception as e:
         _logger.warning("turn-tool daemon unreachable → skipping (%s)", e)
 
@@ -272,13 +377,8 @@ def _handle_session_end(config, args) -> None:
         r.raise_for_status()
         _logger.info("POST /session/end... OK")
     except httpx.HTTPStatusError as e:
-        # Try to read the daemon error envelope to determine the cause.
-        try:
-            body = e.response.json()
-            msg = body.get("error", {}).get("message", "")
-        except Exception:
-            msg = str(e.response.text)[:200] if e.response.text else ""
-        if e.response.status_code == 404 and "session not found" in msg:
+        code, msg = _parse_daemon_error_body(e.response)
+        if e.response.status_code == 404 and "session not found" in msg.lower():
             _logger.warning(
                 "session-end failed: session %s was never registered "
                 "(daemon may have restarted after SessionStart or session may "
@@ -358,7 +458,7 @@ def main() -> None:
         output=tool_output,
     )
 
-    _logger.info(
+    _logger.debug(
         "hook=%s stdin_sid=%s cli_sid=%s merged_sid=%s msg_len=%d stdin_keys=%s",
         args.action,
         stdin_data.get("session_id", "<none>") or "<empty>",

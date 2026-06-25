@@ -98,6 +98,7 @@ class DetectionConfig(BaseModel):
     model: str = "deepseek-v4-flash"
     max_tokens: int = 512
     temperature: float = 0.0
+    retrospective_max_input_chars: int = 32000  # Phase 2 prompt truncation budget (~8K tokens)
 
 
 class BypassConfig(BaseModel):
@@ -140,7 +141,12 @@ def load_config(config_path: Path | None = None, *, debug: bool = False) -> AppC
 
     # Tier 2: config file
     if config_path is None:
-        config_path = Path(os.getenv("BIBLE_CC_CONFIG_PATH", Path.home() / ".bible-cc" / "config.json"))
+        config_path = Path(
+            os.getenv(
+                "BIBLE_CC_CONFIG_PATH",
+                Path.home() / ".bible-cc" / "config.json",
+            )
+        )
     file_data: dict = {}
     if config_path.exists():
         file_data = json.loads(config_path.read_text())

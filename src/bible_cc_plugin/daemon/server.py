@@ -231,11 +231,15 @@ async def _process_detection_task(task: dict):
                 )
             )
 
-    # 2. Call LLM detection
+    # 2. Call LLM detection（non-blocking: run in thread to avoid blocking event loop）
     config = _app_config.detection
     start = time.monotonic()
-    candidates = detect_moments(
-        turns, known_moments=known_moments or None, phase=phase, config=config
+    candidates = await asyncio.to_thread(
+        detect_moments,
+        turns,
+        known_moments or None,
+        phase,
+        config,
     )
     elapsed_ms = int((time.monotonic() - start) * 1000)
 

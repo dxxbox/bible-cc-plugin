@@ -277,6 +277,104 @@ class TestBuildPhase2Prompt:
         assert "SESSION_START" not in prompt
 
 
+class TestBuildPhase2PromptTruncation:
+    """Truncation: prompt must stay ≤ max_input_chars, omit ≥ 0, per-turn cap."""
+
+    def _build_short_turn(self, i: int, chars: int = 100) -> dict:
+        return _make_turn("user", content=f"turn {i} " + "x" * (chars - 10))
+
+    def test_within_budget_no_truncation(self):
+        """Prompt within budget — all turns included, no omission note."""
+        from bible_cc_plugin.daemon.detector import build_phase2_prompt
+
+        turns = [self._build_short_turn(i, 200) for i in range(5)]
+        prompt = build_phase2_prompt(turns, [], max_input_chars=20000)
+        assert "turns omitted" not in prompt
+        assert "Turn 1" in prompt
+        assert "Turn 5" in prompt
+
+    def test_long_session_truncated_head_and_tail(self):
+        """Long session overflow → head + omission + tail, still ≤ budget."""
+        from bible_cc_plugin.daemon.detector import build_phase2_prompt
+
+        # 200 turns × 300 chars = 60k chars → exceeds 10k budget
+        turns = [self._build_short_turn(i, 300) for i in range(200)]
+        prompt = build_phase2_prompt(turns, [], max_input_chars=10000)
+        assert "turns omitted" in prompt
+        assert "Turn 1" in prompt
+        assert f"Turn {len(turns)}" in prompt
+        assert len(prompt) <= 10000, (
+            f"prompt={len(prompt)} > budget={10000}"
+        )
+
+    def test_single_huge_turn_truncated_per_turn(self):
+        """One turn with 50k chars → per-turn content cap applied."""
+        from bible_cc_plugin.daemon.detector import build_phase2_prompt
+
+        huge = "a" * 50000
+        turns = [
+            _make_turn("user", content="intro"),
+            _make_turn("assistant", tool_name="Bash", tool_output=huge),
+            _make_turn("user", content="outro"),
+        ]
+        prompt = build_phase2_prompt(turns, [], max_input_chars=10000)
+        assert huge not in prompt  # full 50k not present
+        assert len(prompt) <= 10000, (
+            f"prompt={len(prompt)} > budget=10000"
+        )
+
+    def test_short_session_no_negative_omitted(self):
+        """3-turn session with tiny budget → omitted ≥ 0, no crash."""
+        from bible_cc_plugin.daemon.detector import build_phase2_prompt
+
+        turns = [self._build_short_turn(i, 500) for i in range(3)]
+        prompt = build_phase2_prompt(turns, [], max_input_chars=500)
+        # Must not crash; prompt must respect the configured budget.
+        assert len(prompt) <= 500, (
+            f"prompt={len(prompt)} > budget=500"
+        )
+        # No negative omission note
+        assert "[-" not in prompt, "prompt contains negative omitted count"
+
+    def test_known_moments_always_preserved(self):
+        """Even when truncated, known moments section is always present."""
+        from bible_cc_plugin.daemon.detector import (
+            MomentCandidate,
+            build_phase2_prompt,
+        )
+
+        known = [
+            MomentCandidate(type="decision", title="D1", narrative="N1"),
+            MomentCandidate(type="accomplishment", title="A1", narrative="N2"),
+        ]
+        turns = [self._build_short_turn(i, 500) for i in range(100)]
+        prompt = build_phase2_prompt(turns, known, max_input_chars=2000)
+        assert "D1" in prompt
+        assert "A1" in prompt
+        assert "Do NOT re-report" in prompt
+
+    def test_large_known_moments_still_respect_budget(self):
+        """Oversized known-moment preamble must not break strict budget."""
+        from bible_cc_plugin.daemon.detector import (
+            MomentCandidate,
+            build_phase2_prompt,
+        )
+
+        known = [
+            MomentCandidate(
+                type="decision",
+                title=f"Decision {i} " + "x" * 2000,
+                narrative="N",
+            )
+            for i in range(50)
+        ]
+        turns = [self._build_short_turn(i, 300) for i in range(20)]
+        prompt = build_phase2_prompt(turns, known, max_input_chars=32000)
+
+        assert len(prompt) <= 32000
+        assert "already-detected moments omitted" in prompt
+
+
 class TestNoRealAPICallInCI:
     """Intent: CI 零成本 — stub mode prevents any real API usage."""
 
