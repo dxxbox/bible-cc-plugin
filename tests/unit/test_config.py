@@ -35,8 +35,8 @@ class TestConfigDefaults:
 
         config = AppConfig()
         assert config.capture.enabled is True
-        assert config.capture.commit_threshold_turns == 8
-        assert config.capture.commit_threshold_chars == 16000
+        assert config.capture.commit_threshold_turns == 4
+        assert config.capture.commit_threshold_chars == 2000
 
     def test_default_hint_format(self):
         from bible_cc_plugin.config import AppConfig

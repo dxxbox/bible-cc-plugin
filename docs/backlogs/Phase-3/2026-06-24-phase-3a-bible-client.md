@@ -20,7 +20,7 @@
 
 > client.py 是所有 BiBLE Atlas 通信的**唯一通道**。Daemon 和 MCP server 都通过它调用 BiBLE V4 API——不得各自实现 HTTP 调用。
 >
-> 封装 8 个 API 调用：import memory、search memory/knowledge/skill、get memory/skill、task status、health check。每个调用统一处理认证（Bearer token）、超时（默认 30s）、错误分类（4xx → BiBLEError、5xx/timeout/network error → BibleUnreachableError）。
+> 封装 9 个 API 调用：import memory、search memory/knowledge/skill、request download memory/skill、task status、artifact download、health check。每个调用统一处理认证（Bearer token）、超时（默认 30s）、错误分类（4xx → BiBLEError、5xx/timeout/network error → BibleUnreachableError）。
 >
 > 每次 API 调用输出 `[bible:req]` 追踪日志——method、URL、status、latency、result summary。这是排查跨网络故障的基础设施。
 
@@ -40,13 +40,13 @@
 
 | 方法 | HTTP | 用途 |
 |------|------|------|
-| `check_health()` | `GET /health` | 连通性检查，返回 `{"success": true, "latency_ms": 15}` |
-| `import_memory(session_id, moments, metrics)` | `POST /api/import/memory` | 导入 memory（multipart: `files[]`, `kb_index`, `tag="memory"`），返回 `{"task_id": "abc-123"}` |
+| `check_health()` | `GET /health` | 连通性检查，返回 `HealthResult(reachable: bool, latency_ms: float)` |
+| `import_memory(files, kb_index, tag="memory", parser_script=None, vector_model=None, parser_context=None)` | `POST /api/import/memory` | 导入 memory（multipart: `files[]`, `kb_index`, `tag="memory"`）。`files` 为 `list[tuple[str, bytes, str]]`（filename, content, content_type）。序列化责任在调用方（daemon flush 层 / MCP adapter 层）。返回 `{"task_id": "abc-123"}` |
 | `search_memory(query, tag="memory", top_k=None, search_type=None, kb_index=None, vector_model=None, vector_weight=None)` | `POST /api/search/memory` | 搜索记忆，返回 `results.memory` 域键结果 |
-| `search_knowledge_base(query, tag, top_k=None, search_type=None, kb_index=None, vector_model=None, vector_weight=None)` | `POST /api/search/knowledge-base` | 搜索知识库，返回 `results.knowledge_base` 域键结果 |
+| `search_knowledge_base(query, tag, top_k=None, search_type=None, kb_index=None, vector_model=None, vector_weight=None)` | `POST /api/search/knowledge-base` | 搜索知识库。`tag` 必填（无默认值——KNOWLEDGE_BASE 的 tag 为用户自定义，如 `design`/`flow`/`alg`） |
 | `search_skill(query, tag="skill", top_k=None, search_type=None, kb_index=None, vector_model=None, vector_weight=None)` | `POST /api/search/skill` | 搜索技能，返回 `results.skill` 域键结果 |
-| `download_memory_file(storage_path, tag="memory")` | `POST /api/download/memory/file` | 发起 memory 下载任务（异步步骤 1/3），返回 `{"task_id": "..."}` |
-| `download_skill_file(storage_path, tag="skill")` | `POST /api/download/skill/file` | 发起 skill 下载任务（异步步骤 1/3），返回 `{"task_id": "..."}` |
+| `request_memory_download(storage_path, tag="memory")` | `POST /api/download/memory/file` | 提交 memory 下载任务（异步步骤 1/3），返回 `{"task_id": "..."}`。调用方需 poll `get_task_status()` 后 `get_download_artifact()` |
+| `request_skill_download(storage_path, tag="skill")` | `POST /api/download/skill/file` | 提交 skill 下载任务（异步步骤 1/3），返回 `{"task_id": "..."}`。调用方需 poll `get_task_status()` 后 `get_download_artifact()` |
 | `get_task_status(task_id)` | `GET /api/control/admin/tasks/{task_id}` | 轮询异步 import/download 任务状态（步骤 2/3） |
 | `get_download_artifact(domain, artifact_id)` | `GET /api/download/{domain}/artifact/{artifact_id}` | 获取下载产物二进制流（步骤 3/3） |
 
@@ -114,6 +114,48 @@ token 为空时不发送 Authorization header（test mode server 不需要认证
 | 集成测试 | `async with BiBLEClient(...) as client:` | context manager 自动关闭 | 每个测试独立 client，避免跨测试连接泄漏 |
 | 单元测试 | 不需要真实 client | — | 使用 `pytest-httpx` mock，不创建真实连接 |
 
+### 错误类型
+
+`BiBLEError` 和 `BibleUnreachableError` 定义在 `client.py` 中（与 httpx 紧密相关，无需单独 exceptions 模块）。同时定义 `HealthResult` dataclass：
+
+```python
+from dataclasses import dataclass
+
+class BiBLEError(Exception):
+    def __init__(self, code: str, message: str, status_code: int = 400):
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+        super().__init__(f"[{code}] {message}")
+
+class BibleUnreachableError(Exception):
+    def __init__(self, message: str, original_error: Exception | None = None):
+        self.original_error = original_error
+        super().__init__(message)
+
+@dataclass
+class HealthResult:
+    reachable: bool
+    latency_ms: float
+```
+
+### Async Context Manager 协议
+
+`BiBLEClient` 实现 `__aenter__` / `__aexit__` 协议，`__aexit__` 调用 `self.aclose()`。同时保留独立的 `aclose()` 方法供非 context manager 场景（MCP server 的 try/finally）：
+
+```python
+async def __aenter__(self) -> "BiBLEClient":
+    return self
+
+async def __aexit__(self, *args) -> None:
+    await self.aclose()
+
+async def aclose(self) -> None:
+    if self._client is not None:
+        await self._client.aclose()
+        self._client = None
+```
+
 ### 超时
 - 默认 30s，构造时从 config 读取
 - `httpx.Timeout(connect=10, read=30, write=10, pool=10)`
@@ -129,7 +171,7 @@ client = BiBLEClient(base_url=config.bible.base_url, token=config.bible.token, k
 
 ## 验收标准
 
-- [ ] `uv run pytest tests/unit/test_client.py -v` — 10 个 API 全部有 unit test 覆盖
+- [ ] `uv run pytest tests/unit/test_client.py -v` — 9 个 API 全部有 unit test 覆盖
 - [ ] ⚠️ unit mock 验证请求 payload 和 endpoint 与 `docs/sw-design/02-interfaces.md` 一致——mock 通过不代表真实 API 兼容，Phase 3d contract test 负责兜底
 - [ ] 正常返回 → 验证 response 解析正确（task_id、total、domain-keyed results 结构、latency_ms）
 - [ ] download 异步流程完整：file → task_id → poll task status → get artifact
@@ -137,6 +179,9 @@ client = BiBLEClient(base_url=config.bible.base_url, token=config.bible.token, k
 - [ ] 端点、请求体、响应解析必须对齐 BiBLE Atlas V4 API 文档（`BiBLE-Atlas/docs/designs/server_part/v4/02_API接口文档.md`），`docs/sw-design/02-interfaces.md` §2 为其摘要镜像
 - [ ] 4xx 响应 → 抛出 `BiBLEError`，包含 code + message
 - [ ] 5xx 响应 / timeout / 网络错误 → 抛出 `BibleUnreachableError`
+- [ ] connect timeout（10s）→ `BibleUnreachableError`（非静默吞掉）
+- [ ] read timeout（30s）→ `BibleUnreachableError`（非静默吞掉）
+- [ ] 200 响应但 body 非合法 JSON → 不应静默吞掉，抛 `BiBLEError` 或 `BibleUnreachableError`
 - [ ] token=null 时请求不包含 Authorization header
 - [ ] 每次 API 调用输出 `[bible:req]` 追踪日志
 - [ ] client 构造始终成功——`base_url` 来自 `config.bible.base_url`（默认 `http://localhost:5555`），无需额外校验；BiBLE 连通性是运行时问题，由 `BibleUnreachableError` 表达

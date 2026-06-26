@@ -79,8 +79,8 @@ class SearchConfig(BaseModel):
 class CaptureConfig(BaseModel):
     enabled: bool = True
     mode: Literal["key_moments", "all"] = "key_moments"
-    commit_threshold_turns: int = 8
-    commit_threshold_chars: int = 16000
+    commit_threshold_turns: int = 4
+    commit_threshold_chars: int = 2000
     mid_session_detection: bool = True
     mid_session_upload: bool = False
     hint_format: str = "quote_with_command"

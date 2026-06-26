@@ -545,8 +545,8 @@ class TestTurnEndpoints:
         try:
             client.post("/session/start", json={"session_id": "s-ss-3"})
 
-            # Fire 8 turns: each queues a session_start task; 8th also queues threshold
-            for _ in range(8):
+            # Fire 4 turns: each queues a session_start task; 4th also queues threshold
+            for _ in range(4):
                 r = client.post("/turn/user", json={"session_id": "s-ss-3", "message": "msg"})
                 assert r.json()["queued"] is True
 

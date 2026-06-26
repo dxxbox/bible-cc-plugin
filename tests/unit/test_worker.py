@@ -32,22 +32,22 @@ class TestCheckThreshold:
     """check_threshold() — turns/chars first-to-trigger, reset after trigger."""
 
     def test_turns_first(self):
-        """7 turns → False, 8th turn → True (turns dimension triggers)."""
+        """3 turns → False, 4th turn → True (turns dimension triggers)."""
         _reset_module_state()
         from bible_cc_plugin.daemon.server import check_threshold
 
         sid = "sess-1"
-        for _ in range(7):
+        for _ in range(3):
             assert check_threshold(sid, turns=1, chars=0) is False
         assert check_threshold(sid, turns=1, chars=0) is True
 
     def test_chars_first(self):
-        """15999 chars → False, 16000th char → True (chars dimension triggers)."""
+        """1999 chars → False, 2000th char → True (chars dimension triggers)."""
         _reset_module_state()
         from bible_cc_plugin.daemon.server import check_threshold
 
         sid = "sess-1"
-        assert check_threshold(sid, turns=0, chars=15999) is False
+        assert check_threshold(sid, turns=0, chars=1999) is False
         assert check_threshold(sid, turns=0, chars=1) is True
 
     def test_resets_after_trigger(self):
@@ -56,7 +56,7 @@ class TestCheckThreshold:
         from bible_cc_plugin.daemon.server import check_threshold
 
         sid = "sess-1"
-        for _ in range(8):
+        for _ in range(4):
             check_threshold(sid, turns=1, chars=0)
         assert check_threshold(sid, turns=1, chars=0) is False
 

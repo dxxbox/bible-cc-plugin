@@ -80,11 +80,11 @@
 | MCP Tool | Client 方法 | 参数映射 |
 |----------|------------|---------|
 | `bible_memory_search` | `client.search_memory(query, tag="memory", top_k=None, ...)` | query → query, tag → tag, top_k → top_k |
-| `bible_memory_save` | `client.import_memory(session_id, moments, metrics)` | messages+title+abstract → memory payload（序列化为 multipart `files[]`） |
-| `bible_memory_get` | `client.download_memory_file(storage_path, tag="memory")` → `client.get_task_status(task_id)` → `client.get_download_artifact("memory", artifact_id)` | storage_path → storage_path（异步三步流程） |
-| `bible_knowledge_search` | `client.search_knowledge_base(query, tag, top_k=None, ...)` | query → query, tag → tag, top_k → top_k |
+| `bible_memory_save` | `client.import_memory(files, kb_index, tag="memory")` | MCP adapter 负责将 messages+title+abstract 序列化为 JSON bytes → `files` 参数（`list[tuple[str, bytes, str]]`），daemon flush 层同理 |
+| `bible_memory_get` | `client.request_memory_download(storage_path, tag="memory")` → `client.get_task_status(task_id)` → `client.get_download_artifact("memory", artifact_id)` | storage_path → storage_path（异步三步流程） |
+| `bible_knowledge_search` | `client.search_knowledge_base(query, tag, top_k=None, ...)` | query → query, tag → tag（⚠️ tag 必填，无默认值）, top_k → top_k |
 | `bible_skill_search` | `client.search_skill(query, tag="skill", top_k=None, ...)` | query → query, tag → tag, top_k → top_k |
-| `bible_skill_get` | `client.download_skill_file(storage_path, tag="skill")` → `client.get_task_status(task_id)` → `client.get_download_artifact("skill", artifact_id)` | storage_path → storage_path（异步三步流程） |
+| `bible_skill_get` | `client.request_skill_download(storage_path, tag="skill")` → `client.get_task_status(task_id)` → `client.get_download_artifact("skill", artifact_id)` | storage_path → storage_path（异步三步流程） |
 
 **Degradation 路径保留**：
 - BiBLE 不可达（`BibleUnreachableError`）→ 返回 structured error：
