@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):  # pragma: no cover — tested via integration
     _worker_logger.info("detection worker stopped")
 
 
-app = FastAPI(title="bible-cc-daemon", version="0.22.0", lifespan=lifespan)
+app = FastAPI(title="bible-cc-daemon", version="0.22.5", lifespan=lifespan)
 
 _logger.info("daemon starting on port %s", _config.daemon.port)
 
@@ -197,9 +197,11 @@ async def _process_detection_task(task: dict):
     from bible_cc_plugin.daemon.buffer import (
         compute_content_hash,
         get_all_session_turns,
+        get_moment_by_anchor,
         get_moments_by_session,
         get_phase1_detection_window,
         insert_moment,
+        update_pending_moment_from_detection,
     )
     from bible_cc_plugin.daemon.detector import MomentCandidate, detect_moments
 
@@ -216,11 +218,15 @@ async def _process_detection_task(task: dict):
         if not turns:
             _worker_logger.debug("detection skipped — no turns for session=%s", session_id[:8])
             return
+        phase1_anchor_seq = task.get("anchor_seq") or _phase1_anchor_seq(turns)
+        phase1_end_seq = task.get("max_seq")
     else:
         turns = get_all_session_turns(conn, session_id)
         if not turns:
             _worker_logger.debug("detection skipped — no turns for session=%s", session_id[:8])
             return
+        phase1_anchor_seq = None
+        phase1_end_seq = None
         # Load Phase 1 known moments for prompt injection (dedup layer 1)
         for m in get_moments_by_session(conn, session_id):
             known_moments.append(
@@ -251,6 +257,7 @@ async def _process_detection_task(task: dict):
     # 3. Store moments with dedup
     inserted = 0
     dedup = 0
+    updated = 0
     for c in candidates:
         # Guard: only key moment types
         if c.type not in ("session_start", "decision", "accomplishment"):
@@ -258,8 +265,58 @@ async def _process_detection_task(task: dict):
             continue
 
         content_hash = compute_content_hash(session_id, c.title, c.narrative)
+        if phase == 1 and c.type == "session_start" and phase1_anchor_seq is not None:
+            existing = get_moment_by_anchor(
+                conn, session_id, c.type, phase1_anchor_seq
+            )
+            if existing is not None:
+                if existing["flushed"] == 0:
+                    if update_pending_moment_from_detection(
+                        conn,
+                        existing["id"],
+                        c.title,
+                        c.narrative,
+                        content_hash,
+                        phase1_end_seq,
+                    ):
+                        updated += 1
+                        _worker_logger.info(
+                            "detect: phase=%d session=%s type=%s title=%s "
+                            "dedup=UPDATED_ANCHOR anchor_seq=%d",
+                            phase, session_id[:8], c.type, c.title, phase1_anchor_seq,
+                        )
+                    else:
+                        dedup += 1
+                        _detection_stats["dedup_hits"] += 1
+                        _worker_logger.debug(
+                            "detect: anchor update skipped — %s", c.title
+                        )
+                else:
+                    dedup += 1
+                    _detection_stats["dedup_hits"] += 1
+                    _worker_logger.debug(
+                        "detect: flushed anchor skipped — %s", c.title
+                    )
+                continue
+
         mid = insert_moment(
-            conn, session_id, c.type, c.title, c.narrative, content_hash, phase=str(phase)
+            conn,
+            session_id,
+            c.type,
+            c.title,
+            c.narrative,
+            content_hash,
+            phase=str(phase),
+            turn_range_start=(
+                phase1_anchor_seq
+                if phase == 1 and c.type == "session_start"
+                else None
+            ),
+            turn_range_end=(
+                phase1_end_seq
+                if phase == 1 and c.type == "session_start"
+                else None
+            ),
         )
         if mid is None:
             dedup += 1
@@ -272,11 +329,19 @@ async def _process_detection_task(task: dict):
                 phase, session_id[:8], c.type, c.title,
             )
 
-    if inserted or dedup:
+    if inserted or updated or dedup:
         _worker_logger.info(
-            "detection complete: session=%s inserted=%d dedup=%d latency=%dms",
-            session_id[:8], inserted, dedup, elapsed_ms,
+            "detection complete: session=%s inserted=%d updated=%d dedup=%d latency=%dms",
+            session_id[:8], inserted, updated, dedup, elapsed_ms,
         )
+
+
+def _phase1_anchor_seq(turns: list[dict]) -> int | None:
+    """Return the user turn that anchors a Phase 1 detection window."""
+    for turn in turns:
+        if turn.get("role") == "user" and turn.get("seq") is not None:
+            return int(turn["seq"])
+    return None
 
 
 def check_threshold(session_id: str, turns: int = 1, chars: int = 0) -> bool:
@@ -594,6 +659,7 @@ async def turn_user(req: _TurnUserRequest):
                     "session_id": req.session_id,
                     "phase": 1,
                     "max_seq": turn_id,
+                    "anchor_seq": turn_id,
                     "include_previous_user": True,
                 }
             )

@@ -680,6 +680,270 @@ class TestDetectionPipeline:
         session_seq.clear()
 
     @pytest.mark.asyncio
+    async def test_session_start_same_anchor_updates_pending_moment(
+        self, tmp_path, monkeypatch
+    ):
+        """Same user-turn anchor updates the pending session_start moment."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            get_moments_by_session,
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s-anchor")
+        anchor_seq = insert_turn_user(conn, "s-anchor", "我们开始 3a 的开发.")
+        first_tool_seq = insert_turn_tool(conn, "s-anchor", "Read", {}, "first")
+
+        detections = iter(
+            [
+                MomentCandidate(
+                    type="session_start",
+                    title="开始 3a 开发",
+                    narrative="用户开始 3a 开发。",
+                ),
+                MomentCandidate(
+                    type="session_start",
+                    title="开始 Phase 3a 开发",
+                    narrative="用户开启 Phase 3a 开发，重点是 BiBLE client。",
+                ),
+            ]
+        )
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [next(detections)]
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {"session_id": "s-anchor", "phase": 1, "max_seq": first_tool_seq}
+            )
+            second_tool_seq = insert_turn_tool(conn, "s-anchor", "Read", {}, "second")
+            await server_mod._process_detection_task(
+                {"session_id": "s-anchor", "phase": 1, "max_seq": second_tool_seq}
+            )
+
+        moments = get_moments_by_session(conn, "s-anchor")
+        assert len(moments) == 1
+        assert moments[0]["title"] == "开始 Phase 3a 开发"
+        assert moments[0]["turn_range_start"] == anchor_seq
+        assert moments[0]["turn_range_end"] == second_tool_seq
+
+        conn.close()
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_session_start_different_anchor_inserts_new_moment(
+        self, tmp_path, monkeypatch
+    ):
+        """Different user-turn anchors can each create a session_start moment."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            get_moments_by_session,
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s-two-anchors")
+        insert_turn_user(conn, "s-two-anchors", "Start 3a")
+        first_tool_seq = insert_turn_tool(conn, "s-two-anchors", "Read", {}, "first")
+
+        detections = iter(
+            [
+                MomentCandidate("session_start", "Start 3a", "Start 3a work."),
+                MomentCandidate("session_start", "Start 3b", "Start 3b work."),
+            ]
+        )
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [next(detections)]
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {"session_id": "s-two-anchors", "phase": 1, "max_seq": first_tool_seq}
+            )
+            insert_turn_user(conn, "s-two-anchors", "Start 3b")
+            second_tool_seq = insert_turn_tool(
+                conn, "s-two-anchors", "Read", {}, "second"
+            )
+            await server_mod._process_detection_task(
+                {"session_id": "s-two-anchors", "phase": 1, "max_seq": second_tool_seq}
+            )
+
+        moments = get_moments_by_session(conn, "s-two-anchors")
+        assert [m["title"] for m in moments] == ["Start 3a", "Start 3b"]
+        assert moments[0]["turn_range_start"] != moments[1]["turn_range_start"]
+
+        conn.close()
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_user_triggered_session_start_uses_current_user_anchor(
+        self, tmp_path, monkeypatch
+    ):
+        """include_previous_user windows must not anchor new starts to old prompts."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            get_moments_by_session,
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s-user-trigger")
+        insert_turn_user(conn, "s-user-trigger", "Start 3a")
+        first_tool_seq = insert_turn_tool(conn, "s-user-trigger", "Read", {}, "first")
+
+        detections = iter(
+            [
+                MomentCandidate("session_start", "Start 3a", "Start 3a work."),
+                MomentCandidate("session_start", "Start 3b", "Start 3b work."),
+            ]
+        )
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [next(detections)]
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {"session_id": "s-user-trigger", "phase": 1, "max_seq": first_tool_seq}
+            )
+            second_user_seq = insert_turn_user(conn, "s-user-trigger", "Start 3b")
+            await server_mod._process_detection_task(
+                {
+                    "session_id": "s-user-trigger",
+                    "phase": 1,
+                    "max_seq": second_user_seq,
+                    "anchor_seq": second_user_seq,
+                    "include_previous_user": True,
+                }
+            )
+
+        moments = get_moments_by_session(conn, "s-user-trigger")
+        assert [m["title"] for m in moments] == ["Start 3a", "Start 3b"]
+        assert moments[1]["turn_range_start"] == second_user_seq
+
+        conn.close()
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_session_start_flushed_anchor_is_not_mutated(
+        self, tmp_path, monkeypatch
+    ):
+        """Already flushed anchored moments are not changed by later detections."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            get_moments_by_session,
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s-flushed-anchor")
+        insert_turn_user(conn, "s-flushed-anchor", "Start 3a")
+        first_tool_seq = insert_turn_tool(conn, "s-flushed-anchor", "Read", {}, "first")
+
+        detections = iter(
+            [
+                MomentCandidate("session_start", "Original", "Original narrative."),
+                MomentCandidate("session_start", "Refined", "Refined narrative."),
+            ]
+        )
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [next(detections)]
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {
+                    "session_id": "s-flushed-anchor",
+                    "phase": 1,
+                    "max_seq": first_tool_seq,
+                }
+            )
+            conn.execute("UPDATE moments SET flushed=1")
+            conn.commit()
+            second_tool_seq = insert_turn_tool(
+                conn, "s-flushed-anchor", "Read", {}, "second"
+            )
+            await server_mod._process_detection_task(
+                {
+                    "session_id": "s-flushed-anchor",
+                    "phase": 1,
+                    "max_seq": second_tool_seq,
+                }
+            )
+
+        moments = get_moments_by_session(conn, "s-flushed-anchor")
+        assert len(moments) == 1
+        assert moments[0]["title"] == "Original"
+        assert moments[0]["flushed"] == 1
+
+        conn.close()
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
     async def test_none_result_skips(self, tmp_path, monkeypatch):
         """Detector returns [] → no moment written."""
         db_path = str(tmp_path / "daemon.db")

@@ -429,22 +429,25 @@ def increment_turn_count(conn: sqlite3.Connection, session_id: str, chars: int) 
 
 
 def insert_moment(
-    conn: sqlite3.Connection,
-    session_id: str,
-    moment_type: str,
-    title: str,
-    narrative: str,
-    content_hash: str,
-    phase: str = "1",
+    conn: sqlite3.Connection, session_id: str, moment_type: str, title: str,
+    narrative: str, content_hash: str, phase: str = "1",
+    turn_range_start: int | None = None, turn_range_end: int | None = None,
 ) -> int | None:
     """Insert a key moment.  Returns the ``id`` or ``None`` if a moment with
     the same *content_hash* already exists (dedup — normal operation)."""
     try:
-        conn.execute(
-            "INSERT INTO moments "
-            "(session_id, moment_type, title, narrative, content_hash, phase) "
-            "VALUES (?,?,?,?,?,?)",
-            (session_id, moment_type, title, narrative, content_hash, phase),
+        _insert_moment_row(
+            conn,
+            (
+                session_id,
+                moment_type,
+                title,
+                narrative,
+                content_hash,
+                phase,
+                turn_range_start,
+                turn_range_end,
+            ),
         )
         conn.commit()
         row = conn.execute("SELECT last_insert_rowid()").fetchone()
@@ -456,6 +459,53 @@ def insert_moment(
         # content-hash UNIQUE constraint — dedup, not an error
         _logger.debug("moment dedup skipped hash=%s", content_hash[:12])
         return None
+
+
+def _insert_moment_row(conn: sqlite3.Connection, values: tuple) -> None:
+    conn.execute(
+        "INSERT INTO moments "
+        "(session_id, moment_type, title, narrative, content_hash, phase, "
+        "turn_range_start, turn_range_end) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        values,
+    )
+
+
+def get_moment_by_anchor(
+    conn: sqlite3.Connection,
+    session_id: str,
+    moment_type: str,
+    turn_range_start: int,
+) -> dict | None:
+    """Return a moment for the same user-turn anchor, including flushed rows."""
+    row = conn.execute(
+        "SELECT * FROM moments "
+        "WHERE session_id=? AND moment_type=? AND turn_range_start=? "
+        "ORDER BY id ASC LIMIT 1",
+        (session_id, moment_type, turn_range_start),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def update_pending_moment_from_detection(
+    conn: sqlite3.Connection,
+    moment_id: int,
+    title: str,
+    narrative: str,
+    content_hash: str,
+    turn_range_end: int | None,
+) -> bool:
+    """Update a pending anchored moment with a later detection result."""
+    try:
+        cur = conn.execute(
+            "UPDATE moments SET title=?, narrative=?, content_hash=?, turn_range_end=? "
+            "WHERE id=? AND flushed=0",
+            (title, narrative, content_hash, turn_range_end, moment_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    except sqlite3.IntegrityError:
+        return False
 
 
 def update_moment(

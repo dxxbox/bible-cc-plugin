@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.setup",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && uv run python -m bible_cc_plugin.scripts.setup",
             "timeout": 120
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-start",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && uv run python -m bible_cc_plugin.scripts.hook session-start",
             "timeout": 60,
             "inject": true
           }
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-user",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && uv run python -m bible_cc_plugin.scripts.hook turn-user",
             "timeout": 3
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-tool",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && uv run python -m bible_cc_plugin.scripts.hook turn-tool",
             "timeout": 3
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook turn-stop",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && uv run python -m bible_cc_plugin.scripts.hook turn-stop",
             "timeout": 3
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PLUGIN_ROOT} && uv run python -m bible_cc_plugin.scripts.hook session-end",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && uv run python -m bible_cc_plugin.scripts.hook session-end",
             "timeout": 30
           }
         ]

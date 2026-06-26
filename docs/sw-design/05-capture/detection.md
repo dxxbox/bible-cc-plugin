@@ -56,7 +56,15 @@ daemon 内部内存队列（`asyncio.Queue`），非 Celery。
 
 ### 1.4 重叠窗口去重
 
-滑动窗口有重叠（last 2-3 turns）。content-hash 去重（Layer 2）覆盖此场景。
+滑动窗口有重叠（last 2-3 turns）。`DECISION` / `ACCOMPLISHMENT`
+使用 content-hash 去重（Layer 2）覆盖此场景。
+
+`SESSION_START` 使用 user-turn anchor 去重：Phase 1 窗口中第一个 user turn
+的 `seq` 写入 `moments.turn_range_start`，代表发起工作意图的用户输入。
+如果后续工具输出再次触发检测，并且 LLM 仍识别出同一 anchor 的
+`SESSION_START`，则更新已有 pending moment 的 `title` / `narrative` /
+`turn_range_end`，不插入新 moment。若该 anchored moment 已经 flushed，
+后续检测跳过，避免修改已发送到 BiBLE 的内容。
 
 ---
 

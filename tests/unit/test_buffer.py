@@ -396,6 +396,79 @@ class TestMomentCRUD:
         assert moment_id is not None
         assert moment_id >= 1
 
+    def test_anchor_helpers_update_pending_moment(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            get_moment_by_anchor,
+            insert_moment,
+            update_pending_moment_from_detection,
+        )
+
+        ch1 = compute_content_hash("sess-1", "Start", "Initial")
+        moment_id = insert_moment(
+            conn_wal,
+            "sess-1",
+            "session_start",
+            "Start",
+            "Initial",
+            ch1,
+            turn_range_start=1,
+            turn_range_end=2,
+        )
+        assert moment_id is not None
+
+        anchored = get_moment_by_anchor(conn_wal, "sess-1", "session_start", 1)
+        assert anchored is not None
+        assert anchored["id"] == moment_id
+
+        ch2 = compute_content_hash("sess-1", "Start refined", "Refined")
+        ok = update_pending_moment_from_detection(
+            conn_wal,
+            moment_id,
+            "Start refined",
+            "Refined",
+            ch2,
+            turn_range_end=4,
+        )
+        assert ok is True
+
+        updated = get_moment_by_anchor(conn_wal, "sess-1", "session_start", 1)
+        assert updated["title"] == "Start refined"
+        assert updated["turn_range_end"] == 4
+
+    def test_anchor_update_skips_flushed_moment(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            update_pending_moment_from_detection,
+        )
+
+        ch1 = compute_content_hash("sess-1", "Start", "Initial")
+        moment_id = insert_moment(
+            conn_wal,
+            "sess-1",
+            "session_start",
+            "Start",
+            "Initial",
+            ch1,
+            turn_range_start=1,
+            turn_range_end=2,
+        )
+        conn_wal.execute("UPDATE moments SET flushed=1 WHERE id=?", (moment_id,))
+        conn_wal.commit()
+
+        ch2 = compute_content_hash("sess-1", "Start refined", "Refined")
+        ok = update_pending_moment_from_detection(
+            conn_wal,
+            moment_id,
+            "Start refined",
+            "Refined",
+            ch2,
+            turn_range_end=4,
+        )
+
+        assert ok is False
+
     def test_insert_moment_dedup_returns_none(self, conn_wal):
         from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
 

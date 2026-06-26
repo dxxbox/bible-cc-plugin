@@ -250,6 +250,80 @@ class TestHookTurnUser:
 
         assert calls == []
 
+    def test_queued_turn_creates_hint_watch(self, monkeypatch, tmp_path):
+        """turn-user queued=true records that Stop should briefly wait."""
+        from bible_cc_plugin.scripts.hook import _handle_turn_user
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"turn_id": 1, "queued": True}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: 0,
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda sid: tmp_path / f".hint_watch_{sid}",
+        )
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = True
+        config.capture.mid_session_detection = True
+        config.capture.hint_format = "quote_with_command"
+        args = argparse.Namespace(session_id="abc-123", message="hello")
+
+        _handle_turn_user(config, args)
+
+        assert (tmp_path / ".hint_watch_abc-123").exists()
+
+    def test_queued_turn_does_not_watch_after_hint_printed(
+        self, monkeypatch, tmp_path
+    ):
+        """If the current hook printed a hint, Stop should not wait again."""
+        from bible_cc_plugin.scripts.hook import _handle_turn_user
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"turn_id": 1, "queued": True}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: 1,
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda sid: tmp_path / f".hint_watch_{sid}",
+        )
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = True
+        config.capture.mid_session_detection = True
+        config.capture.hint_format = "quote_with_command"
+        args = argparse.Namespace(session_id="abc-123", message="hello")
+
+        _handle_turn_user(config, args)
+
+        assert not (tmp_path / ".hint_watch_abc-123").exists()
+
 
 class TestHookTurnTool:
     """Verify turn-tool handler behaviour."""
@@ -587,8 +661,8 @@ class TestHookTurnStop:
 
         calls = []
 
-        def fake_print_hints(session_id, base_url, hint_format):
-            calls.append((session_id, base_url, hint_format))
+        def fake_print_hints(session_id, base_url, hint_format, **kwargs):
+            calls.append((session_id, base_url, hint_format, kwargs))
 
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._print_hints", fake_print_hints
@@ -602,8 +676,91 @@ class TestHookTurnStop:
         _handle_turn_stop(config, args)
 
         assert calls == [
-            ("abc-123", "http://127.0.0.1:9777", "quote_with_command")
+            (
+                "abc-123",
+                "http://127.0.0.1:9777",
+                "quote_with_command",
+                {"wait_seconds": 0.0},
+            )
         ]
+
+    def test_waits_briefly_when_detection_was_queued(
+        self, monkeypatch, tmp_path
+    ):
+        from bible_cc_plugin.scripts import hook
+        from bible_cc_plugin.scripts.hook import _handle_turn_stop
+
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda sid: tmp_path / f".hint_watch_{sid}",
+        )
+        monkeypatch.setattr(hook.time, "time", lambda: 100.0)
+        hook._write_hint_watch("abc-123")
+
+        calls = []
+
+        def fake_print_hints(session_id, base_url, hint_format, **kwargs):
+            calls.append((session_id, base_url, hint_format, kwargs))
+            hook._write_hint_cursor(session_id, 1)
+            return 1
+
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints", fake_print_hints
+        )
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = True
+        config.capture.mid_session_detection = True
+        config.capture.hint_format = "quote_with_command"
+
+        _handle_turn_stop(config, argparse.Namespace(session_id="abc-123"))
+
+        assert calls[0][3]["wait_seconds"] > 0
+        assert not (tmp_path / ".hint_watch_abc-123").exists()
+
+    def test_stale_watch_does_not_wait_when_cursor_already_advanced(
+        self, monkeypatch, tmp_path
+    ):
+        from bible_cc_plugin.scripts import hook
+        from bible_cc_plugin.scripts.hook import _handle_turn_stop
+
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda sid: tmp_path / f".hint_watch_{sid}",
+        )
+        monkeypatch.setattr(hook.time, "time", lambda: 100.0)
+        hook._write_hint_watch("abc-123")
+        hook._write_hint_cursor("abc-123", 1)
+
+        calls = []
+
+        def fake_print_hints(session_id, base_url, hint_format, **kwargs):
+            calls.append((session_id, base_url, hint_format, kwargs))
+            return 0
+
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints", fake_print_hints
+        )
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = True
+        config.capture.mid_session_detection = True
+        config.capture.hint_format = "quote_with_command"
+
+        _handle_turn_stop(config, argparse.Namespace(session_id="abc-123"))
+
+        assert calls[0][3]["wait_seconds"] == 0.0
+        assert not (tmp_path / ".hint_watch_abc-123").exists()
 
     def test_missing_session_id_does_not_poll(self, monkeypatch, caplog):
         import logging
@@ -781,6 +938,57 @@ class TestPrintHints:
         _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
         out2 = capsys.readouterr().out
         assert "Only once" not in out2, "second call should skip already-hinted moment"
+
+    def test_waits_for_late_async_moment(self, monkeypatch, capsys, tmp_path):
+        """Brief polling lets Stop surface a moment inserted after the first GET."""
+        from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
+        from bible_cc_plugin.scripts.hook import _print_hints
+
+        session_id = "test-hint-late"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+
+        responses = [
+            {"moments": []},
+            {
+                "moments": [
+                    {
+                        "id": 3,
+                        "moment_type": "session_start",
+                        "title": "开始 3a 开发",
+                        "narrative": "User started Phase 3a development.",
+                    }
+                ]
+            },
+        ]
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return responses.pop(0)
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        printed = _print_hints(
+            session_id,
+            "http://127.0.0.1:9777",
+            "quote_only",
+            wait_seconds=0.01,
+            poll_interval=0,
+        )
+
+        output = capsys.readouterr().out
+        assert printed == 1
+        assert "开始 3a 开发" in output
+        assert "Session Start" in output
 
     def test_get_failure_logs_warning_and_returns(self, monkeypatch, caplog):
         """GET /daemon/moments fails → logged, no crash, no hints."""

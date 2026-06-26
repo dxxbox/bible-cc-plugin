@@ -114,6 +114,10 @@ CREATE INDEX IF NOT EXISTS idx_moments_content_hash ON moments(content_hash);
   - `1` = sent（已发送到 BiBLE，轮询中）
   - `2` = confirmed（BiBLE import 完成）
   - `-1` = failed（需要 retry）
+- **turn_range_start / turn_range_end**：Phase 1 `session_start` 中，
+  `turn_range_start` 是发起工作意图的 user turn anchor；后续同 anchor
+  检测只更新 pending moment，不新增记录。`turn_range_end` 记录当前闭环
+  覆盖到的最新 turn seq。
 - **phase**：`1` = Phase 1 mid-session detection，`2` = Phase 2 retrospective detection。
 - `retry_count`：仅对 failed 的 moment 递增。3 次后产出 warning hint。
 

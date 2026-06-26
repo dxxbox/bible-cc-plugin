@@ -11,8 +11,10 @@ Graceful degradation: hook failures must never block Claude Code.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -22,6 +24,10 @@ from bible_cc_plugin.daemon.daemon_launcher import ensure_daemon_started
 from bible_cc_plugin.logging_config import configure_logging, get_logger
 
 _logger = get_logger("hook")
+
+_HINT_WATCH_TTL_SECONDS = 8.0
+_STOP_HINT_WAIT_SECONDS = 0.5
+_HINT_POLL_INTERVAL_SECONDS = 0.25
 
 def _resolve_log_path(config) -> Path:
     """Return the expanded log file path from config."""
@@ -145,42 +151,125 @@ def _read_hint_cursor(session_id: str) -> int:
 def _write_hint_cursor(session_id: str, moment_id: int) -> None:
     """Persist the last hinted moment id."""
     try:
-        p = _hint_cursor_path(session_id)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(str(moment_id))
+        _write_text_atomic(_hint_cursor_path(session_id), str(moment_id))
+    except Exception:
+        pass
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Atomically write a small state file in the same directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
+    try:
+        tmp.write_text(text)
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _safe_session_key(session_id: str) -> str:
+    """Derive a filesystem-safe key for best-effort hook state files."""
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+
+def _hint_watch_path(session_id: str) -> Path:
+    """Return the path to the per-session queued-detection watch file."""
+    return Path.home() / ".bible-cc" / f".hint_watch_{_safe_session_key(session_id)}"
+
+
+def _write_hint_watch(session_id: str) -> None:
+    """Remember that a queued detection may produce a hint shortly."""
+    try:
+        p = _hint_watch_path(session_id)
+        _write_text_atomic(
+            p,
+            json.dumps(
+                {
+                    "cursor": _read_hint_cursor(session_id),
+                    "expires_at": time.time() + _HINT_WATCH_TTL_SECONDS,
+                }
+            )
+        )
+    except Exception:
+        pass
+
+
+def _read_hint_watch(session_id: str) -> dict | None:
+    """Return active queued-detection watch metadata, or None."""
+    p = _hint_watch_path(session_id)
+    try:
+        data = json.loads(p.read_text())
+        expires_at = float(data.get("expires_at", 0))
+        if expires_at <= time.time():
+            _clear_hint_watch(session_id)
+            return None
+        return {"cursor": int(data.get("cursor", 0)), "expires_at": expires_at}
+    except FileNotFoundError:
+        return None
+    except Exception:
+        _logger.debug("invalid hint watch state: %s", p, exc_info=True)
+        _clear_hint_watch(session_id)
+        return None
+
+
+def _clear_hint_watch(session_id: str) -> None:
+    """Remove queued-detection watch metadata."""
+    try:
+        _hint_watch_path(session_id).unlink(missing_ok=True)
     except Exception:
         pass
 
 
 def _print_hints(
-    session_id: str, base_url: str, hint_format: str, timeout: float = 1.0
-) -> None:
+    session_id: str,
+    base_url: str,
+    hint_format: str,
+    timeout: float = 1.0,
+    wait_seconds: float = 0.0,
+    poll_interval: float = _HINT_POLL_INTERVAL_SECONDS,
+) -> int:
     """Fetch moments → format_hint → stdout (best-effort).
 
     Only prints moments with id > last hinted cursor, then updates cursor.
     Prevents the same moment being hinted on every turn.
     Per-moment errors are isolated — one bad moment won't block others.
     GET / JSON failures are caught at the outer level and logged.
+
+    When wait_seconds > 0, poll briefly for a late async detection result.
     """
-    try:
-        r = _local_client(timeout=timeout).get(
-            f"{base_url}/daemon/moments",
-            params={"session_id": session_id},
-        )
-        r.raise_for_status()
-        moments = r.json().get("moments", [])
-    except Exception:
-        _logger.warning("_print_hints: GET /daemon/moments failed", exc_info=True)
-        return
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    moments = []
+    while True:
+        try:
+            r = _local_client(timeout=timeout).get(
+                f"{base_url}/daemon/moments",
+                params={"session_id": session_id},
+            )
+            r.raise_for_status()
+            moments = r.json().get("moments", [])
+        except Exception:
+            _logger.warning("_print_hints: GET /daemon/moments failed", exc_info=True)
+            return 0
+
+        cursor = _read_hint_cursor(session_id)
+        if any(m.get("id", 0) > cursor for m in moments):
+            break
+        if time.monotonic() >= deadline:
+            return 0
+        time.sleep(max(0.0, poll_interval))
 
     if not moments:
-        return
+        return 0
 
     cursor = _read_hint_cursor(session_id)
     from bible_cc_plugin.daemon.detector import MomentCandidate
     from bible_cc_plugin.hint_system import format_hint
 
     max_id = cursor
+    printed = 0
     for m in moments:
         mid = m.get("id", 0)
         if mid <= cursor:
@@ -194,6 +283,7 @@ def _print_hints(
             )
             hint = format_hint(candidate, hint_format)
             print(hint, flush=True)
+            printed += 1
             if mid > max_id:
                 max_id = mid
         except Exception:
@@ -201,6 +291,7 @@ def _print_hints(
 
     if max_id > cursor:
         _write_hint_cursor(session_id, max_id)
+    return printed
 
 
 def _should_poll_hints(config) -> bool:
@@ -226,7 +317,9 @@ def _handle_turn_user(config, args) -> None:
         tid = body.get("turn_id")
         _logger.info("turn-user %s msg_len=%d → OK turn_id=%s", sid, mlen, tid)
         if _should_poll_hints(config):
-            _print_hints(args.session_id, base_url, config.capture.hint_format)
+            printed = _print_hints(args.session_id, base_url, config.capture.hint_format)
+            if body.get("queued") and printed == 0:
+                _write_hint_watch(args.session_id)
     except httpx.HTTPStatusError as e:
         code, msg = _parse_daemon_error_body(e.response)
         _logger.warning(
@@ -260,7 +353,11 @@ def _handle_turn_user(config, args) -> None:
                     sid2, mlen2, tid2,
                 )
                 if _should_poll_hints(config):
-                    _print_hints(args.session_id, base_url, config.capture.hint_format)
+                    printed = _print_hints(
+                        args.session_id, base_url, config.capture.hint_format
+                    )
+                    if body2.get("queued") and printed == 0:
+                        _write_hint_watch(args.session_id)
             except Exception as recovery_err:
                 _logger.warning(
                     "turn-user recovery failed: %s — turn skipped", recovery_err,
@@ -293,12 +390,15 @@ def _handle_turn_tool(config, args) -> None:
             },
         )
         r.raise_for_status()
+        body = r.json()
         olen = len(args.output or "")
         sid = args.session_id[:8]
         cmd = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
         _logger.info("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
         if _should_poll_hints(config):
-            _print_hints(args.session_id, base_url, config.capture.hint_format)
+            printed = _print_hints(args.session_id, base_url, config.capture.hint_format)
+            if body.get("queued") and printed == 0:
+                _write_hint_watch(args.session_id)
     except httpx.HTTPStatusError as e:
         code, msg = _parse_daemon_error_body(e.response)
         _logger.warning(
@@ -328,6 +428,7 @@ def _handle_turn_tool(config, args) -> None:
                     },
                 )
                 r2.raise_for_status()
+                body2 = r2.json()
                 olen2 = len(args.output or "")
                 sid2 = args.session_id[:8]
                 cmd2 = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
@@ -336,7 +437,11 @@ def _handle_turn_tool(config, args) -> None:
                     sid2, args.tool, cmd2, olen2,
                 )
                 if _should_poll_hints(config):
-                    _print_hints(args.session_id, base_url, config.capture.hint_format)
+                    printed = _print_hints(
+                        args.session_id, base_url, config.capture.hint_format
+                    )
+                    if body2.get("queued") and printed == 0:
+                        _write_hint_watch(args.session_id)
             except Exception as recovery_err:
                 _logger.warning(
                     "turn-tool recovery failed: %s — turn skipped", recovery_err,
@@ -359,7 +464,27 @@ def _handle_turn_stop(config, args) -> None:
         _logger.debug("turn-stop %s → hint polling disabled", args.session_id[:8])
         return
     base_url = f"http://127.0.0.1:{config.daemon.port}"
-    _print_hints(args.session_id, base_url, config.capture.hint_format)
+    watch = _read_hint_watch(args.session_id)
+    if watch is not None and _read_hint_cursor(args.session_id) > watch["cursor"]:
+        _clear_hint_watch(args.session_id)
+        watch = None
+    wait_seconds = 0.0
+    if watch is not None:
+        wait_seconds = min(
+            _STOP_HINT_WAIT_SECONDS,
+            max(0.0, watch["expires_at"] - time.time()),
+        )
+    printed = _print_hints(
+        args.session_id,
+        base_url,
+        config.capture.hint_format,
+        wait_seconds=wait_seconds,
+    )
+    if watch is not None:
+        if printed > 0 or _read_hint_cursor(args.session_id) > watch["cursor"]:
+            _clear_hint_watch(args.session_id)
+        elif watch["expires_at"] <= time.time():
+            _clear_hint_watch(args.session_id)
     _logger.info("turn-stop %s → hints polled", args.session_id[:8])
 
 
