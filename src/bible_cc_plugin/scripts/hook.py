@@ -28,7 +28,7 @@ _logger = get_logger("hook")
 _HINT_WATCH_TTL_SECONDS = 8.0
 _STOP_HINT_WAIT_SECONDS = 0.5
 _HINT_POLL_INTERVAL_SECONDS = 0.25
-_STOP_ASSISTANT_POST_TIMEOUT_SECONDS = 0.5
+_STOP_ASSISTANT_POST_TIMEOUT_SECONDS = 1.0
 
 
 def _resolve_log_path(config) -> Path:
@@ -107,14 +107,19 @@ def _handle_session_start(config, args) -> None:
 
     # 2. Register session
     try:
+        reset_threshold = getattr(args, "source", "") in ("clear", "compact")
         r = _local_client().post(
             f"{base_url}/session/start",
-            json={"session_id": args.session_id},
+            json={"session_id": args.session_id, "reset_threshold": reset_threshold},
         )
         r.raise_for_status()
         body = r.json()
         is_new = body.get("is_new")
-        _logger.info("POST /session/start... OK (is_new=%s)", is_new)
+        _logger.info(
+            "POST /session/start... OK (is_new=%s reset_threshold=%s)",
+            is_new,
+            reset_threshold,
+        )
     except Exception as e:
         _logger.error("/session/start failed: %s", e)
         return
@@ -340,29 +345,39 @@ def _post_assistant_turn(session_id: str, message: str, base_url: str) -> dict:
     """Best-effort POST /turn/assistant for Stop hook final assistant text."""
     if not message:
         return {"queued": False}
+    timeout = _STOP_ASSISTANT_POST_TIMEOUT_SECONDS
     try:
-        r = _local_client(timeout=_STOP_ASSISTANT_POST_TIMEOUT_SECONDS).post(
+        r = _local_client(timeout=timeout).post(
             f"{base_url}/turn/assistant",
             json={"session_id": session_id, "message": message},
         )
         r.raise_for_status()
         body = r.json()
         _logger.info(
-            "turn-assistant %s chars=%d → OK",
+            "turn-assistant %s chars=%d timeout=%.1fs → OK",
             session_id[:8],
             len(message),
+            timeout,
         )
         return body
     except httpx.HTTPStatusError as e:
         code, msg = _parse_daemon_error_body(e.response)
         _logger.warning(
-            "turn-assistant daemon returned %d code=%s message=%r → skipping",
+            "turn-assistant daemon returned %d code=%s chars=%d timeout=%.1fs "
+            "message=%r → skipping",
             e.response.status_code,
             code,
+            len(message),
+            timeout,
             msg,
         )
     except Exception as e:
-        _logger.warning("turn-assistant daemon unreachable → skipping (%s)", e)
+        _logger.warning(
+            "turn-assistant daemon unreachable chars=%d timeout=%.1fs → skipping (%s)",
+            len(message),
+            timeout,
+            e,
+        )
     return {"queued": False}
 
 
@@ -464,7 +479,7 @@ def _handle_turn_tool(config, args) -> None:
         olen = len(args.output or "")
         sid = args.session_id[:8]
         cmd = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
-        _logger.info("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
+        _logger.debug("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
         if _should_poll_hints(config):
             printed = _print_hints(args.session_id, base_url, config.capture.hint_format)
             if body.get("queued") and printed == 0:
@@ -632,6 +647,7 @@ def main() -> None:
     parser.add_argument("--tool", default=None)
     parser.add_argument("--input", default=None)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--source", default=None)
     args = parser.parse_args()
 
     # 3. Config + logging（必须在任何 _logger.info 之前，否则文件 handler 未就绪）
@@ -649,6 +665,7 @@ def main() -> None:
     else:
         message = args.message or stdin_data.get("prompt", "")
     tool = args.tool or stdin_data.get("tool_name", "")
+    source = args.source or stdin_data.get("source", "")
     tool_input = args.input
     if not tool_input and "tool_input" in stdin_data:
         tool_input = json.dumps(stdin_data["tool_input"])
@@ -665,6 +682,7 @@ def main() -> None:
         session_id=session_id,
         message=message,
         tool=tool,
+        source=source,
         input=tool_input,
         output=tool_output,
     )

@@ -100,7 +100,50 @@ class TestHookSessionStart:
 
         session_start_calls = [c for c in calls if "/session/start" in c[1]]
         assert len(session_start_calls) == 1
-        assert session_start_calls[0][2] == {"session_id": "abc-123"}
+        assert session_start_calls[0][2] == {
+            "session_id": "abc-123",
+            "reset_threshold": False,
+        }
+
+    def test_clear_session_start_resets_threshold(self, monkeypatch):
+        """SessionStart source=clear asks daemon to reset threshold counters."""
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"session_id": "abc-123", "is_new": False}
+
+            def raise_for_status(self):
+                pass
+
+        def fake_post(url, json=None, **kwargs):
+            calls.append(("post", url, json))
+            return FakeResponse()
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", fake_post)
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook.ensure_daemon_started",
+            lambda *a, **kw: True,
+        )
+
+        from bible_cc_plugin.scripts.hook import _handle_session_start
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        args = argparse.Namespace(session_id="abc-123", message=None, source="clear")
+
+        with patch("builtins.print"):
+            _handle_session_start(config, args)
+
+        session_start_calls = [c for c in calls if "/session/start" in c[1]]
+        assert session_start_calls[0][2] == {
+            "session_id": "abc-123",
+            "reset_threshold": True,
+        }
 
     def test_calls_context_inject_endpoint(self, monkeypatch):
         """session-start → POST /context/inject with correct body."""
@@ -836,7 +879,29 @@ class TestHookTurnStop:
 
         _post_assistant_turn("abc-123", "Done.", "http://127.0.0.1:9777")
 
-        assert timeouts == [0.5]
+        assert timeouts == [1.0]
+
+    def test_stop_assistant_timeout_logs_chars_and_timeout(self, monkeypatch):
+        import httpx
+
+        from bible_cc_plugin.scripts.hook import _post_assistant_turn
+
+        messages = []
+
+        def fake_local_client(timeout=5.0):
+            raise httpx.TimeoutException("timed out")
+
+        def fake_warning(message, *args):
+            messages.append(message % args)
+
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._local_client", fake_local_client)
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._logger.warning", fake_warning)
+
+        body = _post_assistant_turn("abc-123", "Done.", "http://127.0.0.1:9777")
+
+        assert body == {"queued": False}
+        assert any("chars=5" in message for message in messages)
+        assert any("timeout=1.0s" in message for message in messages)
 
     def test_stop_writes_watch_when_assistant_detection_queued(self, monkeypatch, tmp_path):
         from bible_cc_plugin.scripts.hook import _handle_turn_stop

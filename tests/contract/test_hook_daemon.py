@@ -4,45 +4,45 @@ These tests verify the HTTP interface contracts — not business logic.
 All tests communicate with the daemon exclusively through HTTP.
 """
 
+import socket
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 import httpx
 import pytest
 
-
-@pytest.fixture(scope="module")
-def daemon_log(tmp_path_factory):
-    """Temp log path — never touch ~/.bible-cc/daemon.log in tests."""
-    return tmp_path_factory.mktemp("daemon") / "daemon.log"
+from tests.contract.conftest import terminate_process
 
 
 @pytest.fixture(scope="module")
-def daemon_url(daemon_log):
+def daemon_url(contract_daemon_env):
     """Start the daemon and return its base URL."""
-    port = 19777
+    port = _find_free_port()
     base_url = f"http://127.0.0.1:{port}"
+    env = contract_daemon_env | {"BIBLE_CC_DAEMON_PORT": str(port)}
+    daemon_log = env["BIBLE_CC_LOG_FILE"]
 
-    try:
-        r = httpx.get(f"{base_url}/daemon/health", timeout=2)
-        if r.status_code == 200:
-            yield base_url
-            return
-    except Exception:
-        pass
+    from pathlib import Path
 
-    daemon_log.parent.mkdir(parents=True, exist_ok=True)
+    Path(daemon_log).parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(str(daemon_log), "a")
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "uvicorn",
+            sys.executable,
+            "-m",
+            "uvicorn",
             "bible_cc_plugin.daemon.server:app",
-            "--host", "127.0.0.1", "--port", str(port),
-            "--log-level", "info",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "info",
         ],
-        stdout=log_fh, stderr=log_fh,
+        stdout=log_fh,
+        stderr=log_fh,
+        env=env,
     )
 
     deadline = time.time() + 10
@@ -58,8 +58,7 @@ def daemon_url(daemon_log):
         time.sleep(0.3)
 
     if not ok:
-        proc.terminate()
-        proc.wait()
+        terminate_process(proc)
         log_fh.close()
         pytest.fail("daemon did not start within 10s")
 
@@ -70,8 +69,13 @@ def daemon_url(daemon_log):
         httpx.post(f"{base_url}/daemon/stop", timeout=5)
     except Exception:
         pass
-    proc.terminate()
-    proc.wait()
+    terminate_process(proc)
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 class TestContractHookDaemon:
@@ -91,7 +95,8 @@ class TestContractHookDaemon:
         sid = f"test-contract-{int(time.time())}"
         r = httpx.post(
             f"{daemon_url}/session/start",
-            json={"session_id": sid}, timeout=5,
+            json={"session_id": sid},
+            timeout=5,
         )
         assert r.status_code == 200
         body = r.json()
@@ -109,7 +114,8 @@ class TestContractHookDaemon:
         httpx.post(f"{daemon_url}/session/start", json={"session_id": sid})
         r = httpx.post(
             f"{daemon_url}/turn/user",
-            json={"session_id": sid, "message": "hello world"}, timeout=5,
+            json={"session_id": sid, "message": "hello world"},
+            timeout=5,
         )
         assert r.status_code == 200
         assert r.json()["turn_id"] >= 1
@@ -125,7 +131,8 @@ class TestContractHookDaemon:
                 "tool_name": "Bash",
                 "arguments": {"command": "echo hello"},
                 "output": "x" * 5000,
-            }, timeout=5,
+            },
+            timeout=5,
         )
         assert r.status_code == 200
         assert r.json()["turn_id"] >= 1
@@ -136,7 +143,8 @@ class TestContractHookDaemon:
         httpx.post(f"{daemon_url}/session/start", json={"session_id": sid})
         r = httpx.post(
             f"{daemon_url}/session/end",
-            json={"session_id": sid}, timeout=5,
+            json={"session_id": sid},
+            timeout=5,
         )
         assert r.status_code == 200
         assert r.json()["status"] in ("completed", "already_completed")
@@ -147,7 +155,8 @@ class TestContractHookDaemon:
         httpx.post(f"{daemon_url}/session/start", json={"session_id": sid})
         r = httpx.get(
             f"{daemon_url}/daemon/moments",
-            params={"session_id": sid}, timeout=5,
+            params={"session_id": sid},
+            timeout=5,
         )
         assert r.status_code == 200
         body = r.json()

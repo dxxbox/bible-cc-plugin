@@ -41,6 +41,7 @@ _debug_mode: bool = os.getenv("BIBLE_CC_DEBUG", "") in ("1", "true", "yes")
 # ── Phase 2b detection infrastructure ─────────────────────────────────────
 _detection_queue: asyncio.Queue = asyncio.Queue()
 _threshold_state: dict[str, dict] = {}  # session_id → {turns, chars}
+_session_start_state: dict[str, dict] = {}  # session_id → {anchor_seq: int}
 _app_config = _config  # may be updated by lifespan startup
 
 
@@ -206,19 +207,24 @@ async def _process_detection_task(task: dict):
     # 1. Get turns for this phase
     known_moments: list[MomentCandidate] = []
     if phase == 1:
+        requested_moment_types = task.get("moment_types")
+        session_start_only = requested_moment_types == ["session_start"]
         turns = get_phase1_detection_window(
             conn,
             session_id,
             limit=8,
             max_seq=task.get("max_seq"),
             include_previous_user=bool(task.get("include_previous_user")),
+            anchor_seq=task.get("anchor_seq") if session_start_only else None,
         )
         if not turns:
             _worker_logger.debug("detection skipped — no turns for session=%s", session_id[:8])
             return
-        phase1_anchor_seq = task.get("anchor_seq") or _phase1_anchor_seq(turns)
+        phase1_anchor_seq = (
+            task.get("anchor_seq") if session_start_only else _phase1_anchor_seq(turns)
+        )
         phase1_end_seq = task.get("max_seq")
-        if phase1_anchor_seq is not None:
+        if session_start_only and phase1_anchor_seq is not None:
             turns = [
                 {
                     **turn,
@@ -265,9 +271,13 @@ async def _process_detection_task(task: dict):
     dedup = 0
     updated = 0
     allowed_types = (
-        ("session_start", "decision", "accomplishment")
-        if phase == 1
-        else ("decision", "accomplishment")
+        tuple(task.get("moment_types"))
+        if task.get("moment_types")
+        else (
+            ("session_start", "decision", "accomplishment")
+            if phase == 1
+            else ("decision", "accomplishment")
+        )
     )
     for c in candidates:
         # Guard: only key moment types
@@ -382,7 +392,8 @@ def reset_threshold(session_id: str) -> None:
     """Reset the threshold counter for a session.
 
     Called on /clear and /compact so detection windows don't carry over
-    stale counts from before the context reset.
+    stale counts from before the context reset.  SESSION_START anchoring is
+    session-scoped and is cleared only when the session ends.
     """
     _threshold_state.pop(session_id, None)
 
@@ -535,6 +546,7 @@ class _ContextInjectRequest(BaseModel):
 
 class _SessionStartRequest(BaseModel):
     session_id: str
+    reset_threshold: bool = False
 
 
 class _SessionEndRequest(BaseModel):
@@ -592,11 +604,15 @@ async def session_start(req: _SessionStartRequest):
         if reactivated:
             _logger.info("session/start %s reactivated (was completed)", req.session_id)
 
+    if req.reset_threshold:
+        reset_threshold(req.session_id)
+
     _logger.info(
-        "session/start %s is_new=%s recovery=%s",
+        "session/start %s is_new=%s recovery=%s reset_threshold=%s",
         req.session_id,
         is_new,
         recovery["unclosed_sessions_found"] if recovery else 0,
+        req.reset_threshold,
     )
 
     return {
@@ -628,6 +644,7 @@ async def session_end(req: _SessionEndRequest):
 
     mark_session_completed(conn, req.session_id)
     _recovery_cache.pop(req.session_id, None)
+    _session_start_state.pop(req.session_id, None)
     reset_threshold(req.session_id)
     _logger.info("session/end %s completed", req.session_id)
 
@@ -651,6 +668,7 @@ async def turn_user(req: _TurnUserRequest):
         raise HTTPException(503, "daemon database unavailable")
 
     from bible_cc_plugin.daemon.buffer import (
+        get_first_user_turn_seq,
         get_session,
         increment_turn_count,
         insert_turn_user,
@@ -667,7 +685,29 @@ async def turn_user(req: _TurnUserRequest):
     _logger.debug("turn/user %s seq=%d", req.session_id, turn_id)
 
     queued = False
-    if _app_config.capture.enabled and _app_config.capture.mid_session_detection and req.message:
+    has_detection_signal = bool(req.message.strip())
+    if (
+        _app_config.capture.enabled
+        and _app_config.capture.mid_session_detection
+        and has_detection_signal
+    ):
+        # Path A: always queue SESSION_START detection (anchor = first user turn)
+        ss_state = _session_start_state.setdefault(req.session_id, {"anchor_seq": None})
+        if ss_state["anchor_seq"] is None:
+            ss_state["anchor_seq"] = get_first_user_turn_seq(conn, req.session_id) or turn_id
+        await _detection_queue.put(
+            {
+                "session_id": req.session_id,
+                "phase": 1,
+                "max_seq": turn_id,
+                "anchor_seq": ss_state["anchor_seq"],
+                "include_previous_user": True,
+                "moment_types": ["session_start"],
+            }
+        )
+        queued = True
+
+        # Path B: threshold-based DECISION/ACCOMPLISHMENT detection
         if check_threshold(req.session_id, turns=1, chars=len(req.message)):
             await _detection_queue.put(
                 {
@@ -676,9 +716,9 @@ async def turn_user(req: _TurnUserRequest):
                     "max_seq": turn_id,
                     "anchor_seq": turn_id,
                     "include_previous_user": True,
+                    "moment_types": ["decision", "accomplishment"],
                 }
             )
-            queued = True
     return {"turn_id": turn_id, "queued": queued}
 
 
@@ -733,13 +773,19 @@ async def turn_assistant(req: _TurnAssistantRequest):
     _logger.debug("turn/assistant %s seq=%d", req.session_id, turn_id)
 
     queued = False
-    if _app_config.capture.enabled and _app_config.capture.mid_session_detection and req.message:
+    has_detection_signal = bool(req.message.strip())
+    if (
+        _app_config.capture.enabled
+        and _app_config.capture.mid_session_detection
+        and has_detection_signal
+    ):
         if check_threshold(req.session_id, turns=1, chars=len(req.message)):
             await _detection_queue.put(
                 {
                     "session_id": req.session_id,
                     "phase": 1,
                     "max_seq": turn_id,
+                    "moment_types": ["decision", "accomplishment"],
                 }
             )
             queued = True

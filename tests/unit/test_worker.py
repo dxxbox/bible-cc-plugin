@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -109,9 +108,7 @@ class TestWorkerRestartsAfterCrash:
             worker_task = asyncio.create_task(server_mod._detection_worker())
 
             await server_mod._detection_queue.put({"id": 1, "session_id": "s1"})
-            await server_mod._detection_queue.put(
-                {"id": 2, "session_id": "s1", "crash": True}
-            )
+            await server_mod._detection_queue.put({"id": 2, "session_id": "s1", "crash": True})
             await server_mod._detection_queue.put({"id": 3, "session_id": "s1"})
 
             await asyncio.sleep(0.3)
@@ -177,19 +174,15 @@ class TestEndpointReturnsBeforeDetection:
 
             loop = asyncio.get_event_loop()
             start = loop.time()
-            await server_mod._detection_queue.put(
-                {"id": 1, "session_id": "s1", "phase": 1}
-            )
+            await server_mod._detection_queue.put({"id": 1, "session_id": "s1", "phase": 1})
             put_elapsed = loop.time() - start
 
             assert put_elapsed < 0.01, (
-                f"queue.put() took {put_elapsed*1000:.0f}ms, expected <10ms"
+                f"queue.put() took {put_elapsed * 1000:.0f}ms, expected <10ms"
             )
 
             await asyncio.sleep(0.1)
-            assert not detection_done.is_set(), (
-                "detection should still be running in background"
-            )
+            assert not detection_done.is_set(), "detection should still be running in background"
 
             await asyncio.wait_for(detection_done.wait(), timeout=2)
             await server_mod._detection_queue.put(None)

@@ -9,14 +9,17 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests.contract.conftest import terminate_process
+
 
 @pytest.fixture(scope="module")
-def daemon_url():
+def daemon_url(contract_daemon_env):
     """Start daemon on a dynamic port, yield the base URL, stop after tests."""
     import subprocess
     import sys
 
     port = _find_free_port()
+    env = contract_daemon_env | {"BIBLE_CC_DAEMON_PORT": str(port)}
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -32,12 +35,14 @@ def daemon_url():
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
     base_url = f"http://127.0.0.1:{port}"
-    _wait_for_health(base_url, timeout=5)
-    yield base_url
-    proc.terminate()
-    proc.wait(timeout=5)
+    try:
+        _wait_for_health(base_url, timeout=5)
+        yield base_url
+    finally:
+        terminate_process(proc)
 
 
 def _find_free_port() -> int:

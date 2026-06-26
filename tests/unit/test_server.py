@@ -28,6 +28,7 @@ def client(tmp_path, monkeypatch):
     server_mod._db_conn = None
     server_mod._db_error = None
     server_mod._threshold_state.clear()
+    server_mod._session_start_state.clear()
     server_mod._config = server_mod.load_config()
     server_mod._app_config = server_mod._config
 
@@ -46,6 +47,7 @@ def client(tmp_path, monkeypatch):
     server_mod._db_conn = None
     server_mod._db_error = None
     server_mod._threshold_state.clear()
+    server_mod._session_start_state.clear()
     server_mod._config = server_mod.load_config()
     server_mod._app_config = server_mod._config
     session_seq.clear()
@@ -146,6 +148,21 @@ class TestSessionStart:
     def test_missing_session_id_returns_422(self, client):
         r = client.post("/session/start", json={})
         assert r.status_code in (400, 422)
+
+    def test_reset_threshold_preserves_session_start_anchor(self, client):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._threshold_state["sess-1"] = {"turns": 3, "chars": 30}
+        server_mod._session_start_state["sess-1"] = {"anchor_seq": 1}
+
+        r = client.post(
+            "/session/start",
+            json={"session_id": "sess-1", "reset_threshold": True},
+        )
+
+        assert r.status_code == 200
+        assert "sess-1" not in server_mod._threshold_state
+        assert server_mod._session_start_state["sess-1"] == {"anchor_seq": 1}
 
 
 class TestSessionEnd:
@@ -379,26 +396,185 @@ class TestTurnEndpoints:
         assert elapsed < 200, f"turn/user took {elapsed:.0f}ms"
 
     def test_turn_user_queues_on_threshold(self, client):
-        """8th turn triggers threshold → queued=true."""
+        """Every non-empty user turn queues session_start; threshold stays independent."""
         import bible_cc_plugin.daemon.server as server_mod
 
         client.post("/session/start", json={"session_id": "s2b4"})
-        # 7 turns → queued=false
+        # Every non-empty user turn queues session_start detection → queued=true
         for _ in range(7):
             r = client.post("/turn/user", json={"session_id": "s2b4", "message": "msg"})
-            assert r.json()["queued"] is False
-        # 8th turn → threshold → queued=true
+            assert r.json()["queued"] is True  # session_start path
+        # 8th turn still triggers threshold for decision/accomplishment
         r = client.post("/turn/user", json={"session_id": "s2b4", "message": "trigger"})
         assert r.json()["queued"] is True
-        # Clean up threshold state
+        # Clean up
         server_mod.reset_threshold("s2b4")
 
+    def test_first_user_turn_queues_session_start(self, client):
+        """First non-empty user turn immediately queues session_start detection."""
+        import asyncio
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        # Replace queue so background worker doesn't consume tasks
+        old_queue = server_mod._detection_queue
+        server_mod._detection_queue = asyncio.Queue()
+
+        try:
+            client.post("/session/start", json={"session_id": "s-ss-1"})
+            r = client.post(
+                "/turn/user", json={"session_id": "s-ss-1", "message": "start Phase 3a review"}
+            )
+            assert r.status_code == 200
+            assert r.json()["queued"] is True
+
+            # Verify session_start state anchored to first user turn
+            state = server_mod._session_start_state.get("s-ss-1")
+            assert state is not None
+            assert state["anchor_seq"] == 1
+
+            # Verify the queued task has session_start moment_types
+            task = server_mod._detection_queue.get_nowait()
+            assert task["session_id"] == "s-ss-1"
+            assert task["moment_types"] == ["session_start"]
+            assert task["anchor_seq"] == 1
+        finally:
+            server_mod._detection_queue = old_queue
+            server_mod.reset_threshold("s-ss-1")
+
+    def test_session_start_anchor_persists_across_user_turns(self, client):
+        """Subsequent user turns keep the same anchor for session_start refinement."""
+        import asyncio
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        old_queue = server_mod._detection_queue
+        server_mod._detection_queue = asyncio.Queue()
+
+        try:
+            client.post("/session/start", json={"session_id": "s-ss-2"})
+
+            # Turn 1: initial session_start
+            client.post("/turn/user", json={"session_id": "s-ss-2", "message": "first"})
+            anchor_1 = server_mod._session_start_state["s-ss-2"]["anchor_seq"]
+
+            # Turn 2: anchor must remain the first user turn's seq
+            client.post("/turn/user", json={"session_id": "s-ss-2", "message": "second"})
+            anchor_2 = server_mod._session_start_state["s-ss-2"]["anchor_seq"]
+            assert anchor_2 == anchor_1, "anchor must not change across user turns"
+
+            # Drain all session_start tasks and verify all use the same anchor
+            while not server_mod._detection_queue.empty():
+                task = server_mod._detection_queue.get_nowait()
+                if task["session_id"] == "s-ss-2":
+                    assert task["anchor_seq"] == anchor_1, (
+                        f"all session_start tasks must use anchor={anchor_1}, "
+                        f"got anchor={task['anchor_seq']}"
+                    )
+        finally:
+            server_mod._detection_queue = old_queue
+            server_mod.reset_threshold("s-ss-2")
+
+    def test_session_start_anchor_recovers_from_sqlite_after_state_loss(self, client):
+        """A daemon restart must keep refining the first user turn's session_start."""
+        import asyncio
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        old_queue = server_mod._detection_queue
+        server_mod._detection_queue = asyncio.Queue()
+
+        try:
+            client.post("/session/start", json={"session_id": "s-ss-restart"})
+            client.post("/turn/user", json={"session_id": "s-ss-restart", "message": "first"})
+
+            server_mod._session_start_state.clear()
+
+            client.post("/turn/user", json={"session_id": "s-ss-restart", "message": "second"})
+            second_task = None
+            while not server_mod._detection_queue.empty():
+                task = server_mod._detection_queue.get_nowait()
+                if task["session_id"] == "s-ss-restart":
+                    second_task = task
+
+            assert second_task is not None
+            assert second_task["anchor_seq"] == 1
+            assert server_mod._session_start_state["s-ss-restart"]["anchor_seq"] == 1
+        finally:
+            server_mod._detection_queue = old_queue
+            server_mod.reset_threshold("s-ss-restart")
+
+    def test_session_start_anchor_ignores_prior_empty_user_turn(self, client):
+        """Empty user turns are buffered but cannot become the SESSION_START anchor."""
+        import asyncio
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        old_queue = server_mod._detection_queue
+        server_mod._detection_queue = asyncio.Queue()
+
+        try:
+            client.post("/session/start", json={"session_id": "s-ss-empty-first"})
+            client.post("/turn/user", json={"session_id": "s-ss-empty-first", "message": ""})
+            client.post("/turn/user", json={"session_id": "s-ss-empty-first", "message": "   "})
+            client.post("/turn/user", json={"session_id": "s-ss-empty-first", "message": "\n\t"})
+            client.post(
+                "/turn/user",
+                json={"session_id": "s-ss-empty-first", "message": "real start"},
+            )
+
+            task = None
+            while not server_mod._detection_queue.empty():
+                task = server_mod._detection_queue.get_nowait()
+
+            assert task is not None
+            assert task["anchor_seq"] == 4
+        finally:
+            server_mod._detection_queue = old_queue
+            server_mod.reset_threshold("s-ss-empty-first")
+
+    def test_threshold_task_excludes_session_start(self, client):
+        """Threshold-based detection task must not allow session_start type."""
+        import asyncio
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        old_queue = server_mod._detection_queue
+        server_mod._detection_queue = asyncio.Queue()
+
+        try:
+            client.post("/session/start", json={"session_id": "s-ss-3"})
+
+            # Fire 8 turns: each queues a session_start task; 8th also queues threshold
+            for _ in range(8):
+                r = client.post("/turn/user", json={"session_id": "s-ss-3", "message": "msg"})
+                assert r.json()["queued"] is True
+
+            # Collect all tasks — find the decision/accomplishment one
+            decision_task = None
+            while not server_mod._detection_queue.empty():
+                task = server_mod._detection_queue.get_nowait()
+                if task["session_id"] == "s-ss-3":
+                    if task.get("moment_types") == ["decision", "accomplishment"]:
+                        decision_task = task
+                        break
+
+            assert decision_task is not None, "threshold must queue a decision/accomplishment task"
+            assert "session_start" not in decision_task["moment_types"], (
+                "threshold task must exclude session_start"
+            )
+        finally:
+            server_mod._detection_queue = old_queue
+            server_mod.reset_threshold("s-ss-3")
+
     def test_turn_user_empty_message_no_threshold(self, client):
-        """Empty message → turn written but threshold not incremented."""
+        """Empty/blank message → turn written but threshold not incremented."""
         client.post("/session/start", json={"session_id": "s2b4-empty"})
         for _ in range(10):
             r = client.post("/turn/user", json={"session_id": "s2b4-empty", "message": ""})
             assert r.json()["queued"] is False, "empty message must not trigger"
+            r = client.post("/turn/user", json={"session_id": "s2b4-empty", "message": "   "})
+            assert r.json()["queued"] is False, "blank message must not trigger"
 
     def test_turn_user_no_queue_when_capture_disabled(self, client):
         """capture.enabled=false → never queues."""
@@ -703,8 +879,59 @@ class TestDetectionPipeline:
             "first-tool",
             "Follow-up prompt",
         ]
-        assert captured[0].get("session_start_anchor") is False
-        assert captured[-1].get("session_start_anchor") is True
+        assert all("session_start_anchor" not in t for t in captured)
+
+        conn.close()
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_session_start_task_window_keeps_first_user_anchor(self, tmp_path, monkeypatch):
+        """SESSION_START refinement must keep the original user intent in the prompt."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import insert_session, insert_turn_user, session_seq
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s-session-start-window")
+        first_seq = insert_turn_user(conn, "s-session-start-window", "Start Phase 3a work")
+        insert_turn_user(conn, "s-session-start-window", "Second prompt")
+        third_seq = insert_turn_user(conn, "s-session-start-window", "Third prompt")
+
+        captured = []
+
+        def mock_detect(turns, known_moments, phase, config):
+            captured.extend(turns)
+            return []
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task(
+                {
+                    "session_id": "s-session-start-window",
+                    "phase": 1,
+                    "max_seq": third_seq,
+                    "anchor_seq": first_seq,
+                    "moment_types": ["session_start"],
+                }
+            )
+
+        assert [t["content"] for t in captured] == [
+            "Start Phase 3a work",
+            "Second prompt",
+            "Third prompt",
+        ]
+        assert captured[0]["session_start_anchor"] is True
+        assert all(not t["session_start_anchor"] for t in captured[1:])
 
         conn.close()
         server_mod._db_conn = None
@@ -918,10 +1145,10 @@ class TestDetectionPipeline:
         session_seq.clear()
 
     @pytest.mark.asyncio
-    async def test_user_triggered_session_start_uses_current_user_anchor(
+    async def test_user_triggered_session_start_refines_first_user_anchor(
         self, tmp_path, monkeypatch
     ):
-        """include_previous_user windows must not anchor new starts to old prompts."""
+        """Later user turns refine the original session_start anchor."""
         db_path = str(tmp_path / "daemon.db")
         monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
 
@@ -944,7 +1171,7 @@ class TestDetectionPipeline:
         conn = server_mod._get_db()
         assert conn is not None
         insert_session(conn, "s-user-trigger")
-        insert_turn_user(conn, "s-user-trigger", "Start 3a")
+        first_user_seq = insert_turn_user(conn, "s-user-trigger", "Start 3a")
         first_tool_seq = insert_turn_tool(conn, "s-user-trigger", "Read", {}, "first")
 
         detections = iter(
@@ -959,7 +1186,13 @@ class TestDetectionPipeline:
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
             await server_mod._process_detection_task(
-                {"session_id": "s-user-trigger", "phase": 1, "max_seq": first_tool_seq}
+                {
+                    "session_id": "s-user-trigger",
+                    "phase": 1,
+                    "max_seq": first_tool_seq,
+                    "anchor_seq": first_user_seq,
+                    "moment_types": ["session_start"],
+                }
             )
             second_user_seq = insert_turn_user(conn, "s-user-trigger", "Start 3b")
             await server_mod._process_detection_task(
@@ -967,14 +1200,16 @@ class TestDetectionPipeline:
                     "session_id": "s-user-trigger",
                     "phase": 1,
                     "max_seq": second_user_seq,
-                    "anchor_seq": second_user_seq,
+                    "anchor_seq": first_user_seq,
                     "include_previous_user": True,
+                    "moment_types": ["session_start"],
                 }
             )
 
         moments = get_moments_by_session(conn, "s-user-trigger")
-        assert [m["title"] for m in moments] == ["Start 3a", "Start 3b"]
-        assert moments[1]["turn_range_start"] == second_user_seq
+        assert [m["title"] for m in moments] == ["Start 3b"]
+        assert moments[0]["turn_range_start"] == first_user_seq
+        assert moments[0]["turn_range_end"] == second_user_seq
 
         conn.close()
         server_mod._db_conn = None

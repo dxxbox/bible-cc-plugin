@@ -297,6 +297,7 @@ def get_phase1_detection_window(
     limit: int = 8,
     max_seq: int | None = None,
     include_previous_user: bool = False,
+    anchor_seq: int | None = None,
 ) -> list[dict]:
     """Return a chronological Phase 1 detection window anchored on latest user turn.
 
@@ -311,7 +312,43 @@ def get_phase1_detection_window(
     When a user turn itself triggers the threshold, ``include_previous_user``
     keeps the prior user-anchored tool window in scope while still including
     the new prompt at ``max_seq``.
+
+    ``anchor_seq`` is reserved for SESSION_START refinement: the prompt must
+    include the original user intent even after later user turns move the
+    normal rolling window forward.
     """
+    if anchor_seq is not None:
+        anchor_turn = conn.execute(
+            "SELECT role, content, tool_name, tool_output, seq "
+            "FROM turns WHERE session_id=? AND role='user' AND seq=?",
+            (session_id, anchor_seq),
+        ).fetchone()
+        if anchor_turn is not None:
+            after_limit = max(limit - 1, 0)
+            if max_seq is None:
+                rows_after = conn.execute(
+                    "SELECT role, content, tool_name, tool_output, seq "
+                    "FROM turns WHERE session_id=? AND seq > ? "
+                    "ORDER BY seq DESC LIMIT ?",
+                    (session_id, anchor_seq, after_limit),
+                ).fetchall()
+            else:
+                rows_after = conn.execute(
+                    "SELECT role, content, tool_name, tool_output, seq "
+                    "FROM turns WHERE session_id=? AND seq > ? AND seq<=? "
+                    "ORDER BY seq DESC LIMIT ?",
+                    (session_id, anchor_seq, max_seq, after_limit),
+                ).fetchall()
+            result = [dict(anchor_turn)] + [dict(r) for r in reversed(rows_after)]
+            _logger.debug(
+                "get_phase1_detection_window: session=%s anchor=%s limit=%d → %d turns",
+                session_id[:8],
+                anchor_seq,
+                limit,
+                len(result),
+            )
+            return result
+
     if max_seq is None:
         latest_user = conn.execute(
             "SELECT role, content, tool_name, tool_output, seq "
@@ -369,6 +406,18 @@ def get_phase1_detection_window(
         len(result),
     )
     return result
+
+
+def get_first_user_turn_seq(conn: sqlite3.Connection, session_id: str) -> int | None:
+    """Return the first non-empty user-turn seq for a session, or None if absent."""
+    rows = conn.execute(
+        "SELECT seq, content FROM turns WHERE session_id=? AND role='user' ORDER BY seq ASC",
+        (session_id,),
+    ).fetchall()
+    for row in rows:
+        if (row["content"] or "").strip():
+            return int(row["seq"])
+    return None
 
 
 def insert_turn_user(conn: sqlite3.Connection, session_id: str, message: str) -> int:
