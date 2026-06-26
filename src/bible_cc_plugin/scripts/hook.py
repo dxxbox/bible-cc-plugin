@@ -230,22 +230,21 @@ def _clear_hint_watch(session_id: str) -> None:
         pass
 
 
-def _print_hints(
+def _collect_hints(
     session_id: str,
     base_url: str,
     hint_format: str,
     timeout: float = 1.0,
     wait_seconds: float = 0.0,
     poll_interval: float = _HINT_POLL_INTERVAL_SECONDS,
-) -> int:
-    """Fetch moments → format_hint → stdout (best-effort).
+) -> tuple[list[str], int]:
+    """Fetch pending moments from daemon → format as hint strings.
 
-    Only prints moments with id > last hinted cursor, then updates cursor.
-    Prevents the same moment being hinted on every turn.
-    Per-moment errors are isolated — one bad moment won't block others.
-    GET / JSON failures are caught at the outer level and logged.
+    Pure data collection — no stdout, no cursor writes.
+    Returns (hint_messages, max_id). max_id is the largest moment id
+    across ALL fetched moments (for cursor advancement after emit).
 
-    When wait_seconds > 0, poll briefly for a late async detection result.
+    When wait_seconds > 0, polls briefly for late async detection results.
     """
     deadline = time.monotonic() + max(0.0, wait_seconds)
     moments = []
@@ -258,12 +257,12 @@ def _print_hints(
             r.raise_for_status()
             moments = r.json().get("moments", [])
         except Exception:
-            _logger.warning("_print_hints: GET /daemon/moments failed", exc_info=True)
-            return 0
+            _logger.warning("_collect_hints: GET /daemon/moments failed", exc_info=True)
+            return [], 0
 
         cursor = _read_hint_cursor(session_id)
         _logger.debug(
-            "_print_hints: session=%s fetched=%d cursor=%d wait=%.2fs",
+            "_collect_hints: session=%s fetched=%d cursor=%d wait=%.2fs",
             session_id[:8],
             len(moments),
             cursor,
@@ -273,27 +272,29 @@ def _print_hints(
             break
         if time.monotonic() >= deadline:
             _logger.info(
-                "_print_hints: session=%s no new hints fetched=%d cursor=%d",
+                "_collect_hints: session=%s no new hints fetched=%d cursor=%d",
                 session_id[:8],
                 len(moments),
                 cursor,
             )
-            return 0
+            return [], 0
         time.sleep(max(0.0, poll_interval))
 
     if not moments:
-        _logger.info("_print_hints: session=%s no pending moments", session_id[:8])
-        return 0
+        _logger.info("_collect_hints: session=%s no pending moments", session_id[:8])
+        return [], 0
 
     cursor = _read_hint_cursor(session_id)
     from bible_cc_plugin.daemon.detector import MomentCandidate
     from bible_cc_plugin.hint_system import format_hint
 
+    messages: list[str] = []
     max_id = cursor
-    printed = 0
     for m in moments:
         mid = m.get("id", 0)
         if mid <= cursor:
+            if mid > max_id:
+                max_id = mid
             continue
         try:
             candidate = MomentCandidate(
@@ -303,10 +304,9 @@ def _print_hints(
                 tool_summary=str(m.get("tool_summary") or ""),
             )
             hint = format_hint(candidate, hint_format)
-            print(hint, flush=True)
-            printed += 1
+            messages.append(hint)
             _logger.info(
-                "_print_hints: printed session=%s moment_id=%s type=%s title=%s",
+                "_collect_hints: collected session=%s moment_id=%s type=%s title=%s",
                 session_id[:8],
                 mid,
                 candidate.type,
@@ -315,25 +315,81 @@ def _print_hints(
             if mid > max_id:
                 max_id = mid
         except Exception:
-            _logger.warning("_print_hints: format failed for moment", exc_info=True)
+            _logger.warning("_collect_hints: format failed for moment", exc_info=True)
+            if mid > max_id:
+                max_id = mid
 
-    if max_id > cursor:
+    return messages, max_id
+
+
+def _emit_hook_message(messages: list[str], hook_event_name: str) -> bool:
+    """Aggregate hint messages into a single JSON object and write to stdout.
+
+    Format: {"continue": true, "systemMessage": "<joined messages>"}
+    Returns True on success, False on failure.
+    """
+    if not messages:
+        return False
+    try:
+        joined = "\n".join(messages)
+        payload = {
+            "continue": True,
+            "systemMessage": joined,
+        }
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
+        _logger.info(
+            "_emit_hook_message: event=%s messages=%d chars=%d",
+            hook_event_name,
+            len(messages),
+            len(joined),
+        )
+        return True
+    except Exception:
+        _logger.warning("_emit_hook_message: failed", exc_info=True)
+        return False
+
+
+def _print_hints(
+    session_id: str,
+    base_url: str,
+    hint_format: str,
+    timeout: float = 1.0,
+    wait_seconds: float = 0.0,
+    poll_interval: float = _HINT_POLL_INTERVAL_SECONDS,
+    hook_event_name: str = "",
+) -> int:
+    """Compose _collect_hints + _emit_hook_message with cursor update.
+
+    Cursor is only advanced after successful JSON emit — if emit fails,
+    hints remain pending for the next hook invocation.
+    """
+    messages, max_id = _collect_hints(
+        session_id,
+        base_url,
+        hint_format,
+        timeout=timeout,
+        wait_seconds=wait_seconds,
+        poll_interval=poll_interval,
+    )
+    if not messages:
+        return 0
+    if _emit_hook_message(messages, hook_event_name):
+        cursor = _read_hint_cursor(session_id)
         _write_hint_cursor(session_id, max_id)
         _logger.info(
             "_print_hints: session=%s printed=%d cursor=%d->%d",
             session_id[:8],
-            printed,
+            len(messages),
             cursor,
             max_id,
         )
-    else:
-        _logger.info(
-            "_print_hints: session=%s printed=%d cursor=%d unchanged",
-            session_id[:8],
-            printed,
-            cursor,
-        )
-    return printed
+        return len(messages)
+    _logger.warning(
+        "_print_hints: emit failed session=%s collected=%d → cursor not advanced",
+        session_id[:8],
+        len(messages),
+    )
+    return 0
 
 
 def _should_poll_hints(config) -> bool:
@@ -399,7 +455,10 @@ def _handle_turn_user(config, args) -> None:
         tid = body.get("turn_id")
         _logger.info("turn-user %s msg_len=%d → OK turn_id=%s", sid, mlen, tid)
         if _should_poll_hints(config):
-            printed = _print_hints(args.session_id, base_url, config.capture.hint_format)
+            printed = _print_hints(
+                args.session_id, base_url, config.capture.hint_format,
+                hook_event_name="UserPromptSubmit",
+            )
             if body.get("queued") and printed == 0:
                 _write_hint_watch(args.session_id)
     except httpx.HTTPStatusError as e:
@@ -439,7 +498,10 @@ def _handle_turn_user(config, args) -> None:
                     tid2,
                 )
                 if _should_poll_hints(config):
-                    printed = _print_hints(args.session_id, base_url, config.capture.hint_format)
+                    printed = _print_hints(
+                        args.session_id, base_url, config.capture.hint_format,
+                        hook_event_name="UserPromptSubmit",
+                    )
                     if body2.get("queued") and printed == 0:
                         _write_hint_watch(args.session_id)
             except Exception as recovery_err:
@@ -481,7 +543,10 @@ def _handle_turn_tool(config, args) -> None:
         cmd = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
         _logger.debug("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
         if _should_poll_hints(config):
-            printed = _print_hints(args.session_id, base_url, config.capture.hint_format)
+            printed = _print_hints(
+                args.session_id, base_url, config.capture.hint_format,
+                hook_event_name="PostToolUse",
+            )
             if body.get("queued") and printed == 0:
                 _write_hint_watch(args.session_id)
     except httpx.HTTPStatusError as e:
@@ -527,7 +592,10 @@ def _handle_turn_tool(config, args) -> None:
                     olen2,
                 )
                 if _should_poll_hints(config):
-                    printed = _print_hints(args.session_id, base_url, config.capture.hint_format)
+                    printed = _print_hints(
+                        args.session_id, base_url, config.capture.hint_format,
+                        hook_event_name="PostToolUse",
+                    )
                     if body2.get("queued") and printed == 0:
                         _write_hint_watch(args.session_id)
             except Exception as recovery_err:
@@ -575,6 +643,7 @@ def _handle_turn_stop(config, args) -> None:
         base_url,
         config.capture.hint_format,
         wait_seconds=wait_seconds,
+        hook_event_name="Stop",
     )
     if body.get("queued") and printed == 0 and watch is None:
         _write_hint_watch(args.session_id)

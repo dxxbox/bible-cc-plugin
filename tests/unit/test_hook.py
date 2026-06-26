@@ -730,14 +730,8 @@ class TestHookTurnStop:
 
         _handle_turn_stop(config, args)
 
-        assert calls == [
-            (
-                "abc-123",
-                "http://127.0.0.1:9777",
-                "quote_with_command",
-                {"wait_seconds": 0.0},
-            )
-        ]
+        assert calls[0][3]["wait_seconds"] == 0.0
+        assert calls[0][3].get("hook_event_name") == "Stop"
 
     def test_waits_briefly_when_detection_was_queued(self, monkeypatch, tmp_path):
         from bible_cc_plugin.scripts import hook
@@ -981,7 +975,7 @@ class TestPrintHints:
     """Unit tests for _print_hints() — dict → MomentCandidate adapter."""
 
     def test_formats_daemon_json_with_moment_type_key(self, monkeypatch, capsys, tmp_path):
-        """dict with 'moment_type' key → hint printed to stdout."""
+        """dict with 'moment_type' key → hint emitted as JSON systemMessage."""
         # Trigger anthropic import before monkeypatching httpx.Client.
         from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
         from bible_cc_plugin.scripts.hook import _print_hints
@@ -1024,13 +1018,15 @@ class TestPrintHints:
 
         output = capsys.readouterr().out
         assert "/daemon/moments" in get_calls[0][1]
-        assert "Postgres" in output
-        assert "Decision" in output
-        assert "⎿ ⏳" in output
-        assert "/bible-cc:review" in output
+        payload = json.loads(output)
+        assert payload["continue"] is True
+        assert "Postgres" in payload["systemMessage"]
+        assert "Decision" in payload["systemMessage"]
+        assert "⎿ ⏳" in payload["systemMessage"]
+        assert "/bible-cc:review" in payload["systemMessage"]
 
     def test_print_hints_logs_printed_count(self, monkeypatch, capsys, tmp_path, caplog):
-        """Hint stdout path should be visible in bible-cc logs."""
+        """Hint JSON systemMessage path should be visible in bible-cc logs."""
         import logging
 
         from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
@@ -1071,8 +1067,9 @@ class TestPrintHints:
         root.propagate = False
 
         assert printed == 1
-        assert "Start 3a" in capsys.readouterr().out
-        assert any("_print_hints: printed" in r.message for r in caplog.records)
+        payload = json.loads(capsys.readouterr().out)
+        assert "Start 3a" in payload["systemMessage"]
+        assert any("_collect_hints: collected" in r.message for r in caplog.records)
         assert any("cursor=0->7" in r.message for r in caplog.records)
 
     def test_one_bad_moment_does_not_block_subsequent(self, monkeypatch, capsys, tmp_path):
@@ -1111,8 +1108,8 @@ class TestPrintHints:
 
         _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
 
-        output = capsys.readouterr().out
-        assert "Rate limiting done" in output
+        payload = json.loads(capsys.readouterr().out)
+        assert "Rate limiting done" in payload["systemMessage"]
         # first moment is bad but won't crash; second still appears
 
     def test_cursor_prevents_duplicate_hints(self, monkeypatch, capsys, tmp_path):
@@ -1153,11 +1150,13 @@ class TestPrintHints:
 
         _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
         out1 = capsys.readouterr().out
-        assert "Only once" in out1, "first call should print hint"
+        payload1 = json.loads(out1)
+        assert "Only once" in payload1["systemMessage"], "first call should emit hint"
 
         _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
         out2 = capsys.readouterr().out
-        assert "Only once" not in out2, "second call should skip already-hinted moment"
+        assert out2.strip() == "", "second call should skip (no new hints)"
+        # cursor should still be 1, no re-emit of already-seen moment
 
     def test_waits_for_late_async_moment(self, monkeypatch, capsys, tmp_path):
         """Brief polling lets Stop surface a moment inserted after the first GET."""
@@ -1205,10 +1204,10 @@ class TestPrintHints:
             poll_interval=0,
         )
 
-        output = capsys.readouterr().out
+        payload = json.loads(capsys.readouterr().out)
         assert printed == 1
-        assert "开始 3a 开发" in output
-        assert "Session Start" in output
+        assert "开始 3a 开发" in payload["systemMessage"]
+        assert "Session Start" in payload["systemMessage"]
 
     def test_get_failure_logs_warning_and_returns(self, monkeypatch, caplog):
         """GET /daemon/moments fails → logged, no crash, no hints."""
@@ -1230,7 +1229,10 @@ class TestPrintHints:
         _print_hints("abc-123", "http://127.0.0.1:9777", "quote_with_command")
         root.propagate = False
 
-        assert any("_print_hints: GET /daemon/moments failed" in r.message for r in caplog.records)
+        assert any(
+            "_collect_hints: GET /daemon/moments failed" in r.message
+            for r in caplog.records
+        )
 
     def test_non_200_response_logs_and_returns(self, monkeypatch, caplog):
         """HTTP 500 from daemon → logged, no crash."""
@@ -1261,7 +1263,293 @@ class TestPrintHints:
         _print_hints("abc-123", "http://127.0.0.1:9777", "quote_with_command")
         root.propagate = False
 
-        assert any("_print_hints: GET /daemon/moments failed" in r.message for r in caplog.records)
+        assert any(
+            "_collect_hints: GET /daemon/moments failed" in r.message
+            for r in caplog.records
+        )
+
+
+class TestCollectHints:
+    """Unit tests for _collect_hints() — pure data collection, no side effects."""
+
+    def test_returns_messages_without_printing(self, monkeypatch, capsys, tmp_path):
+        """_collect_hints returns hint strings but does NOT write to stdout."""
+        from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
+        from bible_cc_plugin.scripts.hook import _collect_hints
+
+        session_id = "test-collect-1"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "moments": [
+                        {
+                            "id": 1,
+                            "moment_type": "decision",
+                            "title": "Use Postgres",
+                            "narrative": "Chose PostgreSQL",
+                        }
+                    ]
+                }
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        messages, max_id = _collect_hints(
+            session_id, "http://127.0.0.1:9777", "quote_with_command"
+        )
+
+        assert len(messages) == 1
+        assert "Postgres" in messages[0]
+        assert max_id == 1
+        # No stdout emitted by _collect_hints
+        assert capsys.readouterr().out == ""
+
+    def test_respects_cursor(self, monkeypatch, tmp_path):
+        """Moments with id ≤ cursor are excluded from returned messages."""
+        from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
+        from bible_cc_plugin.scripts.hook import _collect_hints, _write_hint_cursor
+
+        session_id = "test-collect-cursor"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+        # Pre-set cursor so moment id=1 is already consumed
+        _write_hint_cursor(session_id, 1)
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "moments": [
+                        {
+                            "id": 1,
+                            "moment_type": "decision",
+                            "title": "Already seen",
+                            "narrative": "Should be skipped",
+                        },
+                        {
+                            "id": 2,
+                            "moment_type": "accomplishment",
+                            "title": "New moment",
+                            "narrative": "Should be included",
+                        },
+                    ]
+                }
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        messages, max_id = _collect_hints(
+            session_id, "http://127.0.0.1:9777", "quote_only"
+        )
+
+        assert len(messages) == 1
+        assert "New moment" in messages[0]
+        assert "Already seen" not in messages[0]
+        assert max_id == 2  # max_id across ALL moments, not just new ones
+
+    def test_returns_empty_on_daemon_failure(self, monkeypatch):
+        """GET /daemon/moments fails → returns ([], 0)."""
+        from bible_cc_plugin.scripts.hook import _collect_hints
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(
+            client, "get",
+            lambda *a, **kw: (_ for _ in ()).throw(httpx.ConnectError("refused")),
+        )
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        messages, max_id = _collect_hints(
+            "abc-123", "http://127.0.0.1:9777", "quote_with_command"
+        )
+
+        assert messages == []
+        assert max_id == 0
+
+    def test_returns_empty_when_no_new_hints(self, monkeypatch, tmp_path):
+        """All moments already consumed → ([], 0)."""
+        from bible_cc_plugin.scripts.hook import _collect_hints, _write_hint_cursor
+
+        session_id = "test-collect-nonew"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+        _write_hint_cursor(session_id, 99)
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "moments": [
+                        {
+                            "id": 1,
+                            "moment_type": "decision",
+                            "title": "Old",
+                            "narrative": "Old",
+                        }
+                    ]
+                }
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        messages, max_id = _collect_hints(
+            session_id, "http://127.0.0.1:9777", "quote_only"
+        )
+
+        assert messages == []
+        assert max_id == 0  # no new hints, no cursor advancement needed
+
+
+class TestEmitHookMessage:
+    """Unit tests for _emit_hook_message() — JSON stdout output."""
+
+    def test_single_hint_emits_json(self, capsys):
+        """Single hint → JSON with continue:true + systemMessage."""
+        from bible_cc_plugin.scripts.hook import _emit_hook_message
+
+        result = _emit_hook_message(
+            ['⎿ ⏳ Captured: "Use Postgres" — Decision.'],
+            "UserPromptSubmit",
+        )
+
+        assert result is True
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["continue"] is True
+        assert "Use Postgres" in payload["systemMessage"]
+        assert "Decision" in payload["systemMessage"]
+
+    def test_multiple_hints_joined_with_newline(self, capsys):
+        """Multiple hints → single systemMessage with \\n separator."""
+        from bible_cc_plugin.scripts.hook import _emit_hook_message
+
+        messages = [
+            '⎿ ⏳ Captured: "Use Postgres" — Decision.',
+            '⎿ ⏳ Captured: "Rate limiting done" — Accomplishment.',
+        ]
+        result = _emit_hook_message(messages, "PostToolUse")
+
+        assert result is True
+        stdout = capsys.readouterr().out
+        payload = json.loads(stdout)
+        assert payload["continue"] is True
+        assert "\n" in payload["systemMessage"]
+        assert "Use Postgres" in payload["systemMessage"]
+        assert "Rate limiting done" in payload["systemMessage"]
+        # Single JSON object, not multiple lines of JSON
+        lines = stdout.strip().split("\n")
+        assert len(lines) == 1
+
+    def test_empty_list_returns_false(self, capsys):
+        """Empty messages → returns False, no stdout."""
+        from bible_cc_plugin.scripts.hook import _emit_hook_message
+
+        result = _emit_hook_message([], "Stop")
+
+        assert result is False
+        assert capsys.readouterr().out == ""
+
+    def test_has_continue_not_decision(self, capsys):
+        """Stop hook output must NOT include 'decision' field."""
+        from bible_cc_plugin.scripts.hook import _emit_hook_message
+
+        _emit_hook_message(
+            ['⎿ ⏳ Captured: "Start 3a" — Session Start.'],
+            "Stop",
+        )
+
+        payload = json.loads(capsys.readouterr().out)
+        assert "continue" in payload
+        assert payload["continue"] is True
+        assert "decision" not in payload
+        assert "systemMessage" in payload
+
+    def test_emit_failure_returns_false(self, monkeypatch):
+        """If json.dumps fails → returns False."""
+        from bible_cc_plugin.scripts.hook import _emit_hook_message
+
+        # Cause json.dumps to fail (doesn't break logging like print mock would)
+        monkeypatch.setattr(
+            "json.dumps",
+            lambda *a, **kw: (_ for _ in ()).throw(TypeError("not serializable")),
+        )
+
+        result = _emit_hook_message(["test hint"], "UserPromptSubmit")
+
+        assert result is False
+
+
+class TestPrintHintsCursor:
+    """Cursor advancement behaviour across the composed _print_hints."""
+
+    def test_cursor_not_advanced_on_emit_failure(self, monkeypatch, tmp_path):
+        """If _emit_hook_message fails, cursor stays unchanged."""
+        from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
+        from bible_cc_plugin.scripts.hook import _print_hints, _read_hint_cursor
+
+        session_id = "test-cursor-fail"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "moments": [
+                        {
+                            "id": 1,
+                            "moment_type": "decision",
+                            "title": "T",
+                            "narrative": "T",
+                        }
+                    ]
+                }
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        # Make _emit_hook_message fail
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._emit_hook_message",
+            lambda *a, **kw: False,
+        )
+
+        cursor_before = _read_hint_cursor(session_id)
+        printed = _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
+        cursor_after = _read_hint_cursor(session_id)
+
+        assert printed == 0
+        assert cursor_before == cursor_after
 
 
 class TestStdinJsonParsing:
