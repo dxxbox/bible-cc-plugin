@@ -290,14 +290,14 @@ class TestTurnEndpoints:
             "/turn/user",
             json={"session_id": "s-assistant-threshold", "message": "start"},
         )
-        for _ in range(6):
+        for _ in range(2):  # turns=2,3 → below threshold(4)
             r = client.post(
                 "/turn/assistant",
                 json={"session_id": "s-assistant-threshold", "message": "progress"},
             )
             assert r.json()["queued"] is False
         r = client.post(
-            "/turn/assistant",
+            "/turn/assistant",  # 4th turn overall → threshold triggers
             json={"session_id": "s-assistant-threshold", "message": "done"},
         )
         assert r.json()["queued"] is True
