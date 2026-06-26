@@ -121,17 +121,24 @@ def build_phase1_prompt(turns: list[dict]) -> str:
         "",
         "Recent conversation:",
     ]
+    if any(t.get("session_start_anchor") for t in turns):
+        lines.extend(
+            [
+                "",
+                "Only report SESSION_START for the user turn marked "
+                "[CURRENT USER PROMPT]. Do not report SESSION_START for earlier turns.",
+            ]
+        )
     for i, t in enumerate(turns):
         role = t.get("role", "unknown")
-        lines.append(f"\n--- Turn {i + 1} ({role}) ---")
+        marker = " [CURRENT USER PROMPT]" if t.get("session_start_anchor") else ""
+        lines.append(f"\n--- Turn {i + 1} ({role}){marker} ---")
 
         if role == "user":
             lines.append(t.get("content", ""))
         elif t.get("tool_name"):
-            # Assistant tool call
+            # Tool outputs are stored verbatim but excluded from detection prompts.
             lines.append(f"[Used tool: {t['tool_name']}]")
-            output = t.get("tool_output", "")
-            lines.append(output)
         else:
             # Assistant text reply (future compatibility — detection.md §1.2.1)
             lines.append(t.get("content", ""))
@@ -186,12 +193,8 @@ def build_phase2_prompt(
     # ── Fixed preamble + footer (known moments + instructions) ──────────
     preamble_lines: list[str] = []
     if known_moments:
-        preamble_lines.append(
-            "The following key moments were ALREADY detected during the session."
-        )
-        preamble_lines.append(
-            "Do NOT re-report them. Only report NEW moments not covered below:"
-        )
+        preamble_lines.append("The following key moments were ALREADY detected during the session.")
+        preamble_lines.append("Do NOT re-report them. Only report NEW moments not covered below:")
         preamble_lines.append("")
         known_budget = min(4000, max(0, max_input_chars // 4))
         known_used = 0
@@ -264,7 +267,7 @@ def build_phase2_prompt(
             body = t.get("content", "")
         elif t.get("tool_name"):
             header += f"\n[Used tool: {t['tool_name']}]"
-            body = t.get("tool_output", "")
+            body = ""
         else:
             body = t.get("content", "")
         if content_max is not None and len(body) > content_max:
@@ -297,9 +300,7 @@ def build_phase2_prompt(
             # ── Add head turn ──
             turn_str = all_formatted[hi]
             if len(turn_str) > remaining:
-                content_max = min(
-                    max(remaining - 100, 200), per_turn_content_max
-                )
+                content_max = min(max(remaining - 100, 200), per_turn_content_max)
                 turn_str = _format_turn(hi, all_turns[hi], content_max=content_max)
             head_parts.append(turn_str)
             used += len(turn_str)
@@ -312,18 +313,14 @@ def build_phase2_prompt(
             remaining = budget - used
             turn_str = all_formatted[ti]
             if len(turn_str) > remaining:
-                content_max = min(
-                    max(remaining - 100, 200), per_turn_content_max
-                )
+                content_max = min(max(remaining - 100, 200), per_turn_content_max)
                 turn_str = _format_turn(ti, all_turns[ti], content_max=content_max)
             tail_parts.append(turn_str)
             used += len(turn_str)
             ti -= 1
 
         omitted = max(0, ti - hi + 1)
-        omission = (
-            f"--- [{omitted} turns omitted — see transcript for details] ---"
-        )
+        omission = f"--- [{omitted} turns omitted — see transcript for details] ---"
         # Reversed so tail turns appear in chronological order
         segments = ["Full session transcript:"] + head_parts
         if omitted > 0:
@@ -496,8 +493,7 @@ def _call_detection_api(
     output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
     label = " retry" if retry else ""
     _logger.info(
-        "detection LLM%s: model=%s phase=%d latency=%dms "
-        "input_tokens=%d output_tokens=%d",
+        "detection LLM%s: model=%s phase=%d latency=%dms input_tokens=%d output_tokens=%d",
         label,
         config.model,
         phase,
@@ -519,7 +515,7 @@ def _build_phase2_compact_retry_prompt(prompt: str, max_chars: int | None = None
             '"narrative":"..."}],"assessment":"..."}',
             "Hard limits: max 2 moments, title <= 8 words, narrative <= 100 chars, "
             "assessment <= 120 chars.",
-            "If uncertain, return {\"result\":\"none\"}.",
+            'If uncertain, return {"result":"none"}.',
             "",
         ]
     )
@@ -556,7 +552,8 @@ def detect_moments(
             return call_detection_llm(prompt, config, phase=1)
         else:
             prompt = build_phase2_prompt(
-                turns, known_moments or [],
+                turns,
+                known_moments or [],
                 max_input_chars=config.retrospective_max_input_chars,
             )
             return call_detection_llm(prompt, config, phase=2)

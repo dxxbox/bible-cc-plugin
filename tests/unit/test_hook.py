@@ -59,8 +59,7 @@ class TestHookSessionStart:
         assert daemon_started[0], "ensure_daemon_started should have been called"
         assert len(http_calls) == 0, "no HTTP calls expected on startup"
         assert any(
-            "session-start missing --session-id" in r.message
-            and r.levelname == "WARNING"
+            "session-start missing --session-id" in r.message and r.levelname == "WARNING"
             for r in caplog.records
         ), "should log WARNING (not ERROR) for missing session-id on startup"
 
@@ -70,9 +69,12 @@ class TestHookSessionStart:
 
         class FakeResponse:
             status_code = 200
+
             def json(self):
                 return {"session_id": "abc-123", "is_new": True}
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
 
         def fake_post(url, json=None, **kwargs):
             calls.append(("post", url, json))
@@ -106,9 +108,12 @@ class TestHookSessionStart:
 
         class FakeResponse:
             status_code = 200
+
             def json(self):
                 return {"context": "<relevant-memories></relevant-memories>"}
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
 
         def fake_post(url, json=None, **kwargs):
             calls.append(("post", url, json))
@@ -174,9 +179,12 @@ class TestHookTurnUser:
 
         class FakeResponse:
             status_code = 200
+
             def json(self):
                 return {"turn_id": 1, "queued": False}
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
 
         def fake_post(url, json=None, **kwargs):
             calls.append(("post", url, json))
@@ -201,6 +209,7 @@ class TestHookTurnUser:
 
     def test_graceful_skip_when_daemon_unreachable(self, monkeypatch):
         """turn-user → httpx.ConnectError → no raise."""
+
         def fake_post(*a, **kw):
             raise httpx.ConnectError("connection refused")
 
@@ -286,9 +295,7 @@ class TestHookTurnUser:
 
         assert (tmp_path / ".hint_watch_abc-123").exists()
 
-    def test_queued_turn_does_not_watch_after_hint_printed(
-        self, monkeypatch, tmp_path
-    ):
+    def test_queued_turn_does_not_watch_after_hint_printed(self, monkeypatch, tmp_path):
         """If the current hook printed a hint, Stop should not wait again."""
         from bible_cc_plugin.scripts.hook import _handle_turn_user
 
@@ -334,9 +341,12 @@ class TestHookTurnTool:
 
         class FakeResponse:
             status_code = 200
+
             def json(self):
                 return {"turn_id": 2, "queued": False}
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
 
         def fake_post(url, json=None, **kwargs):
             calls.append(("post", url, json))
@@ -374,9 +384,12 @@ class TestHookTurnTool:
 
         class FakeResponse:
             status_code = 200
+
             def json(self):
                 return {"turn_id": 3, "queued": False}
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
 
         def fake_post(url, json=None, **kwargs):
             calls.append(("post", url, json))
@@ -406,6 +419,7 @@ class TestHookTurnTool:
 
     def test_graceful_skip_when_daemon_unreachable(self, monkeypatch):
         """turn-tool → httpx.ConnectError → no raise."""
+
         def fake_post(*a, **kw):
             raise httpx.ConnectError("connection refused")
 
@@ -418,7 +432,10 @@ class TestHookTurnTool:
         config = MagicMock()
         config.daemon.port = 9777
         args = argparse.Namespace(
-            session_id="abc-123", tool="Bash", input=None, output="",
+            session_id="abc-123",
+            tool="Bash",
+            input=None,
+            output="",
         )
 
         with patch("builtins.print"):
@@ -451,9 +468,7 @@ class TestHookTurnTool:
         config.daemon.port = 9777
         config.capture.enabled = False
         config.capture.mid_session_detection = True
-        args = argparse.Namespace(
-            session_id="abc-123", tool="Bash", input=None, output="ok"
-        )
+        args = argparse.Namespace(session_id="abc-123", tool="Bash", input=None, output="ok")
 
         _handle_turn_tool(config, args)
 
@@ -469,9 +484,12 @@ class TestHookSessionEnd:
 
         class FakeResponse:
             status_code = 200
+
             def json(self):
                 return {"status": "completed", "detection": None}
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
 
         def fake_post(url, json=None, **kwargs):
             calls.append(("post", url, json))
@@ -526,10 +544,9 @@ class TestHookSessionEnd:
             _handle_session_end(config, args)
         root.propagate = False
 
-        assert any(
-            "was never registered" in r.message
-            for r in caplog.records
-        ), "should log 'was never registered' for session-not-found 404"
+        assert any("was never registered" in r.message for r in caplog.records), (
+            "should log 'was never registered' for session-not-found 404"
+        )
 
     def test_unknown_404_logs_with_body_detail(self, monkeypatch, caplog):
         """404 without 'session not found' → logs HTTP status + body detail."""
@@ -559,10 +576,9 @@ class TestHookSessionEnd:
             _handle_session_end(config, args)
         root.propagate = False
 
-        assert any(
-            "HTTP 404" in r.message
-            for r in caplog.records
-        ), "should log HTTP status code for unknown 404"
+        assert any("HTTP 404" in r.message for r in caplog.records), (
+            "should log HTTP status code for unknown 404"
+        )
 
     def test_server_error_includes_body_detail(self, monkeypatch, caplog):
         """HTTP 500 → logs status code AND body message for debugging."""
@@ -626,10 +642,9 @@ class TestHookSessionEnd:
             _handle_session_end(config, args)
         root.propagate = False
 
-        assert any(
-            "unreachable" in r.message
-            for r in caplog.records
-        ), "should log 'unreachable' for transport errors"
+        assert any("unreachable" in r.message for r in caplog.records), (
+            "should log 'unreachable' for transport errors"
+        )
 
     def test_missing_session_id_logs_error(self, caplog):
         """No session_id → error log, no HTTP call."""
@@ -647,10 +662,9 @@ class TestHookSessionEnd:
             _handle_session_end(config, args)
         root.propagate = False
 
-        assert any(
-            "missing --session-id" in r.message
-            for r in caplog.records
-        ), "should log error for missing session-id"
+        assert any("missing --session-id" in r.message for r in caplog.records), (
+            "should log error for missing session-id"
+        )
 
 
 class TestHookTurnStop:
@@ -664,9 +678,7 @@ class TestHookTurnStop:
         def fake_print_hints(session_id, base_url, hint_format, **kwargs):
             calls.append((session_id, base_url, hint_format, kwargs))
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._print_hints", fake_print_hints
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._print_hints", fake_print_hints)
 
         config = MagicMock()
         config.daemon.port = 9777
@@ -684,9 +696,7 @@ class TestHookTurnStop:
             )
         ]
 
-    def test_waits_briefly_when_detection_was_queued(
-        self, monkeypatch, tmp_path
-    ):
+    def test_waits_briefly_when_detection_was_queued(self, monkeypatch, tmp_path):
         from bible_cc_plugin.scripts import hook
         from bible_cc_plugin.scripts.hook import _handle_turn_stop
 
@@ -708,9 +718,7 @@ class TestHookTurnStop:
             hook._write_hint_cursor(session_id, 1)
             return 1
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._print_hints", fake_print_hints
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._print_hints", fake_print_hints)
 
         config = MagicMock()
         config.daemon.port = 9777
@@ -723,9 +731,7 @@ class TestHookTurnStop:
         assert calls[0][3]["wait_seconds"] > 0
         assert not (tmp_path / ".hint_watch_abc-123").exists()
 
-    def test_stale_watch_does_not_wait_when_cursor_already_advanced(
-        self, monkeypatch, tmp_path
-    ):
+    def test_stale_watch_does_not_wait_when_cursor_already_advanced(self, monkeypatch, tmp_path):
         from bible_cc_plugin.scripts import hook
         from bible_cc_plugin.scripts.hook import _handle_turn_stop
 
@@ -747,9 +753,7 @@ class TestHookTurnStop:
             calls.append((session_id, base_url, hint_format, kwargs))
             return 0
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._print_hints", fake_print_hints
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._print_hints", fake_print_hints)
 
         config = MagicMock()
         config.daemon.port = 9777
@@ -761,6 +765,113 @@ class TestHookTurnStop:
 
         assert calls[0][3]["wait_seconds"] == 0.0
         assert not (tmp_path / ".hint_watch_abc-123").exists()
+
+    def test_stop_posts_last_assistant_message_before_polling(self, monkeypatch):
+        from bible_cc_plugin.scripts.hook import _handle_turn_stop
+
+        posts = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"turn_id": 2, "queued": False}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(
+            client,
+            "post",
+            lambda url, json=None, **kw: posts.append((url, json)) or FakeResponse(),
+        )
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: 0,
+        )
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = True
+        config.capture.mid_session_detection = True
+        config.capture.hint_format = "quote_with_command"
+        args = argparse.Namespace(
+            session_id="abc-123",
+            message="I checked the API contract and found last_assistant_message.",
+        )
+
+        _handle_turn_stop(config, args)
+
+        assert posts[0][0].endswith("/turn/assistant")
+        assert posts[0][1] == {
+            "session_id": "abc-123",
+            "message": "I checked the API contract and found last_assistant_message.",
+        }
+
+    def test_stop_assistant_post_uses_tight_timeout(self, monkeypatch):
+        from bible_cc_plugin.scripts.hook import _post_assistant_turn
+
+        timeouts = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"turn_id": 2, "queued": False}
+
+            def raise_for_status(self):
+                pass
+
+        class FakeClient:
+            def post(self, *args, **kwargs):
+                return FakeResponse()
+
+        def fake_local_client(timeout=5.0):
+            timeouts.append(timeout)
+            return FakeClient()
+
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._local_client", fake_local_client)
+
+        _post_assistant_turn("abc-123", "Done.", "http://127.0.0.1:9777")
+
+        assert timeouts == [0.5]
+
+    def test_stop_writes_watch_when_assistant_detection_queued(self, monkeypatch, tmp_path):
+        from bible_cc_plugin.scripts.hook import _handle_turn_stop
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"turn_id": 8, "queued": True}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: 0,
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda sid: tmp_path / f".hint_watch_{sid}",
+        )
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = True
+        config.capture.mid_session_detection = True
+        config.capture.hint_format = "quote_with_command"
+        args = argparse.Namespace(session_id="abc-123", message="Done.")
+
+        _handle_turn_stop(config, args)
+
+        assert (tmp_path / ".hint_watch_abc-123").exists()
 
     def test_missing_session_id_does_not_poll(self, monkeypatch, caplog):
         import logging
@@ -853,9 +964,53 @@ class TestPrintHints:
         assert "⎿ ⏳" in output
         assert "/bible-cc:review" in output
 
-    def test_one_bad_moment_does_not_block_subsequent(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_print_hints_logs_printed_count(self, monkeypatch, capsys, tmp_path, caplog):
+        """Hint stdout path should be visible in bible-cc logs."""
+        import logging
+
+        from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
+        from bible_cc_plugin.scripts.hook import _print_hints
+
+        session_id = "test-hint-log"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "moments": [
+                        {
+                            "id": 7,
+                            "moment_type": "session_start",
+                            "title": "Start 3a",
+                            "narrative": "Start Phase 3a.",
+                        }
+                    ]
+                }
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        root = logging.getLogger("bible_cc")
+        root.propagate = True
+        caplog.set_level(logging.INFO)
+        printed = _print_hints(session_id, "http://127.0.0.1:9777", "quote_only")
+        root.propagate = False
+
+        assert printed == 1
+        assert "Start 3a" in capsys.readouterr().out
+        assert any("_print_hints: printed" in r.message for r in caplog.records)
+        assert any("cursor=0->7" in r.message for r in caplog.records)
+
+    def test_one_bad_moment_does_not_block_subsequent(self, monkeypatch, capsys, tmp_path):
         """Bad moment (None keys) → skipped, next moment still prints."""
         from bible_cc_plugin.daemon.detector import MomentCandidate  # noqa: F401
         from bible_cc_plugin.scripts.hook import _print_hints
@@ -995,8 +1150,11 @@ class TestPrintHints:
         import logging
 
         client = httpx.Client(trust_env=False)
-        monkeypatch.setattr(client, "get", lambda *a, **kw: (_ for _ in ()).throw(
-            httpx.ConnectError("connection refused")))
+        monkeypatch.setattr(
+            client,
+            "get",
+            lambda *a, **kw: (_ for _ in ()).throw(httpx.ConnectError("connection refused")),
+        )
         monkeypatch.setattr(httpx, "Client", lambda **kw: client)
 
         from bible_cc_plugin.scripts.hook import _print_hints
@@ -1007,10 +1165,7 @@ class TestPrintHints:
         _print_hints("abc-123", "http://127.0.0.1:9777", "quote_with_command")
         root.propagate = False
 
-        assert any(
-            "_print_hints: GET /daemon/moments failed" in r.message
-            for r in caplog.records
-        )
+        assert any("_print_hints: GET /daemon/moments failed" in r.message for r in caplog.records)
 
     def test_non_200_response_logs_and_returns(self, monkeypatch, caplog):
         """HTTP 500 from daemon → logged, no crash."""
@@ -1041,10 +1196,7 @@ class TestPrintHints:
         _print_hints("abc-123", "http://127.0.0.1:9777", "quote_with_command")
         root.propagate = False
 
-        assert any(
-            "_print_hints: GET /daemon/moments failed" in r.message
-            for r in caplog.records
-        )
+        assert any("_print_hints: GET /daemon/moments failed" in r.message for r in caplog.records)
 
 
 class TestStdinJsonParsing:
@@ -1052,10 +1204,12 @@ class TestStdinJsonParsing:
 
     def test_session_start_from_stdin(self, monkeypatch):
         """SessionStart stdin → session_id flows to handler."""
-        stdin_json = json.dumps({
-            "session_id": "abc-123",
-            "hook_event_name": "SessionStart",
-        })
+        stdin_json = json.dumps(
+            {
+                "session_id": "abc-123",
+                "hook_event_name": "SessionStart",
+            }
+        )
         called_with = {}
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -1065,15 +1219,11 @@ class TestStdinJsonParsing:
         def fake_start(config, args):
             called_with["session_id"] = args.session_id
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._handle_session_start", fake_start
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._handle_session_start", fake_start)
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook.load_config", lambda *a, **kw: MagicMock()
         )
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None)
 
         from bible_cc_plugin.scripts.hook import main
 
@@ -1082,11 +1232,13 @@ class TestStdinJsonParsing:
 
     def test_turn_user_from_stdin(self, monkeypatch):
         """UserPromptSubmit stdin → session_id + prompt."""
-        stdin_json = json.dumps({
-            "session_id": "def-456",
-            "prompt": "hello world",
-            "hook_event_name": "UserPromptSubmit",
-        })
+        stdin_json = json.dumps(
+            {
+                "session_id": "def-456",
+                "prompt": "hello world",
+                "hook_event_name": "UserPromptSubmit",
+            }
+        )
         called_with = {}
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -1097,15 +1249,11 @@ class TestStdinJsonParsing:
             called_with["session_id"] = args.session_id
             called_with["message"] = args.message
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._handle_turn_user", fake_handler
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._handle_turn_user", fake_handler)
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook.load_config", lambda *a, **kw: MagicMock()
         )
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None)
 
         from bible_cc_plugin.scripts.hook import main
 
@@ -1115,12 +1263,14 @@ class TestStdinJsonParsing:
 
     def test_turn_tool_from_stdin(self, monkeypatch):
         """PostToolUse stdin → session_id + tool_name + input + output."""
-        stdin_json = json.dumps({
-            "session_id": "ghi-789",
-            "tool_name": "Bash",
-            "tool_input": {"command": "pytest"},
-            "tool_response": "All tests passed.",
-        })
+        stdin_json = json.dumps(
+            {
+                "session_id": "ghi-789",
+                "tool_name": "Bash",
+                "tool_input": {"command": "pytest"},
+                "tool_response": "All tests passed.",
+            }
+        )
         called_with = {}
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -1133,15 +1283,11 @@ class TestStdinJsonParsing:
             called_with["input"] = args.input
             called_with["output"] = args.output
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._handle_turn_tool", fake_handler
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._handle_turn_tool", fake_handler)
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook.load_config", lambda *a, **kw: MagicMock()
         )
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None)
 
         from bible_cc_plugin.scripts.hook import main
 
@@ -1152,6 +1298,37 @@ class TestStdinJsonParsing:
         # tool_input from stdin is serialized to JSON string
         assert called_with.get("input") == '{"command": "pytest"}'
 
+    def test_turn_stop_last_assistant_message_from_stdin(self, monkeypatch):
+        """Stop stdin → session_id + last_assistant_message."""
+        stdin_json = json.dumps(
+            {
+                "session_id": "stop-123",
+                "hook_event_name": "Stop",
+                "last_assistant_message": "I checked the API contract.",
+            }
+        )
+        called_with = {}
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdin.read", lambda: stdin_json)
+        monkeypatch.setattr("sys.argv", ["hook", "turn-stop"])
+
+        def fake_handler(config, args):
+            called_with["session_id"] = args.session_id
+            called_with["message"] = args.message
+
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._handle_turn_stop", fake_handler)
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook.load_config", lambda *a, **kw: MagicMock()
+        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None)
+
+        from bible_cc_plugin.scripts.hook import main
+
+        main()
+        assert called_with.get("session_id") == "stop-123"
+        assert called_with.get("message") == "I checked the API contract."
+
     def test_cli_overrides_stdin(self, monkeypatch):
         """CLI --session-id wins over stdin session_id."""
         stdin_json = json.dumps({"session_id": "from-stdin"})
@@ -1160,22 +1337,16 @@ class TestStdinJsonParsing:
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdin.read", lambda: stdin_json)
-        monkeypatch.setattr(
-            "sys.argv", ["hook", "session-start", "--session-id", "from-cli"]
-        )
+        monkeypatch.setattr("sys.argv", ["hook", "session-start", "--session-id", "from-cli"])
 
         def fake_start(config, args):
             called_with["session_id"] = args.session_id
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._handle_session_start", fake_start
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._handle_session_start", fake_start)
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook.load_config", lambda *a, **kw: MagicMock()
         )
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None)
 
         from bible_cc_plugin.scripts.hook import main
 
@@ -1192,15 +1363,11 @@ class TestStdinJsonParsing:
         def fake_start(config, args):
             called_with["session_id"] = args.session_id
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._handle_session_start", fake_start
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._handle_session_start", fake_start)
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook.load_config", lambda *a, **kw: MagicMock()
         )
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None)
 
         from bible_cc_plugin.scripts.hook import main
 
@@ -1209,10 +1376,12 @@ class TestStdinJsonParsing:
 
     def test_startup_empty_session_id_from_stdin(self, monkeypatch):
         """startup event: stdin has empty session_id → handler sees empty string."""
-        stdin_json = json.dumps({
-            "session_id": "",
-            "hook_event_name": "SessionStart",
-        })
+        stdin_json = json.dumps(
+            {
+                "session_id": "",
+                "hook_event_name": "SessionStart",
+            }
+        )
         called_with = {}
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -1222,15 +1391,11 @@ class TestStdinJsonParsing:
         def fake_start(config, args):
             called_with["session_id"] = args.session_id
 
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._handle_session_start", fake_start
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook._handle_session_start", fake_start)
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook.load_config", lambda *a, **kw: MagicMock()
         )
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.hook.configure_logging", lambda *a, **kw: None)
 
         from bible_cc_plugin.scripts.hook import main
 
@@ -1311,8 +1476,13 @@ class _SequencedClient:
     def get(self, url, **kw):
         class Ok:
             status_code = 200
-            def json(self): return {"moments": []}
-            def raise_for_status(self): pass
+
+            def json(self):
+                return {"moments": []}
+
+            def raise_for_status(self):
+                pass
+
         return Ok()
 
 
@@ -1323,15 +1493,15 @@ class TestHookSelfHealing:
 
     @staticmethod
     def _session_not_found_400():
-        return _HTTPStatusError(400, {
-            "error": {"code": "BAD_REQUEST", "message": "session not found: abc-123"}
-        })
+        return _HTTPStatusError(
+            400, {"error": {"code": "BAD_REQUEST", "message": "session not found: abc-123"}}
+        )
 
     @staticmethod
     def _session_completed_400():
-        return _HTTPStatusError(400, {
-            "error": {"code": "BAD_REQUEST", "message": "session abc-123 is completed"}
-        })
+        return _HTTPStatusError(
+            400, {"error": {"code": "BAD_REQUEST", "message": "session abc-123 is completed"}}
+        )
 
     @staticmethod
     def _fastapi_detail_400():
@@ -1347,11 +1517,13 @@ class TestHookSelfHealing:
         """400 'session not found' → /session/start → retry turn OK."""
         from bible_cc_plugin.scripts.hook import _handle_turn_user
 
-        client = _SequencedClient([
-            self._session_not_found_400(),
-            _make_ok_response(),   # /session/start success
-            _make_ok_response(),   # retry turn success
-        ])
+        client = _SequencedClient(
+            [
+                self._session_not_found_400(),
+                _make_ok_response(),  # /session/start success
+                _make_ok_response(),  # retry turn success
+            ]
+        )
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._local_client",
             lambda timeout=5: client,
@@ -1374,12 +1546,12 @@ class TestHookSelfHealing:
         """recovery /session/start itself fails → turn skipped, no crash."""
         from bible_cc_plugin.scripts.hook import _handle_turn_user
 
-        client = _SequencedClient([
-            self._session_not_found_400(),
-            _HTTPStatusError(500, {
-                "error": {"code": "INTERNAL_ERROR", "message": "db error"}
-            }),
-        ])
+        client = _SequencedClient(
+            [
+                self._session_not_found_400(),
+                _HTTPStatusError(500, {"error": {"code": "INTERNAL_ERROR", "message": "db error"}}),
+            ]
+        )
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._local_client",
             lambda timeout=5: client,
@@ -1398,11 +1570,13 @@ class TestHookSelfHealing:
         """recovery OK but turn retry still 400 → graceful skip."""
         from bible_cc_plugin.scripts.hook import _handle_turn_user
 
-        client = _SequencedClient([
-            self._session_not_found_400(),
-            _make_ok_response(),  # /session/start OK
-            self._session_completed_400(),  # retry fails with different 400
-        ])
+        client = _SequencedClient(
+            [
+                self._session_not_found_400(),
+                _make_ok_response(),  # /session/start OK
+                self._session_completed_400(),  # retry fails with different 400
+            ]
+        )
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._local_client",
             lambda timeout=5: client,
@@ -1459,11 +1633,13 @@ class TestHookSelfHealing:
         """FastAPI default {"detail": "session not found: ..."} recovers."""
         from bible_cc_plugin.scripts.hook import _handle_turn_user
 
-        client = _SequencedClient([
-            self._fastapi_detail_400(),
-            _make_ok_response(),
-            _make_ok_response(),
-        ])
+        client = _SequencedClient(
+            [
+                self._fastapi_detail_400(),
+                _make_ok_response(),
+                _make_ok_response(),
+            ]
+        )
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._local_client",
             lambda timeout=5: client,
@@ -1483,13 +1659,15 @@ class TestHookSelfHealing:
         """Recovery should tolerate daemon/proxy capitalization changes."""
         from bible_cc_plugin.scripts.hook import _handle_turn_user
 
-        client = _SequencedClient([
-            _HTTPStatusError(400, {
-                "error": {"code": "BAD_REQUEST", "message": "Session not found: abc-123"}
-            }),
-            _make_ok_response(),
-            _make_ok_response(),
-        ])
+        client = _SequencedClient(
+            [
+                _HTTPStatusError(
+                    400, {"error": {"code": "BAD_REQUEST", "message": "Session not found: abc-123"}}
+                ),
+                _make_ok_response(),
+                _make_ok_response(),
+            ]
+        )
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._local_client",
             lambda timeout=5: client,
@@ -1511,11 +1689,13 @@ class TestHookSelfHealing:
         """turn-tool 400 'session not found' → recovery → retry OK."""
         from bible_cc_plugin.scripts.hook import _handle_turn_tool
 
-        client = _SequencedClient([
-            self._session_not_found_400(),
-            _make_ok_response(),
-            _make_ok_response(),
-        ])
+        client = _SequencedClient(
+            [
+                self._session_not_found_400(),
+                _make_ok_response(),
+                _make_ok_response(),
+            ]
+        )
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._local_client",
             lambda timeout=5: client,
@@ -1525,8 +1705,10 @@ class TestHookSelfHealing:
         config.daemon.port = 9777
         config.capture.enabled = False
         args = argparse.Namespace(
-            session_id="abc-123", tool="Bash",
-            input=json.dumps({"command": "ls"}), output="file list...",
+            session_id="abc-123",
+            tool="Bash",
+            input=json.dumps({"command": "ls"}),
+            output="file list...",
         )
 
         with patch("builtins.print"):
@@ -1541,12 +1723,12 @@ class TestHookSelfHealing:
         """turn-tool recovery fails → turn skipped, no crash."""
         from bible_cc_plugin.scripts.hook import _handle_turn_tool
 
-        client = _SequencedClient([
-            self._session_not_found_400(),
-            _HTTPStatusError(500, {
-                "error": {"code": "INTERNAL_ERROR", "message": "db error"}
-            }),
-        ])
+        client = _SequencedClient(
+            [
+                self._session_not_found_400(),
+                _HTTPStatusError(500, {"error": {"code": "INTERNAL_ERROR", "message": "db error"}}),
+            ]
+        )
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._local_client",
             lambda timeout=5: client,
@@ -1555,8 +1737,10 @@ class TestHookSelfHealing:
         config = MagicMock()
         config.daemon.port = 9777
         args = argparse.Namespace(
-            session_id="abc-123", tool="Bash",
-            input=json.dumps({"command": "ls"}), output="file list...",
+            session_id="abc-123",
+            tool="Bash",
+            input=json.dumps({"command": "ls"}),
+            output="file list...",
         )
 
         with patch("builtins.print"):
@@ -1577,7 +1761,10 @@ class TestHookSelfHealing:
         config = MagicMock()
         config.daemon.port = 9777
         args = argparse.Namespace(
-            session_id="abc-123", tool="Read", input="{}", output="content",
+            session_id="abc-123",
+            tool="Read",
+            input="{}",
+            output="content",
         )
 
         with patch("builtins.print"):

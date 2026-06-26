@@ -351,9 +351,42 @@ HTTP 状态码：
 
 ---
 
-### 4.2 `POST /turn/tool`
+### 4.2 `POST /turn/assistant`
 
-缓冲 tool 调用信息并触发 Phase 1 检测（异步）。完整输出存入 SQLite。
+缓冲 Claude Code Stop hook 提供的最终 assistant 文本，并触发 Phase 1 检测（异步）。
+
+**Request:**
+```json
+{
+  "session_id": "abc123-def456",
+  "message": "I checked the API contract and found last_assistant_message."
+}
+```
+
+**Response (200):**
+```json
+{
+  "turn_id": 43,
+  "queued": true
+}
+```
+
+**内部流程:**
+1. 同 `/turn/user` steps 1-3，但 role='assistant'。
+2. 写入 `content`，不写入 `tool_name` / `tool_arguments` / `tool_output`。
+3. 检查阈值（`commit_threshold_turns` / `commit_threshold_chars`），异步 queue Phase 1 detection。
+
+**返回时间:** <10ms（仅 SQLite insert + queue）。
+
+**错误:** 同 `/turn/user`。
+
+**调用方**：Stop hook，读取 stdin JSON 的 `last_assistant_message`。
+
+---
+
+### 4.3 `POST /turn/tool`
+
+缓冲 tool 调用信息。完整输出存入 SQLite，默认不触发 Phase 1 detection。
 
 **Request:**
 ```json
@@ -368,15 +401,15 @@ HTTP 状态码：
 **Response (200):**
 ```json
 {
-  "turn_id": 43,
-  "queued": true
+  "turn_id": 44,
+  "queued": false
 }
 ```
 
 **内部流程:**
 1. 同 `/turn/user` steps 1-3，但 role='assistant'，且写入 `tool_name`、`tool_arguments`（JSON string）、`tool_output`。
-2. 无机械截断——完整 `output` 存入 `tool_output` 列。LLM 在 detection worker 中按 `capture.tool_result_max_chars`（默认 250）提取精华摘要。
-3. 阈值检测同 `/turn/user`。
+2. 无机械截断——完整 `output` 存入 `tool_output` 列。
+3. 默认不触发 Phase 1 detection；detection prompt 只保留 `tool_name`，排除 `tool_arguments` / `tool_output`。
 
 **返回时间:** <10ms（仅 SQLite insert）。
 
@@ -619,7 +652,8 @@ DELETE FROM moments WHERE id = ? AND flushed = 0;
 | `POST /session/start` | ~50ms | 否 | 否 |
 | `POST /session/end` | ~20s | **是（LLM）** | BiBLE（flush） |
 | `POST /turn/user` | <10ms | 否（检测异步） | 否 |
-| `POST /turn/tool` | <10ms | 否（检测异步） | 否 |
+| `POST /turn/assistant` | <10ms | 否（检测异步） | 否 |
+| `POST /turn/tool` | <10ms | 否 | 否 |
 | `POST /context/inject` | ~10ms | 否 | 否 |
 | `POST /daemon/consult` | ~5s | 是（三域并行 search） | BiBLE + LLM |
 | `GET /daemon/moments` | ~5ms | 否 | 否 |

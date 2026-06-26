@@ -78,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_turns_session_seq ON turns(session_id, seq);
 ```
 
 - **seq 是 per-session 自增**，非全局自增。daemon 端维护内存计数器（`session_seq: dict[str, int]`），每次 insert 取当前值并 +1。daemon 启动时从 SQLite 恢复所有活跃 session 的计数器：`SELECT session_id, MAX(seq) FROM turns GROUP BY session_id`（见 [`startup.md`](startup.md) Step 5）。
-- `tool_output` 存储完整输出——不在此层截断。LLM 在 detection 阶段提取 `≤tool_result_max_chars` 摘要。
+- `tool_output` 存储完整输出——不在此层截断。默认 detection 不读取该字段。
 - `tool_arguments` 存 JSON string。
 - UNIQUE(session_id, seq) 防止并发 insert 冲突。
 

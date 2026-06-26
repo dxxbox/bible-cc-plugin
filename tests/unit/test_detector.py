@@ -15,7 +15,11 @@ from bible_cc_plugin.config import DetectionConfig
 
 
 def _make_turn(
-    role: str, content: str = "", tool_name: str = "", tool_output: str = ""
+    role: str,
+    content: str = "",
+    tool_name: str = "",
+    tool_output: str = "",
+    session_start_anchor: bool = False,
 ) -> dict:
     """Build a turn dict matching the SQLite turns row shape."""
     return {
@@ -23,6 +27,7 @@ def _make_turn(
         "content": content,
         "tool_name": tool_name,
         "tool_output": tool_output,
+        "session_start_anchor": session_start_anchor,
     }
 
 
@@ -48,15 +53,41 @@ class TestBuildPhase1Prompt:
         assert "Let's use PostgreSQL for auth" in prompt
 
     def test_contains_tool_turn(self):
-        """Prompt includes tool name and output for tool turns."""
+        """Prompt includes tool name, but not arguments or output."""
         from bible_cc_plugin.daemon.detector import build_phase1_prompt
 
         turns = [
-            _make_turn("assistant", tool_name="Bash", tool_output="All tests passed.")
+            _make_turn(
+                "assistant",
+                tool_name="Bash",
+                tool_output="All tests passed.",
+            )
         ]
         prompt = build_phase1_prompt(turns)
         assert "Bash" in prompt
-        assert "All tests passed." in prompt
+        assert "All tests passed." not in prompt
+
+    def test_tool_output_is_ignored(self):
+        """Tool output should not enter the Phase 1 detection prompt."""
+        from bible_cc_plugin.daemon.detector import build_phase1_prompt
+
+        huge_output = "X" * 5000
+        turns = [_make_turn("assistant", tool_name="Read", tool_output=huge_output)]
+        prompt = build_phase1_prompt(turns)
+        assert len(prompt) < 2000
+        assert huge_output not in prompt
+
+    def test_session_start_anchor_marks_current_user_turn(self):
+        """SESSION_START should be constrained to the marked current prompt."""
+        from bible_cc_plugin.daemon.detector import build_phase1_prompt
+
+        turns = [
+            _make_turn("user", content="Earlier scope"),
+            _make_turn("user", content="Current scope", session_start_anchor=True),
+        ]
+        prompt = build_phase1_prompt(turns)
+        assert "[CURRENT USER PROMPT]" in prompt
+        assert "Only report SESSION_START" in prompt
 
     def test_contains_assistant_text_turn(self):
         """Prompt includes assistant text reply content (not tool call).
@@ -68,9 +99,7 @@ class TestBuildPhase1Prompt:
         """
         from bible_cc_plugin.daemon.detector import build_phase1_prompt
 
-        turns = [
-            _make_turn("assistant", content="I recommend using PostgreSQL.")
-        ]
+        turns = [_make_turn("assistant", content="I recommend using PostgreSQL.")]
         prompt = build_phase1_prompt(turns)
         assert "I recommend using PostgreSQL." in prompt
 
@@ -128,9 +157,7 @@ class TestCallDetectionLLM:
         mock_client.messages = MagicMock()
         mock_client.messages.create = MagicMock(side_effect=RuntimeError("API down"))
 
-        with patch(
-            "bible_cc_plugin.daemon.detector._create_client", return_value=mock_client
-        ):
+        with patch("bible_cc_plugin.daemon.detector._create_client", return_value=mock_client):
             from bible_cc_plugin.daemon.detector import call_detection_llm
 
             config = _default_config()
@@ -159,9 +186,7 @@ class TestCallDetectionLLM:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_response
 
-        with patch(
-            "bible_cc_plugin.daemon.detector._create_client", return_value=mock_client
-        ):
+        with patch("bible_cc_plugin.daemon.detector._create_client", return_value=mock_client):
             from bible_cc_plugin.daemon.detector import call_detection_llm
 
             result = call_detection_llm("test", _default_config(), phase=1)
@@ -203,9 +228,7 @@ class TestCallDetectionLLM:
         mock_client = MagicMock()
         mock_client.messages.create.side_effect = [first_response, retry_response]
 
-        with patch(
-            "bible_cc_plugin.daemon.detector._create_client", return_value=mock_client
-        ):
+        with patch("bible_cc_plugin.daemon.detector._create_client", return_value=mock_client):
             from bible_cc_plugin.daemon.detector import call_detection_llm
 
             result = call_detection_llm("phase2 prompt", _default_config(), phase=2)
@@ -242,9 +265,7 @@ class TestCallDetectionLLM:
         mock_client = MagicMock()
         mock_client.messages.create.side_effect = [empty_response, retry_response]
 
-        with patch(
-            "bible_cc_plugin.daemon.detector._create_client", return_value=mock_client
-        ):
+        with patch("bible_cc_plugin.daemon.detector._create_client", return_value=mock_client):
             from bible_cc_plugin.daemon.detector import call_detection_llm
 
             result = call_detection_llm("phase2 prompt", _default_config(), phase=2)
@@ -281,9 +302,7 @@ class TestStubDetectorDeterministic:
 
         config = _default_config()
         for _ in range(3):
-            assert (
-                call_detection_llm("some NO_MOMENT text", config, phase=1) == []
-            )
+            assert call_detection_llm("some NO_MOMENT text", config, phase=1) == []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -302,16 +321,12 @@ class TestDetectorNeverCrashes:
         mock_client.messages = MagicMock()
         mock_client.messages.create = MagicMock(side_effect=RuntimeError("unexpected"))
 
-        with patch(
-            "bible_cc_plugin.daemon.detector._create_client", return_value=mock_client
-        ):
+        with patch("bible_cc_plugin.daemon.detector._create_client", return_value=mock_client):
             from bible_cc_plugin.daemon.detector import detect_moments
 
             config = _default_config()
             turns = [_make_turn("user", content="hello")]
-            result = detect_moments(
-                turns, known_moments=None, phase=1, config=config
-            )
+            result = detect_moments(turns, known_moments=None, phase=1, config=config)
             assert result == []
 
 
@@ -330,9 +345,7 @@ class TestBuildPhase2Prompt:
             build_phase2_prompt,
         )
 
-        known = [
-            MomentCandidate(type="decision", title="Use Postgres", narrative="...")
-        ]
+        known = [MomentCandidate(type="decision", title="Use Postgres", narrative="...")]
         turns = [_make_turn("user", content="started work")]
         prompt = build_phase2_prompt(turns, known)
         assert "ALREADY detected" in prompt or "already detected" in prompt.lower()
@@ -407,25 +420,25 @@ class TestBuildPhase2PromptTruncation:
         assert "turns omitted" in prompt
         assert "Turn 1" in prompt
         assert f"Turn {len(turns)}" in prompt
-        assert len(prompt) <= 10000, (
-            f"prompt={len(prompt)} > budget={10000}"
-        )
+        assert len(prompt) <= 10000, f"prompt={len(prompt)} > budget={10000}"
 
-    def test_single_huge_turn_truncated_per_turn(self):
-        """One turn with 50k chars → per-turn content cap applied."""
+    def test_single_huge_tool_output_ignored(self):
+        """One tool turn with 50k chars → output excluded from Phase 2 prompt."""
         from bible_cc_plugin.daemon.detector import build_phase2_prompt
 
         huge = "a" * 50000
         turns = [
             _make_turn("user", content="intro"),
-            _make_turn("assistant", tool_name="Bash", tool_output=huge),
+            _make_turn(
+                "assistant",
+                tool_name="Bash",
+                tool_output=huge,
+            ),
             _make_turn("user", content="outro"),
         ]
         prompt = build_phase2_prompt(turns, [], max_input_chars=10000)
-        assert huge not in prompt  # full 50k not present
-        assert len(prompt) <= 10000, (
-            f"prompt={len(prompt)} > budget=10000"
-        )
+        assert huge not in prompt
+        assert len(prompt) <= 10000, f"prompt={len(prompt)} > budget=10000"
 
     def test_short_session_no_negative_omitted(self):
         """3-turn session with tiny budget → omitted ≥ 0, no crash."""
@@ -434,9 +447,7 @@ class TestBuildPhase2PromptTruncation:
         turns = [self._build_short_turn(i, 500) for i in range(3)]
         prompt = build_phase2_prompt(turns, [], max_input_chars=500)
         # Must not crash; prompt must respect the configured budget.
-        assert len(prompt) <= 500, (
-            f"prompt={len(prompt)} > budget=500"
-        )
+        assert len(prompt) <= 500, f"prompt={len(prompt)} > budget=500"
         # No negative omission note
         assert "[-" not in prompt, "prompt contains negative omitted count"
 

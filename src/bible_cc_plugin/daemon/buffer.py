@@ -248,9 +248,7 @@ def _require_active_session(conn: sqlite3.Connection, session_id: str) -> None:
         raise ValueError(f"session {session_id} is {row['status']}, expected 'active'")
 
 
-def get_all_session_turns(
-    conn: sqlite3.Connection, session_id: str
-) -> list[dict]:
+def get_all_session_turns(conn: sqlite3.Connection, session_id: str) -> list[dict]:
     """Return ALL turns for *session_id* in chronological order.
 
     Used by Phase 2 retrospective detection.
@@ -271,9 +269,7 @@ def get_all_session_turns(
     return result
 
 
-def get_recent_turns(
-    conn: sqlite3.Connection, session_id: str, limit: int = 3
-) -> list[dict]:
+def get_recent_turns(conn: sqlite3.Connection, session_id: str, limit: int = 3) -> list[dict]:
     """Return the most recent *limit* turns for *session_id* (descending seq).
 
     Used by the Phase 1 detection pipeline to build the LLM prompt.
@@ -388,6 +384,19 @@ def insert_turn_user(conn: sqlite3.Connection, session_id: str, message: str) ->
     return seq
 
 
+def insert_turn_assistant(conn: sqlite3.Connection, session_id: str, message: str) -> int:
+    """Insert a final assistant text turn. Returns the turn seq number."""
+    _require_active_session(conn, session_id)
+    seq = get_next_seq(conn, session_id)
+    conn.execute(
+        "INSERT INTO turns (session_id, seq, role, content) VALUES (?,?,'assistant',?)",
+        (session_id, seq, message),
+    )
+    conn.commit()
+    _logger.debug("turn/assistant %s seq=%d", session_id, seq)
+    return seq
+
+
 def insert_turn_tool(
     conn: sqlite3.Connection,
     session_id: str,
@@ -397,9 +406,8 @@ def insert_turn_tool(
 ) -> int:
     """Insert a tool turn.  Returns the turn seq number.
 
-    *output* is stored **verbatim** — no mechanical truncation.
-    The LLM detector in Phase 2 will extract a summary respecting
-    ``capture.tool_result_max_chars``.
+    *output* is stored **verbatim** — no mechanical truncation. The default
+    detection path excludes tool arguments/output from prompts.
     """
     import json as _json
 
@@ -429,16 +437,21 @@ def increment_turn_count(conn: sqlite3.Connection, session_id: str, chars: int) 
 
 
 def insert_moment(
-    conn: sqlite3.Connection, session_id: str, moment_type: str, title: str,
-    narrative: str, content_hash: str, phase: str = "1",
-    turn_range_start: int | None = None, turn_range_end: int | None = None,
+    conn: sqlite3.Connection,
+    session_id: str,
+    moment_type: str,
+    title: str,
+    narrative: str,
+    content_hash: str,
+    phase: str = "1",
+    turn_range_start: int | None = None,
+    turn_range_end: int | None = None,
 ) -> int | None:
-    """Insert a key moment.  Returns the ``id`` or ``None`` if a moment with
-    the same *content_hash* already exists (dedup — normal operation)."""
+    """Insert a key moment, returning id or None on content-hash dedup."""
     try:
         _insert_moment_row(
             conn,
-            (
+            _moment_values(
                 session_id,
                 moment_type,
                 title,
@@ -450,15 +463,42 @@ def insert_moment(
             ),
         )
         conn.commit()
-        row = conn.execute("SELECT last_insert_rowid()").fetchone()
-        _logger.debug(
-            "moment inserted id=%d type=%s hash=%s", row[0], moment_type, content_hash[:12]
-        )
-        return row[0]
+        return _last_inserted_moment_id(conn, moment_type, content_hash)
     except sqlite3.IntegrityError:
-        # content-hash UNIQUE constraint — dedup, not an error
-        _logger.debug("moment dedup skipped hash=%s", content_hash[:12])
-        return None
+        return _dedup_moment_id(content_hash)
+
+
+def _moment_values(
+    session_id: str,
+    moment_type: str,
+    title: str,
+    narrative: str,
+    content_hash: str,
+    phase: str,
+    turn_range_start: int | None,
+    turn_range_end: int | None,
+) -> tuple:
+    return (
+        session_id,
+        moment_type,
+        title,
+        narrative,
+        content_hash,
+        phase,
+        turn_range_start,
+        turn_range_end,
+    )
+
+
+def _dedup_moment_id(content_hash: str) -> None:
+    _logger.debug("moment dedup skipped hash=%s", content_hash[:12])
+    return None
+
+
+def _last_inserted_moment_id(conn: sqlite3.Connection, moment_type: str, content_hash: str) -> int:
+    row = conn.execute("SELECT last_insert_rowid()").fetchone()
+    _logger.debug("moment inserted id=%d type=%s hash=%s", row[0], moment_type, content_hash[:12])
+    return row[0]
 
 
 def _insert_moment_row(conn: sqlite3.Connection, values: tuple) -> None:
@@ -523,8 +563,7 @@ def update_moment(
     """
     try:
         cur = conn.execute(
-            "UPDATE moments SET title=?, narrative=?, content_hash=? "
-            "WHERE id=? AND flushed=0",
+            "UPDATE moments SET title=?, narrative=?, content_hash=? WHERE id=? AND flushed=0",
             (title, narrative, content_hash, moment_id),
         )
         conn.commit()

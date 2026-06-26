@@ -71,7 +71,7 @@ Daemon 是 bible-cc-plugin 的核心持久进程。它是一个基于 FastAPI + 
 |----|------|------|
 | 生命周期 | `/daemon/start`, `/daemon/stop`, `/daemon/health` | 进程管理 + 健康检查 |
 | Session | `/session/start`, `/session/end` | 会话边界 + crash recovery |
-| Turn | `/turn/user`, `/turn/tool` | 数据缓冲 + Phase 1 检测触发 |
+| Turn | `/turn/user`, `/turn/assistant`, `/turn/tool` | 数据缓冲 + Phase 1 检测触发 |
 | Context | `/context/inject`, `/daemon/consult` | 本地注入 / BiBLE 搜索 |
 | Review | `/daemon/moments`, `/daemon/moments/{id}` | pending moment 管理 |
 

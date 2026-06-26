@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):  # pragma: no cover — tested via integration
     _worker_logger.info("detection worker stopped")
 
 
-app = FastAPI(title="bible-cc-daemon", version="0.22.6", lifespan=lifespan)
+app = FastAPI(title="bible-cc-daemon", version="0.22.8", lifespan=lifespan)
 
 _logger.info("daemon starting on port %s", _config.daemon.port)
 
@@ -157,9 +157,7 @@ async def _detection_worker():
                 task.get("phase", "?"),
             )
         except Exception:
-            _worker_logger.error(
-                "detection worker crashed, restarting...", exc_info=True
-            )
+            _worker_logger.error("detection worker crashed, restarting...", exc_info=True)
             await asyncio.sleep(1)
         finally:
             if task is not None:
@@ -220,6 +218,14 @@ async def _process_detection_task(task: dict):
             return
         phase1_anchor_seq = task.get("anchor_seq") or _phase1_anchor_seq(turns)
         phase1_end_seq = task.get("max_seq")
+        if phase1_anchor_seq is not None:
+            turns = [
+                {
+                    **turn,
+                    "session_start_anchor": turn.get("seq") == phase1_anchor_seq,
+                }
+                for turn in turns
+            ]
     else:
         turns = get_all_session_turns(conn, session_id)
         if not turns:
@@ -258,17 +264,20 @@ async def _process_detection_task(task: dict):
     inserted = 0
     dedup = 0
     updated = 0
+    allowed_types = (
+        ("session_start", "decision", "accomplishment")
+        if phase == 1
+        else ("decision", "accomplishment")
+    )
     for c in candidates:
         # Guard: only key moment types
-        if c.type not in ("session_start", "decision", "accomplishment"):
+        if c.type not in allowed_types:
             _worker_logger.debug("detect: filtered non-key type=%r title=%s", c.type, c.title)
             continue
 
         content_hash = compute_content_hash(session_id, c.title, c.narrative)
         if phase == 1 and c.type == "session_start" and phase1_anchor_seq is not None:
-            existing = get_moment_by_anchor(
-                conn, session_id, c.type, phase1_anchor_seq
-            )
+            existing = get_moment_by_anchor(conn, session_id, c.type, phase1_anchor_seq)
             if existing is not None:
                 if existing["flushed"] == 0:
                     if update_pending_moment_from_detection(
@@ -283,20 +292,20 @@ async def _process_detection_task(task: dict):
                         _worker_logger.info(
                             "detect: phase=%d session=%s type=%s title=%s "
                             "dedup=UPDATED_ANCHOR anchor_seq=%d",
-                            phase, session_id[:8], c.type, c.title, phase1_anchor_seq,
+                            phase,
+                            session_id[:8],
+                            c.type,
+                            c.title,
+                            phase1_anchor_seq,
                         )
                     else:
                         dedup += 1
                         _detection_stats["dedup_hits"] += 1
-                        _worker_logger.debug(
-                            "detect: anchor update skipped — %s", c.title
-                        )
+                        _worker_logger.debug("detect: anchor update skipped — %s", c.title)
                 else:
                     dedup += 1
                     _detection_stats["dedup_hits"] += 1
-                    _worker_logger.debug(
-                        "detect: flushed anchor skipped — %s", c.title
-                    )
+                    _worker_logger.debug("detect: flushed anchor skipped — %s", c.title)
                 continue
 
         mid = insert_moment(
@@ -308,15 +317,9 @@ async def _process_detection_task(task: dict):
             content_hash,
             phase=str(phase),
             turn_range_start=(
-                phase1_anchor_seq
-                if phase == 1 and c.type == "session_start"
-                else None
+                phase1_anchor_seq if phase == 1 and c.type == "session_start" else None
             ),
-            turn_range_end=(
-                phase1_end_seq
-                if phase == 1 and c.type == "session_start"
-                else None
-            ),
+            turn_range_end=(phase1_end_seq if phase == 1 and c.type == "session_start" else None),
         )
         if mid is None:
             dedup += 1
@@ -326,13 +329,20 @@ async def _process_detection_task(task: dict):
             inserted += 1
             _worker_logger.info(
                 "detect: phase=%d session=%s type=%s title=%s dedup=INSERTED",
-                phase, session_id[:8], c.type, c.title,
+                phase,
+                session_id[:8],
+                c.type,
+                c.title,
             )
 
     if inserted or updated or dedup:
         _worker_logger.info(
             "detection complete: session=%s inserted=%d updated=%d dedup=%d latency=%dms",
-            session_id[:8], inserted, updated, dedup, elapsed_ms,
+            session_id[:8],
+            inserted,
+            updated,
+            dedup,
+            elapsed_ms,
         )
 
 
@@ -536,6 +546,11 @@ class _TurnUserRequest(BaseModel):
     message: str
 
 
+class _TurnAssistantRequest(BaseModel):
+    session_id: str
+    message: str
+
+
 class _TurnToolRequest(BaseModel):
     session_id: str
     tool_name: str
@@ -581,7 +596,7 @@ async def session_start(req: _SessionStartRequest):
         "session/start %s is_new=%s recovery=%s",
         req.session_id,
         is_new,
-        recovery["unclosed_sessions_found"] if recovery else 0
+        recovery["unclosed_sessions_found"] if recovery else 0,
     )
 
     return {
@@ -691,10 +706,41 @@ async def turn_tool(req: _TurnToolRequest):
     _logger.debug("turn/tool %s seq=%d tool=%s", req.session_id, turn_id, req.tool_name)
 
     queued = False
-    if _app_config.capture.enabled and _app_config.capture.mid_session_detection and req.output:
-        if check_threshold(req.session_id, turns=1, chars=len(req.output)):
+    return {"turn_id": turn_id, "queued": queued}
+
+
+@app.post("/turn/assistant")
+async def turn_assistant(req: _TurnAssistantRequest):
+    """Buffer final assistant text from Claude Code Stop hook."""
+    conn = _get_db()
+    if conn is None:
+        raise HTTPException(503, "daemon database unavailable")
+
+    from bible_cc_plugin.daemon.buffer import (
+        get_session,
+        increment_turn_count,
+        insert_turn_assistant,
+    )
+
+    row = get_session(conn, req.session_id)
+    if row is None:
+        raise HTTPException(400, f"session not found: {req.session_id}")
+    if row["status"] != "active":
+        raise HTTPException(400, f"session {req.session_id} is {row['status']}")
+
+    turn_id = insert_turn_assistant(conn, req.session_id, req.message)
+    increment_turn_count(conn, req.session_id, len(req.message))
+    _logger.debug("turn/assistant %s seq=%d", req.session_id, turn_id)
+
+    queued = False
+    if _app_config.capture.enabled and _app_config.capture.mid_session_detection and req.message:
+        if check_threshold(req.session_id, turns=1, chars=len(req.message)):
             await _detection_queue.put(
-                {"session_id": req.session_id, "phase": 1, "max_seq": turn_id}
+                {
+                    "session_id": req.session_id,
+                    "phase": 1,
+                    "max_seq": turn_id,
+                }
             )
             queued = True
     return {"turn_id": turn_id, "queued": queued}

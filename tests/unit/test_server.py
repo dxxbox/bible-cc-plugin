@@ -218,9 +218,7 @@ class TestSessionEnd:
 
         client.post("/session/start", json={"session_id": "s2c1-rst"})
         for _ in range(3):
-            client.post(
-                "/turn/user", json={"session_id": "s2c1-rst", "message": "m"}
-            )
+            client.post("/turn/user", json={"session_id": "s2c1-rst", "message": "m"})
         client.post("/session/end", json={"session_id": "s2c1-rst"})
         assert "s2c1-rst" not in server_mod._threshold_state
 
@@ -252,6 +250,41 @@ class TestTurnEndpoints:
         client.post("/session/end", json={"session_id": "sess-1"})
         r = client.post("/turn/user", json={"session_id": "sess-1", "message": "hi"})
         assert r.status_code == 400
+
+    def test_turn_assistant_creates_turn(self, client):
+        client.post("/session/start", json={"session_id": "sess-assistant"})
+        r = client.post(
+            "/turn/assistant",
+            json={
+                "session_id": "sess-assistant",
+                "message": "I checked the API contract and found the hook field.",
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["turn_id"] >= 1
+        assert isinstance(data["queued"], bool)
+
+    def test_turn_assistant_queues_on_threshold(self, client):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        client.post("/session/start", json={"session_id": "s-assistant-threshold"})
+        client.post(
+            "/turn/user",
+            json={"session_id": "s-assistant-threshold", "message": "start"},
+        )
+        for _ in range(6):
+            r = client.post(
+                "/turn/assistant",
+                json={"session_id": "s-assistant-threshold", "message": "progress"},
+            )
+            assert r.json()["queued"] is False
+        r = client.post(
+            "/turn/assistant",
+            json={"session_id": "s-assistant-threshold", "message": "done"},
+        )
+        assert r.json()["queued"] is True
+        server_mod.reset_threshold("s-assistant-threshold")
 
     def test_turn_tool_stores_full_output(self, client):
         client.post("/session/start", json={"session_id": "sess-1"})
@@ -290,6 +323,51 @@ class TestTurnEndpoints:
         )
         assert r2.json()["turn_id"] == 2
 
+    def test_read_tool_does_not_trigger_detection(self, client):
+        """Read output is stored but does not advance Phase 1 detection threshold."""
+        client.post("/session/start", json={"session_id": "s-read-skip"})
+        r = client.post(
+            "/turn/tool",
+            json={
+                "session_id": "s-read-skip",
+                "tool_name": "Read",
+                "arguments": {"path": "file.py"},
+                "output": "X" * 20000,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["queued"] is False
+
+    def test_search_bash_does_not_trigger_detection(self, client):
+        """Search/list Bash commands are low-signal and should not queue detection."""
+        client.post("/session/start", json={"session_id": "s-bash-skip"})
+        r = client.post(
+            "/turn/tool",
+            json={
+                "session_id": "s-bash-skip",
+                "tool_name": "Bash",
+                "arguments": {"command": "grep -rl consult src/"},
+                "output": "X" * 20000,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["queued"] is False
+
+    def test_write_tool_does_not_trigger_detection(self, client):
+        """Tool turns never trigger detection by default, even for write tools."""
+        client.post("/session/start", json={"session_id": "s-write-trigger"})
+        r = client.post(
+            "/turn/tool",
+            json={
+                "session_id": "s-write-trigger",
+                "tool_name": "Write",
+                "arguments": {"file_path": "file.py"},
+                "output": "X" * 20000,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["queued"] is False
+
     def test_turn_endpoints_return_quickly(self, client):
         """Intent: turn endpoints must return < 100ms."""
         import time
@@ -307,14 +385,10 @@ class TestTurnEndpoints:
         client.post("/session/start", json={"session_id": "s2b4"})
         # 7 turns → queued=false
         for _ in range(7):
-            r = client.post(
-                "/turn/user", json={"session_id": "s2b4", "message": "msg"}
-            )
+            r = client.post("/turn/user", json={"session_id": "s2b4", "message": "msg"})
             assert r.json()["queued"] is False
         # 8th turn → threshold → queued=true
-        r = client.post(
-            "/turn/user", json={"session_id": "s2b4", "message": "trigger"}
-        )
+        r = client.post("/turn/user", json={"session_id": "s2b4", "message": "trigger"})
         assert r.json()["queued"] is True
         # Clean up threshold state
         server_mod.reset_threshold("s2b4")
@@ -323,9 +397,7 @@ class TestTurnEndpoints:
         """Empty message → turn written but threshold not incremented."""
         client.post("/session/start", json={"session_id": "s2b4-empty"})
         for _ in range(10):
-            r = client.post(
-                "/turn/user", json={"session_id": "s2b4-empty", "message": ""}
-            )
+            r = client.post("/turn/user", json={"session_id": "s2b4-empty", "message": ""})
             assert r.json()["queued"] is False, "empty message must not trigger"
 
     def test_turn_user_no_queue_when_capture_disabled(self, client):
@@ -335,9 +407,7 @@ class TestTurnEndpoints:
         server_mod._app_config.capture.enabled = False
         client.post("/session/start", json={"session_id": "s2b4-d"})
         for _ in range(10):
-            r = client.post(
-                "/turn/user", json={"session_id": "s2b4-d", "message": "msg"}
-            )
+            r = client.post("/turn/user", json={"session_id": "s2b4-d", "message": "msg"})
             assert r.json()["queued"] is False
 
         server_mod._app_config.capture.enabled = True
@@ -506,6 +576,7 @@ class TestDetectionPipeline:
         server_mod._detection_queue = asyncio.Queue()
 
         from bible_cc_plugin.daemon.buffer import insert_session, insert_turn_user, session_seq
+
         session_seq.clear()
 
         conn = server_mod._get_db()
@@ -519,9 +590,7 @@ class TestDetectionPipeline:
         def mock_detect(turns, known_moments, phase, config):
             return [MomentCandidate(type="decision", title="T", narrative="N")]
 
-        with patch(
-            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
-        ):
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
             task = {"session_id": "s1", "phase": 1}
             await server_mod._process_detection_task(task)
 
@@ -624,6 +693,7 @@ class TestDetectionPipeline:
                     "session_id": "s-user-window",
                     "phase": 1,
                     "max_seq": trigger_seq,
+                    "anchor_seq": trigger_seq,
                     "include_previous_user": True,
                 }
             )
@@ -633,6 +703,8 @@ class TestDetectionPipeline:
             "first-tool",
             "Follow-up prompt",
         ]
+        assert captured[0].get("session_start_anchor") is False
+        assert captured[-1].get("session_start_anchor") is True
 
         conn.close()
         server_mod._db_conn = None
@@ -652,6 +724,7 @@ class TestDetectionPipeline:
         server_mod._detection_queue = asyncio.Queue()
 
         from bible_cc_plugin.daemon.buffer import insert_session, insert_turn_user, session_seq
+
         session_seq.clear()
         conn = server_mod._get_db()
         assert conn is not None
@@ -663,9 +736,7 @@ class TestDetectionPipeline:
         def mock_detect(turns, known_moments, phase, config):
             return [MomentCandidate(type="decision", title="D", narrative="N")]
 
-        with patch(
-            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
-        ):
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
             task = {"session_id": "s1", "phase": 1}
             await server_mod._process_detection_task(task)
             await server_mod._process_detection_task(task)
@@ -680,9 +751,51 @@ class TestDetectionPipeline:
         session_seq.clear()
 
     @pytest.mark.asyncio
-    async def test_session_start_same_anchor_updates_pending_moment(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_phase2_filters_session_start(self, tmp_path, monkeypatch):
+        """Phase 2 must not persist retrospective session_start moments."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._detection_queue = asyncio.Queue()
+
+        from bible_cc_plugin.daemon.buffer import (
+            get_moments_by_session,
+            insert_session,
+            insert_turn_user,
+            session_seq,
+        )
+        from bible_cc_plugin.daemon.detector import MomentCandidate
+
+        session_seq.clear()
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "s-phase2-filter")
+        insert_turn_user(conn, "s-phase2-filter", "start work")
+
+        def mock_detect(turns, known_moments, phase, config):
+            return [
+                MomentCandidate(
+                    type="session_start",
+                    title="Start work",
+                    narrative="The user started work.",
+                )
+            ]
+
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
+            await server_mod._process_detection_task({"session_id": "s-phase2-filter", "phase": 2})
+
+        assert get_moments_by_session(conn, "s-phase2-filter") == []
+
+        conn.close()
+        server_mod._db_conn = None
+        session_seq.clear()
+
+    @pytest.mark.asyncio
+    async def test_session_start_same_anchor_updates_pending_moment(self, tmp_path, monkeypatch):
         """Same user-turn anchor updates the pending session_start moment."""
         db_path = str(tmp_path / "daemon.db")
         monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
@@ -748,9 +861,7 @@ class TestDetectionPipeline:
         session_seq.clear()
 
     @pytest.mark.asyncio
-    async def test_session_start_different_anchor_inserts_new_moment(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_session_start_different_anchor_inserts_new_moment(self, tmp_path, monkeypatch):
         """Different user-turn anchors can each create a session_start moment."""
         db_path = str(tmp_path / "daemon.db")
         monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
@@ -792,9 +903,7 @@ class TestDetectionPipeline:
                 {"session_id": "s-two-anchors", "phase": 1, "max_seq": first_tool_seq}
             )
             insert_turn_user(conn, "s-two-anchors", "Start 3b")
-            second_tool_seq = insert_turn_tool(
-                conn, "s-two-anchors", "Read", {}, "second"
-            )
+            second_tool_seq = insert_turn_tool(conn, "s-two-anchors", "Read", {}, "second")
             await server_mod._process_detection_task(
                 {"session_id": "s-two-anchors", "phase": 1, "max_seq": second_tool_seq}
             )
@@ -873,9 +982,7 @@ class TestDetectionPipeline:
         session_seq.clear()
 
     @pytest.mark.asyncio
-    async def test_session_start_flushed_anchor_is_not_mutated(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_session_start_flushed_anchor_is_not_mutated(self, tmp_path, monkeypatch):
         """Already flushed anchored moments are not changed by later detections."""
         db_path = str(tmp_path / "daemon.db")
         monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
@@ -922,9 +1029,7 @@ class TestDetectionPipeline:
             )
             conn.execute("UPDATE moments SET flushed=1")
             conn.commit()
-            second_tool_seq = insert_turn_tool(
-                conn, "s-flushed-anchor", "Read", {}, "second"
-            )
+            second_tool_seq = insert_turn_tool(conn, "s-flushed-anchor", "Read", {}, "second")
             await server_mod._process_detection_task(
                 {
                     "session_id": "s-flushed-anchor",
@@ -956,6 +1061,7 @@ class TestDetectionPipeline:
         server_mod._detection_queue = asyncio.Queue()
 
         from bible_cc_plugin.daemon.buffer import insert_session, session_seq
+
         session_seq.clear()
         conn = server_mod._get_db()
         insert_session(conn, "s1")
@@ -963,9 +1069,7 @@ class TestDetectionPipeline:
         def mock_detect(turns, known_moments, phase, config):
             return []
 
-        with patch(
-            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
-        ):
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
             await server_mod._process_detection_task({"session_id": "s1", "phase": 1})
 
         from bible_cc_plugin.daemon.buffer import get_moments_by_session
@@ -997,9 +1101,7 @@ class TestDetectionPipeline:
             call_count += 1
             return []
 
-        with patch(
-            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
-        ):
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
             await server_mod._process_detection_task({"session_id": "s1", "phase": 1})
             assert call_count == 0
 
@@ -1019,6 +1121,7 @@ class TestDetectionPipeline:
         server_mod._detection_queue = asyncio.Queue()
 
         from bible_cc_plugin.daemon.buffer import insert_session, session_seq
+
         session_seq.clear()
         conn = server_mod._get_db()
         insert_session(conn, "s1")
@@ -1028,9 +1131,7 @@ class TestDetectionPipeline:
         def mock_detect(turns, known_moments, phase, config):
             return [MomentCandidate(type="bug_fix", title="F", narrative="N")]
 
-        with patch(
-            "bible_cc_plugin.daemon.detector.detect_moments", mock_detect
-        ):
+        with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
             await server_mod._process_detection_task({"session_id": "s1", "phase": 1})
 
         from bible_cc_plugin.daemon.buffer import get_moments_by_session
@@ -1083,9 +1184,7 @@ class TestPhase2Detection:
             ]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
-            await server_mod._process_detection_task(
-                {"session_id": "p2-s1", "phase": 2}
-            )
+            await server_mod._process_detection_task({"session_id": "p2-s1", "phase": 2})
 
         from bible_cc_plugin.daemon.buffer import get_moments_by_session
 
@@ -1128,9 +1227,7 @@ class TestPhase2Detection:
             return [same, same]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
-            await server_mod._process_detection_task(
-                {"session_id": "p2-dedup", "phase": 2}
-            )
+            await server_mod._process_detection_task({"session_id": "p2-dedup", "phase": 2})
 
         from bible_cc_plugin.daemon.buffer import get_moments_by_session
 
@@ -1166,16 +1263,12 @@ class TestMomentsCRUD:
         import bible_cc_plugin.daemon.server as server_mod
 
         conn = server_mod._get_db()
-        insert_moment(
-            conn, "s1", "decision", "Old", "N", compute_content_hash("s1", "Old", "N")
-        )
+        insert_moment(conn, "s1", "decision", "Old", "N", compute_content_hash("s1", "Old", "N"))
         # Find the moment id
         r = client.get("/daemon/moments?session_id=s1")
         mid = r.json()["moments"][0]["id"]
 
-        r = client.put(
-            f"/daemon/moments/{mid}", json={"title": "New Title", "narrative": "N2"}
-        )
+        r = client.put(f"/daemon/moments/{mid}", json={"title": "New Title", "narrative": "N2"})
         assert r.status_code == 200
         assert r.json()["title"] == "New Title"
 
@@ -1186,7 +1279,11 @@ class TestMomentsCRUD:
 
         conn = server_mod._get_db()
         insert_moment(
-            conn, "st1", "decision", "Old", "Original narrative",
+            conn,
+            "st1",
+            "decision",
+            "Old",
+            "Original narrative",
             compute_content_hash("st1", "Old", "Original narrative"),
         )
         r = client.get("/daemon/moments?session_id=st1")
@@ -1204,7 +1301,11 @@ class TestMomentsCRUD:
 
         conn = server_mod._get_db()
         insert_moment(
-            conn, "st2", "decision", "Keep Title", "Old narrative",
+            conn,
+            "st2",
+            "decision",
+            "Keep Title",
+            "Old narrative",
             compute_content_hash("st2", "Keep Title", "Old narrative"),
         )
         r = client.get("/daemon/moments?session_id=st2")
@@ -1231,9 +1332,7 @@ class TestMomentsCRUD:
         assert r.status_code == 200
 
         new_hash = compute_content_hash("st3", "Changed", "Old narrative")
-        row = conn.execute(
-            "SELECT content_hash FROM moments WHERE id=?", (mid,)
-        ).fetchone()
+        row = conn.execute("SELECT content_hash FROM moments WHERE id=?", (mid,)).fetchone()
         assert row["content_hash"] == new_hash
         assert row["content_hash"] != old_hash
 
@@ -1244,11 +1343,19 @@ class TestMomentsCRUD:
 
         conn = server_mod._get_db()
         insert_moment(
-            conn, "st4", "decision", "First", "Narrative",
+            conn,
+            "st4",
+            "decision",
+            "First",
+            "Narrative",
             compute_content_hash("st4", "First", "Narrative"),
         )
         insert_moment(
-            conn, "st4", "decision", "Second", "Other narrative",
+            conn,
+            "st4",
+            "decision",
+            "Second",
+            "Other narrative",
             compute_content_hash("st4", "Second", "Other narrative"),
         )
 
@@ -1268,9 +1375,7 @@ class TestMomentsCRUD:
         import bible_cc_plugin.daemon.server as server_mod
 
         conn = server_mod._get_db()
-        insert_moment(
-            conn, "st5", "decision", "T", "N", compute_content_hash("st5", "T", "N")
-        )
+        insert_moment(conn, "st5", "decision", "T", "N", compute_content_hash("st5", "T", "N"))
         r = client.get("/daemon/moments?session_id=st5")
         mid = r.json()["moments"][0]["id"]
 
@@ -1286,9 +1391,7 @@ class TestMomentsCRUD:
         import bible_cc_plugin.daemon.server as server_mod
 
         conn = server_mod._get_db()
-        insert_moment(
-            conn, "s2", "decision", "T", "N", compute_content_hash("s2", "T", "N")
-        )
+        insert_moment(conn, "s2", "decision", "T", "N", compute_content_hash("s2", "T", "N"))
         r = client.get("/daemon/moments?session_id=s2")
         mid = r.json()["moments"][0]["id"]
 
@@ -1307,9 +1410,7 @@ class TestMomentsCRUD:
         import bible_cc_plugin.daemon.server as server_mod
 
         conn = server_mod._get_db()
-        mid = insert_moment(
-            conn, "s3", "decision", "T", "N", compute_content_hash("s3", "T", "N")
-        )
+        mid = insert_moment(conn, "s3", "decision", "T", "N", compute_content_hash("s3", "T", "N"))
         # Mark as flushed
         conn.execute("UPDATE moments SET flushed=1 WHERE id=?", (mid,))
         conn.commit()

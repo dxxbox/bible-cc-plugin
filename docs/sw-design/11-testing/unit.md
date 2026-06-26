@@ -91,10 +91,10 @@ Files: `src/bible_cc_plugin/daemon/detector.py`
 Sunny tests:
 
 - Phase 1 prompt contains only the configured recent window plus session context.
+- Phase 1/2 prompts exclude tool arguments/output by default and keep only tool names.
 - Phase 1 recognizes allowed moment types: `session_start`, `decision`, `accomplishment`.
 - Phase 2 prompt contains all turns and the already-detected moments list.
 - Phase 2 parser accepts an overall assessment plus new moments.
-- Tool output summary is produced by the detector path and respects `tool_result_max_chars`.
 - `hint_format` renders all supported formats: `quote_with_command`, `quote_only`, `command_only`, `narrative`.
 
 Rainy tests:
@@ -211,7 +211,7 @@ Rainy tests:
 | Local-only injection | injector tests fail if BiBLE client is invoked |
 | `.mcp.json` mismatch | MCP command is `uv run python -m bible_cc_plugin.mcp.server` |
 | Hook timeout semantics | hook config tests assert 3s turn hooks and 60s SessionStart |
-| Full tool output | buffer stores full output; detector summarizes later |
+| Full tool output | buffer stores full output; default detector excludes arguments/output |
 | Review endpoints | moment list/edit/delete rules tested |
 | Port conflict | startup error maps to hint payload |
 

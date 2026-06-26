@@ -68,12 +68,17 @@ POST /turn/user
   → Request:  {session_id: string, message: string}
   → Response: {turn_id: int, queued: bool} — returns immediately, detection runs async.
 
+POST /turn/assistant
+  → Buffers final assistant text from Stop hook last_assistant_message.
+  → Request:  {session_id: string, message: string}
+  → Response: {turn_id: int, queued: bool} — returns immediately, detection runs async.
+
 POST /turn/tool
-  → Buffers a tool invocation (name, arguments, full output). Queues Phase 1 detection task.
+  → Buffers a tool invocation (name, arguments, full output). Does not queue Phase 1 by default.
   → Daemon stores FULL tool output in turns table (no mechanical truncation).
-  → LLM extracts ≤tool_result_max_chars精华摘要 as part of detection.
+  → Detection prompts include only tool_name; arguments/output are excluded by default.
   → Request:  {session_id: string, tool_name: string, arguments: object, output: string}
-  → Response: {turn_id: int, queued: bool} — returns immediately.
+  → Response: {turn_id: int, queued: false} — returns immediately.
 ```
 
 ### 1.4 Context 端点

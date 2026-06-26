@@ -1,6 +1,6 @@
 # 05-capture/hook-flow.md — Hook → Buffer 数据流（L3）
 
-> `/turn/user` 和 `/turn/tool` 的数据接收、存储、阈值检测触发逻辑。
+> `/turn/user`、`/turn/assistant` 和 `/turn/tool` 的数据接收、存储、阈值检测触发逻辑。
 
 ---
 
@@ -62,9 +62,36 @@ sessions 表中的 `turn_count` / `buffered_chars` 是全生命周期计数器�
 
 ---
 
-## 2. `/turn/tool` — 工具调用
+## 2. `/turn/assistant` — Assistant 最终文本
 
 ### 2.1 请求
+
+```json
+{
+  "session_id": "abc-123",
+  "message": "I checked the API contract and found last_assistant_message."
+}
+```
+
+### 2.2 处理
+
+```
+1. 验证 session_id
+2. INSERT INTO turns (session_id, seq, role, content)
+   → role = "assistant"
+3. 更新 sessions 表: turn_count += 1, buffered_chars += LEN(message)
+4. 检查阈值: if turn_count >= commit_threshold_turns OR buffered_chars >= commit_threshold_chars
+   → queue Phase 1 detection task
+5. 返回 {turn_id, queued: true/false}（立即返回）
+```
+
+来源：Claude Code `Stop` hook stdin 的 `last_assistant_message` 字段。该字段是纯 assistant text，不包含 UI 装饰字符。
+
+---
+
+## 3. `/turn/tool` — 工具调用
+
+### 3.1 请求
 
 ```json
 {
@@ -75,7 +102,7 @@ sessions 表中的 `turn_count` / `buffered_chars` 是全生命周期计数器�
 }
 ```
 
-### 2.2 处理
+### 3.2 处理
 
 ```
 1. 验证 session_id
@@ -83,23 +110,23 @@ sessions 表中的 `turn_count` / `buffered_chars` 是全生命周期计数器�
    → role = "assistant"
    → 完整 tool output 存入 turns 表
 3. 更新 sessions 表: turn_count += 1, buffered_chars += LEN(output)
-4. 检查阈值（同 /turn/user）
-5. 返回 {turn_id, queued: true/false}（立即返回）
+4. 不触发 Phase 1 detection；`queued` 默认 false
+5. 返回 {turn_id, queued: false}（立即返回）
 ```
 
-### 2.3 Tool Output 摘要
+### 3.3 Tool Output 与 Detection
 
 ```
 完整 output → turns 表存储
-LLM 检测时 → 从完整 output 提取 ≤tool_result_max_chars (250) 精华
-精华摘要 → 存入 moment
+Phase 1/2 detection prompt → 默认排除 arguments/output，只保留 tool_name
+未来配置白名单 → 可选择允许特定工具 output 进入 detection
 ```
 
-**不机械截断。** 完整 output 保留供 Phase 2 回顾检测。
+**不机械截断。** 完整 output 保留供 review、诊断和未来可配置 detection 策略使用；默认 detection 不读取 tool output。
 
 ---
 
-## 3. 边界条件
+## 4. 边界条件
 
 | 场景 | 行为 |
 |------|------|
@@ -110,8 +137,8 @@ LLM 检测时 → 从完整 output 提取 ≤tool_result_max_chars (250) 精华
 
 ---
 
-## 4. 参考文档
+## 5. 参考文档
 
-- [`../../02-interfaces.md`](../02-interfaces.md) — `/turn/user`, `/turn/tool` 完整 spec
+- [`../../02-interfaces.md`](../02-interfaces.md) — `/turn/user`, `/turn/assistant`, `/turn/tool` 完整 spec
 - [`../../03-daemon.md`](../03-daemon.md) — SQLite turns 表、阈值
 - [`detection.md`](detection.md) — Phase 1 检测详细设计

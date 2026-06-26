@@ -130,11 +130,12 @@ Stop:            uv run python -m bible_cc_plugin.scripts.hook session-end ...
 
 Two-phase detection with async mid-session hints and session-end retrospective.
 
-### Phase 1: Mid-Session (async, after each turn)
+### Phase 1: Mid-Session (async, after user/assistant text turns)
 
 ```
-UserPromptSubmit → daemon queues detection (non-blocking, returns immediately)
-PostToolUse      → daemon queues detection (non-blocking, returns immediately)
+UserPromptSubmit → daemon may queue detection (non-blocking, returns immediately)
+Stop             → daemon buffers last_assistant_message and may queue detection
+PostToolUse      → daemon stores tool output, does not queue detection by default
 
 Daemon worker picks up detection task:
   → builds prompt from last 2-3 turns
@@ -203,10 +204,10 @@ The `moments` table has `content_hash TEXT UNIQUE NOT NULL`. Before inserting an
 }
 ```
 
-- `mid_session_detection` (default `true`): run async detection after each turn
+- `mid_session_detection` (default `true`): run async detection from user turns and Stop hook assistant final text; tool turns are stored but do not trigger detection by default
 - `mid_session_upload` (default `false`): if `true`, upload each moment to BiBLE immediately when detected. If `false`, moments accumulate as `flushed=0` and are uploaded as a group on session end
 - `hint_format`: how the CLI hint is presented when a key moment is detected mid-session
-- `tool_result_max_chars` (default `250`): max chars of tool output精华 extracted by moment detector LLM. Hook sends full tool output to daemon (no mechanical truncation); the LLM extracts the most relevant ≤N chars as part of its moment detection run.
+- `tool_result_max_chars` (default `250`): reserved for future configurable tool-output detection. Current default detection excludes tool arguments/output from prompts while still storing full tool output verbatim for review and diagnostics.
 - `inject_fallback` (default `empty`): behavior when local buffer is empty during context injection. `empty` — return an empty `<relevant-memories>` block. `skip` — return nothing, continue silently.
 
 ## Review Command (`/bible-cc:review`)

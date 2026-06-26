@@ -192,8 +192,8 @@ Rainy paths:
 
 Assertions:
 
-- `/turn/user` and `/turn/tool` return before detector work completes.
-- Full tool output is persisted before detector summary.
+- `/turn/user`, `/turn/assistant`, and `/turn/tool` return before detector work completes.
+- Full tool output is persisted while default detector prompts exclude tool arguments/output.
 - Hook timeout remains compatible with non-blocking behavior.
 
 ### Scenario 5: Review, Edit, Discard, And Push Pending Moments

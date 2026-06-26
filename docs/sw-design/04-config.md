@@ -97,11 +97,11 @@ Env override: `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`
 | `mid_session_detection` | bool | `true` | 是否启用 Phase 1 mid-session 检测 |
 | `mid_session_upload` | bool | `false` | Phase 1 检测到的 moment 是否立即上传 BiBLE |
 | `hint_format` | string | `"quote_with_command"` | moment hint 的展示格式：`"quote_with_command"` / `"quote_only"` / `"command_only"` / `"narrative"` |
-| `tool_result_max_chars` | int | `250` | LLM 提取的 tool output 精华摘要上限 |
+| `tool_result_max_chars` | int | `250` | 保留给未来可配置 tool output 检测的摘要上限；默认策略不使用 |
 
 约束：
 - 阈值触发策略：以 `commit_threshold_turns` 和 `commit_threshold_chars` 中**先到达者**为准触发检测。
-- `tool_result_max_chars` 是 LLM 提取时的上限，不是机械截断。完整 tool output 永远存储在 turns 表中。
+- 默认 detection 不读取 tool arguments/output；完整 tool output 永远存储在 turns 表中，供 review、诊断和未来配置使用。
 
 ### 3.6 `detection` — Moment Detection LLM
 

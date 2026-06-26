@@ -142,7 +142,7 @@ def validate_inject_fallback(cls, v: str) -> str:
 | `mid_session_detection` | `bool` | `True` | — | — | `False` 时只在 session end 做 Phase 2。 |
 | `mid_session_upload` | `bool` | `False` | — | — | `True` 时 Phase 1 moment 立即 flush。 |
 | `hint_format` | `str` | `"quote_with_command"` | `"quote_with_command"` \| `"quote_only"` \| `"command_only"` \| `"narrative"` | — | 非法值回退到 `"command_only"`。 |
-| `tool_result_max_chars` | `int` | `250` | 0–4000 | — | 0 表示不提取摘要。 |
+| `tool_result_max_chars` | `int` | `250` | 0–4000 | — | 保留给未来可配置 tool output 检测；默认策略不使用。 |
 
 ```python
 HINT_FORMATS = {"quote_with_command", "quote_only", "command_only", "narrative"}

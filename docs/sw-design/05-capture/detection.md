@@ -8,7 +8,9 @@
 
 ### 1.1 触发条件
 
-阈值到达（≥ `commit_threshold_turns` 或 ≥ `commit_threshold_chars`，先到达者为准），且 `mid_session_detection=true`。
+用户消息阈值到达（≥ `commit_threshold_turns` 或 ≥ `commit_threshold_chars`，先到达者为准），且 `mid_session_detection=true`。
+
+`turn-tool.output` 和 `turn-tool.arguments` 默认不触发 Phase 1 detection，也不进入 detection prompt。工具输出仍完整存储，供人工 review、未来配置白名单或其他非默认流程使用。
 
 ### 1.2 流程
 
@@ -18,7 +20,6 @@
 3. LLM call（model from detection config, max_tokens=512, temperature=0.0）
 4. 解析结构化输出
 5. 如果 result != "none":
-     → 从完整 tool output 提取 ≤tool_result_max_chars 摘要 → tool_summary 字段
      → content-hash = SHA-256(session_id + title + narrative)
      → INSERT OR IGNORE INTO moments
      → 如果 mid_session_upload: flush (flushed=1)
@@ -26,23 +27,18 @@
 6. 重置阈值计数器
 ```
 
-### 1.2.1 数据完整性：Assistant Response 缺失
+### 1.2.1 数据完整性：Assistant Response
 
 当前 hook 覆盖范围：
 
 | 数据 | Hook | 状态 |
 |------|------|------|
 | 用户消息 | UserPromptSubmit → `prompt` 字段 | ✅ 已捕获 |
-| 工具调用 + 输出 | PostToolUse → `tool_name` + `tool_output` | ✅ 已捕获 |
-| Assistant 文本回复 | **无 hook 捕获** | ❌ 缺失 |
+| 工具调用 + 输出 | PostToolUse → `tool_name` + `tool_arguments` + `tool_output` | ✅ 已捕获；arguments/output 默认不进 detection |
+| Assistant 文本回复 | Stop → `last_assistant_message` 字段 | ✅ 已捕获 |
 
-Stop hook（`turn-stop`）当前为 no-op——仅触发时机标记，不携带 response 内容。
-Phase 2b 实现 `_process_detection_task` 时，如果把 assistant 回复文本纳入 prompt 构建，
-需要额外机制获取该文本（Stop 事件的 stdin JSON 中是否有 `response` 字段待验证，
-或需要额外的 hook 事件）。如果不可用，detection prompt 只能基于 user 消息 + tool 输出，
-缺少 assistant 的推理/决策过程上下文。
-
-> **记录于**: 2026-06-15，Phase 2a 真实环境测试期间。
+Claude Code `Stop` hook stdin 提供 `last_assistant_message`，由 hook bridge 写入 `/turn/assistant`。
+Detection prompt 因此默认基于 user 消息 + assistant 最终文本 + tool name（不含 tool arguments/output）。
 
 ### 1.3 异步模型
 
@@ -61,7 +57,7 @@ daemon 内部内存队列（`asyncio.Queue`），非 Celery。
 
 `SESSION_START` 使用 user-turn anchor 去重：Phase 1 窗口中第一个 user turn
 的 `seq` 写入 `moments.turn_range_start`，代表发起工作意图的用户输入。
-如果后续工具输出再次触发检测，并且 LLM 仍识别出同一 anchor 的
+如果后续 user-triggered detection 仍识别出同一 anchor 的
 `SESSION_START`，则更新已有 pending moment 的 `title` / `narrative` /
 `turn_range_end`，不插入新 moment。若该 anchored moment 已经 flushed，
 后续检测跳过，避免修改已发送到 BiBLE 的内容。
@@ -77,7 +73,7 @@ daemon 内部内存队列（`asyncio.Queue`），非 Celery。
 ### 2.2 流程
 
 ```
-1. 取 session 的所有 turns
+1. 取 session 的所有 turns（tool arguments/output 默认排除，只保留 tool name）
 2. 取 Phase 1 已检测 moments
 3. 构建 prompt（§3.2）——含已知 moments 列表
 4. LLM call（max_tokens=1024, temperature=0.0）
