@@ -81,7 +81,8 @@ daemon 内部内存队列（`asyncio.Queue`），非 Celery。
 2. 取 Phase 1 已检测 moments
 3. 构建 prompt（§3.2）——含已知 moments 列表
 4. LLM call（max_tokens=1024, temperature=0.0）
-5. 解析输出：overall assessment + NEW key moments
+5. 解析输出：compact assessment + NEW key moments
+   - 若输出不是合法 JSON，使用更严格的 compact JSON prompt 重试一次
 6. 对 new moment: content-hash dedup → INSERT OR IGNORE
 7. 打包所有 unflushed moments + retrospective → POST BiBLE Atlas
 ```
@@ -146,9 +147,14 @@ Do NOT flag:
 - Exploratory discoveries (unless user explicitly confirms importance)
 
 Now identify:
-1. Overall session assessment — what was accomplished?
-2. Any ADDITIONAL key moments missed by mid-session detection
-3. What should be remembered for future sessions?
+1. Any ADDITIONAL key moments missed by mid-session detection
+2. A compact assessment of what was accomplished
+
+Output constraints:
+- Return at most 3 moments.
+- Use one short sentence per narrative (<=160 chars).
+- Keep assessment <=200 chars.
+- Output only valid compact JSON.
 ```
 
 ---

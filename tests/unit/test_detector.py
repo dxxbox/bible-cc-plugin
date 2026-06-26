@@ -170,6 +170,88 @@ class TestCallDetectionLLM:
         assert result[0].type == "decision"
         assert result[0].title == "Use V4 contract"
 
+    def test_phase2_invalid_json_retries_with_compact_prompt(self, monkeypatch):
+        """Truncated Phase 2 JSON → one compact retry → parsed candidates."""
+        monkeypatch.delenv("DETECTOR_TEST_MODE", raising=False)
+
+        class TextBlock:
+            def __init__(self, text):
+                self.text = text
+
+        first_response = SimpleNamespace(
+            content=[
+                TextBlock(
+                    '{"result":"moment","moments":[{"type":"accomplishment",'
+                    '"title":"Long summary","narrative":"truncated'
+                )
+            ],
+            stop_reason="max_tokens",
+            usage=SimpleNamespace(input_tokens=100, output_tokens=1024),
+        )
+        retry_response = SimpleNamespace(
+            content=[
+                TextBlock(
+                    '{"result":"moment","moments":[{"type":"ACCOMPLISHMENT",'
+                    '"title":"Plan created","narrative":"Created the Phase 3a plan."}],'
+                    '"assessment":"Phase 3a planning completed."}'
+                )
+            ],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=100, output_tokens=80),
+        )
+
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = [first_response, retry_response]
+
+        with patch(
+            "bible_cc_plugin.daemon.detector._create_client", return_value=mock_client
+        ):
+            from bible_cc_plugin.daemon.detector import call_detection_llm
+
+            result = call_detection_llm("phase2 prompt", _default_config(), phase=2)
+
+        assert len(result) == 1
+        assert result[0].type == "accomplishment"
+        assert result[0].title == "Plan created"
+        assert mock_client.messages.create.call_count == 2
+        retry_prompt = mock_client.messages.create.call_args_list[1].kwargs["messages"][0][
+            "content"
+        ]
+        assert retry_prompt.startswith("RETRY:")
+        assert "max 2 moments" in retry_prompt
+
+    def test_phase2_empty_text_retries_once(self, monkeypatch):
+        """Empty Phase 2 text is non-JSON and gets one compact retry."""
+        monkeypatch.delenv("DETECTOR_TEST_MODE", raising=False)
+
+        class TextBlock:
+            def __init__(self, text):
+                self.text = text
+
+        empty_response = SimpleNamespace(
+            content=[TextBlock("")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=100, output_tokens=0),
+        )
+        retry_response = SimpleNamespace(
+            content=[TextBlock('{"result":"none"}')],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=100, output_tokens=10),
+        )
+
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = [empty_response, retry_response]
+
+        with patch(
+            "bible_cc_plugin.daemon.detector._create_client", return_value=mock_client
+        ):
+            from bible_cc_plugin.daemon.detector import call_detection_llm
+
+            result = call_detection_llm("phase2 prompt", _default_config(), phase=2)
+
+        assert result == []
+        assert mock_client.messages.create.call_count == 2
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -267,6 +349,28 @@ class TestBuildPhase2Prompt:
         turns = [_make_turn("user", content="x")]
         prompt = build_phase2_prompt(turns, known)
         assert "Do NOT re-report" in prompt or "do not re-report" in prompt.lower()
+
+    def test_contains_compact_output_constraints(self):
+        """Phase 2 prompt asks for compact JSON to avoid truncation."""
+        from bible_cc_plugin.daemon.detector import build_phase2_prompt
+
+        turns = [_make_turn("user", content="x")]
+        prompt = build_phase2_prompt(turns, known_moments=[])
+        assert "Return at most 3 moments" in prompt
+        assert "Output only valid compact JSON" in prompt
+
+    def test_compact_retry_prompt_respects_large_prompt_budget(self):
+        """Retry instructions should not exceed the already budgeted prompt size."""
+        from bible_cc_plugin.daemon.detector import _build_phase2_compact_retry_prompt
+
+        original_prompt = "Full session transcript:\n" + "x" * 32000
+        retry_prompt = _build_phase2_compact_retry_prompt(
+            original_prompt, max_chars=len(original_prompt)
+        )
+
+        assert len(retry_prompt) <= len(original_prompt)
+        assert retry_prompt.startswith("RETRY:")
+        assert "retry prompt truncated" in retry_prompt
 
     def test_excludes_session_start(self):
         """Phase 2 prompt must NOT include SESSION_START type."""

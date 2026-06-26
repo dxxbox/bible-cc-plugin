@@ -47,6 +47,12 @@ class MomentCandidate:
     tool_summary: str = ""
 
 
+@dataclass
+class _ParseResult:
+    candidates: list[MomentCandidate]
+    invalid_json: bool = False
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Internal: Anthropic client
 # ══════════════════════════════════════════════════════════════════════════════
@@ -154,6 +160,12 @@ Output a single JSON object:
   "assessment": "overall summary"
 }
 
+Keep output compact:
+- At most 3 moments.
+- title <= 12 words.
+- narrative: one sentence, <= 160 characters.
+- assessment <= 200 characters.
+
 If no new key moment occurred, output: {"result": "none"}
 Do NOT include markdown fences or extra text. Output ONLY the JSON object."""
 
@@ -205,9 +217,14 @@ def build_phase2_prompt(
     footer_lines = [
         "",
         "Now identify:",
-        "1. Overall session assessment — what was accomplished?",
-        "2. Any ADDITIONAL key moments missed by mid-session detection",
-        "3. What should be remembered for future sessions?",
+        "1. Any ADDITIONAL key moments missed by mid-session detection",
+        "2. A compact assessment of what was accomplished",
+        "",
+        "Output constraints:",
+        "- Return at most 3 moments.",
+        "- Use one short sentence per narrative (<=160 chars).",
+        "- Keep assessment <=200 chars.",
+        "- Output only valid compact JSON.",
     ]
     fixed_overhead = len("\n".join(preamble_lines)) + len("\n".join(footer_lines)) + 2
 
@@ -235,7 +252,8 @@ def build_phase2_prompt(
 
     # ── Build turn lines with budget awareness ──────────────────────────
     turn_lines: list[str] = ["Full session transcript:"]
-    budget = max_input_chars - fixed_overhead - len(turn_lines[0])
+    separator_margin = min(1000, max_input_chars // 10)
+    budget = max_input_chars - fixed_overhead - len(turn_lines[0]) - separator_margin
 
     def _format_turn(i: int, t: dict, content_max: int | None = None) -> str:
         """Format a single turn.  If content_max is given, per-turn content is
@@ -389,17 +407,10 @@ def call_detection_llm(
         return []
 
     max_tokens = config.max_tokens if phase == 1 else config.max_tokens * 2
-    start = time.monotonic()
 
     try:
         client = _create_client()
-        response = client.messages.create(
-            model=config.model,
-            max_tokens=max_tokens,
-            temperature=config.temperature,
-            system=_PHASE1_SYSTEM_PROMPT if phase == 1 else _PHASE2_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        text = _call_detection_api(client, prompt, config, phase, max_tokens)
     except Exception as exc:
         _logger.warning(
             "detection LLM call failed: model=%s phase=%d error=%s",
@@ -409,10 +420,61 @@ def call_detection_llm(
         )
         return []
 
+    # Parse structured JSON output (detection.md §4)
+    parsed = _parse_detection_response_result(text)
+    if phase == 2 and parsed.invalid_json:
+        try:
+            _logger.info("phase2 detection JSON invalid — retrying with compact prompt")
+            text = _call_detection_api(
+                client,
+                _build_phase2_compact_retry_prompt(prompt, max_chars=len(prompt)),
+                config,
+                phase,
+                max_tokens,
+                retry=True,
+            )
+            parsed = _parse_detection_response_result(text)
+        except Exception as exc:
+            _logger.warning(
+                "detection LLM retry failed: model=%s phase=%d error=%s",
+                config.model,
+                phase,
+                exc,
+            )
+            return []
+
+    if not parsed.candidates:
+        _logger.debug("detection result: none (no key moments found)")
+    else:
+        _logger.info(
+            "detection result: %d moment(s) — %s",
+            len(parsed.candidates),
+            ", ".join(c.title for c in parsed.candidates),
+        )
+
+    return parsed.candidates
+
+
+def _call_detection_api(
+    client,
+    prompt: str,
+    config: DetectionConfig,
+    phase: int,
+    max_tokens: int,
+    retry: bool = False,
+) -> str:
+    """Call the LLM once and return extracted text from response blocks."""
+    start = time.monotonic()
+    response = client.messages.create(
+        model=config.model,
+        max_tokens=max_tokens,
+        temperature=config.temperature,
+        system=_PHASE1_SYSTEM_PROMPT if phase == 1 else _PHASE2_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
-    # Extract text from all response blocks. Some models emit ThinkingBlock
-    # before TextBlock; looking only at content[0] silently drops valid JSON.
+    # Some models emit ThinkingBlock before TextBlock; collect all text blocks.
     text_parts: list[str] = []
     block_types: list[str] = []
     for block in response.content or []:
@@ -432,29 +494,43 @@ def call_detection_llm(
     usage = getattr(response, "usage", None)
     input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
     output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
-
+    label = " retry" if retry else ""
     _logger.info(
-        "detection LLM: model=%s phase=%d latency=%dms "
+        "detection LLM%s: model=%s phase=%d latency=%dms "
         "input_tokens=%d output_tokens=%d",
+        label,
         config.model,
         phase,
         elapsed_ms,
         input_tokens,
         output_tokens,
     )
+    return text
 
-    # Parse structured JSON output (detection.md §4)
-    candidates = _parse_detection_response(text)
-    if not candidates:
-        _logger.debug("detection result: none (no key moments found)")
-    else:
-        _logger.info(
-            "detection result: %d moment(s) — %s",
-            len(candidates),
-            ", ".join(c.title for c in candidates),
-        )
 
-    return candidates
+def _build_phase2_compact_retry_prompt(prompt: str, max_chars: int | None = None) -> str:
+    """Prepend stricter instructions after Phase 2 returned invalid JSON."""
+    prefix = "\n".join(
+        [
+            "RETRY: Your previous response was invalid or truncated JSON.",
+            "Return ONLY one minified JSON object.",
+            "Use this exact shape:",
+            '{"result":"moment","moments":[{"type":"decision","title":"...",'
+            '"narrative":"..."}],"assessment":"..."}',
+            "Hard limits: max 2 moments, title <= 8 words, narrative <= 100 chars, "
+            "assessment <= 120 chars.",
+            "If uncertain, return {\"result\":\"none\"}.",
+            "",
+        ]
+    )
+    if max_chars is None or len(prefix) + len(prompt) <= max_chars:
+        return prefix + prompt
+    if max_chars < 1000:
+        return prefix + prompt
+
+    marker = "\n[...retry prompt truncated to fit budget...]\n"
+    remaining = max_chars - len(prefix) - len(marker)
+    return prefix + prompt[:remaining].rstrip() + marker
 
 
 def detect_moments(
@@ -499,6 +575,10 @@ _VALID_PHASE1_TYPES = {"session_start", "decision", "accomplishment"}
 
 
 def _parse_detection_response(text: str) -> list[MomentCandidate]:
+    return _parse_detection_response_result(text).candidates
+
+
+def _parse_detection_response_result(text: str) -> _ParseResult:
     """Parse the LLM's structured JSON response into MomentCandidate list.
 
     Handles:
@@ -510,7 +590,7 @@ def _parse_detection_response(text: str) -> list[MomentCandidate]:
     """
     if not text:
         _logger.warning("detection response empty")
-        return []
+        return _ParseResult([], invalid_json=True)
 
     # Strip markdown fences if present
     text = text.strip()
@@ -529,27 +609,27 @@ def _parse_detection_response(text: str) -> list[MomentCandidate]:
             "detection response not valid JSON: %.200s",
             text.replace("\n", "\\n"),
         )
-        return []
+        return _ParseResult([], invalid_json=True)
 
     if not isinstance(data, dict):
         _logger.warning("detection response not a JSON object: %s", type(data).__name__)
-        return []
+        return _ParseResult([])
 
     result = data.get("result", "")
     if result == "none":
-        return []
+        return _ParseResult([])
 
     if result != "moment":
         _logger.warning(
             "detection response unexpected result=%r — expected 'moment' or 'none'",
             result,
         )
-        return []
+        return _ParseResult([])
 
     raw_moments = data.get("moments")
     if not isinstance(raw_moments, list):
         _logger.warning("detection response 'moments' is not a list")
-        return []
+        return _ParseResult([])
 
     candidates: list[MomentCandidate] = []
     for item in raw_moments:
@@ -569,4 +649,4 @@ def _parse_detection_response(text: str) -> list[MomentCandidate]:
             )
         )
 
-    return candidates
+    return _ParseResult(candidates)
