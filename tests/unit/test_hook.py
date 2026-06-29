@@ -303,7 +303,7 @@ class TestHookTurnUser:
         assert calls == []
 
     def test_queued_turn_creates_hint_watch(self, monkeypatch, tmp_path):
-        """turn-user queued=true records that Stop should briefly wait."""
+        """turn-user queued=true probes silently via _probe_hints, writes hint_watch."""
         from bible_cc_plugin.scripts.hook import _handle_turn_user
 
         class FakeResponse:
@@ -319,7 +319,7 @@ class TestHookTurnUser:
         monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
         monkeypatch.setattr(httpx, "Client", lambda **kw: client)
         monkeypatch.setattr(
-            "bible_cc_plugin.scripts.hook._print_hints",
+            "bible_cc_plugin.scripts.hook._probe_hints",
             lambda *a, **kw: 0,
         )
         monkeypatch.setattr(
@@ -338,9 +338,11 @@ class TestHookTurnUser:
 
         assert (tmp_path / ".hint_watch_abc-123").exists()
 
-    def test_queued_turn_does_not_watch_after_hint_printed(self, monkeypatch, tmp_path):
-        """If the current hook printed a hint, Stop should not wait again."""
+    def test_turn_user_probes_silently_leaves_emission_to_stop(self, monkeypatch, tmp_path):
+        """turn-user now uses _probe_hints — emission is Stop's job exclusively."""
         from bible_cc_plugin.scripts.hook import _handle_turn_user
+
+        probe_calls = []
 
         class FakeResponse:
             status_code = 200
@@ -355,8 +357,13 @@ class TestHookTurnUser:
         monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
         monkeypatch.setattr(httpx, "Client", lambda **kw: client)
         monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._probe_hints",
+            lambda *a, **kw: probe_calls.append(1) or 1,
+        )
+        print_hints_called = []
+        monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._print_hints",
-            lambda *a, **kw: 1,
+            lambda *a, **kw: print_hints_called.append(1) or 1,
         )
         monkeypatch.setattr(
             "bible_cc_plugin.scripts.hook._hint_watch_path",
@@ -372,7 +379,116 @@ class TestHookTurnUser:
 
         _handle_turn_user(config, args)
 
-        assert not (tmp_path / ".hint_watch_abc-123").exists()
+        # _probe_hints was called (silent probe), _print_hints was NOT
+        assert len(probe_calls) == 1
+        assert len(print_hints_called) == 0
+        # hint_watch is still written so Stop knows to wait
+        assert (tmp_path / ".hint_watch_abc-123").exists()
+
+    def test_safety_net_delivers_on_expired_watch(self, monkeypatch, tmp_path):
+        """When hint_watch is expired and cursor not advanced, safety net delivers."""
+        import time as _time
+
+        from bible_cc_plugin.scripts.hook import _handle_turn_user
+
+        sid = "safety-net-1"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda s: tmp_path / f".hint_cursor_{s}",
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda s: tmp_path / f".hint_watch_{s}",
+        )
+        # Write expired watch
+        watch_path = tmp_path / f".hint_watch_{sid}"
+        watch_path.write_text(
+            json.dumps({"cursor": 0, "expires_at": _time.time() - 10})
+        )
+
+        print_calls = []
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: print_calls.append(kw.get("hook_event_name")) or 1,
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._probe_hints",
+            lambda *a, **kw: 0,
+        )
+
+        class FakeResponse:
+            status_code = 200
+            def json(self): return {"turn_id": 1, "queued": False}
+            def raise_for_status(self): pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = True
+        config.capture.mid_session_detection = True
+        config.capture.hint_format = "quote_with_command"
+        args = argparse.Namespace(session_id=sid, message="hello")
+
+        _handle_turn_user(config, args)
+
+        assert len(print_calls) == 1
+        assert print_calls[0] == "UserPromptSubmit"
+        assert not watch_path.exists()
+
+    def test_safety_net_skips_when_watch_active(self, monkeypatch, tmp_path):
+        """When hint_watch is NOT expired, safety net leaves it for Stop hook."""
+        import time as _time
+
+        from bible_cc_plugin.scripts.hook import _handle_turn_user
+
+        sid = "safety-net-2"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda s: tmp_path / f".hint_cursor_{s}",
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda s: tmp_path / f".hint_watch_{s}",
+        )
+        # Write watch still active (far future)
+        watch_path = tmp_path / f".hint_watch_{sid}"
+        watch_path.write_text(
+            json.dumps({"cursor": 0, "expires_at": _time.time() + 60})
+        )
+
+        print_calls = []
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._print_hints",
+            lambda *a, **kw: print_calls.append(1) or 1,
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._probe_hints",
+            lambda *a, **kw: 0,
+        )
+
+        class FakeResponse:
+            status_code = 200
+            def json(self): return {"turn_id": 1, "queued": False}
+            def raise_for_status(self): pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        config = MagicMock()
+        config.daemon.port = 9777
+        config.capture.enabled = True
+        config.capture.mid_session_detection = True
+        config.capture.hint_format = "quote_with_command"
+        args = argparse.Namespace(session_id=sid, message="hello")
+
+        _handle_turn_user(config, args)
+
+        assert len(print_calls) == 0
+        assert watch_path.exists()
 
 
 class TestHookTurnTool:
@@ -1267,6 +1383,108 @@ class TestPrintHints:
             "_collect_hints: GET /daemon/moments failed" in r.message
             for r in caplog.records
         )
+
+
+class TestProbeHints:
+    """Unit tests for _probe_hints() — silent poll, writes hint_watch, no emit."""
+
+    def test_writes_hint_watch_when_moments_found(self, monkeypatch, tmp_path):
+        """_probe_hints writes hint_watch but does NOT emit or advance cursor."""
+        from bible_cc_plugin.scripts.hook import _probe_hints
+
+        session_id = "probe-test"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda sid: tmp_path / f".hint_watch_{sid}",
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"moments": [{"id": 1, "moment_type": "decision", "title": "test"}]}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        result = _probe_hints(session_id, "http://127.0.0.1:9777", "quote_with_command")
+
+        assert result == 1  # found 1 moment
+        # hint_watch was written
+        assert (tmp_path / ".hint_watch_probe-test").exists()
+        # cursor was NOT advanced
+        assert not (tmp_path / ".hint_cursor_probe-test").exists()
+
+    def test_returns_zero_when_no_new_moments(self, monkeypatch, tmp_path):
+        """_probe_hints returns 0 and writes nothing when no moments found."""
+        from bible_cc_plugin.scripts.hook import _probe_hints
+
+        session_id = "probe-empty"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda sid: tmp_path / f".hint_watch_{sid}",
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"moments": []}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        result = _probe_hints(session_id, "http://127.0.0.1:9777", "quote_with_command")
+
+        assert result == 0
+        assert not (tmp_path / ".hint_watch_probe-empty").exists()
+
+    def test_does_not_print_to_stdout(self, monkeypatch, tmp_path, capsys):
+        """_probe_hints is silent — no stdout output."""
+        from bible_cc_plugin.scripts.hook import _probe_hints
+
+        session_id = "probe-silent"
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_cursor_path",
+            lambda sid: tmp_path / f".hint_cursor_{sid}",
+        )
+        monkeypatch.setattr(
+            "bible_cc_plugin.scripts.hook._hint_watch_path",
+            lambda sid: tmp_path / f".hint_watch_{sid}",
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"moments": [{"id": 1, "moment_type": "decision", "title": "test"}]}
+
+            def raise_for_status(self):
+                pass
+
+        client = httpx.Client(trust_env=False)
+        monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
+        monkeypatch.setattr(httpx, "Client", lambda **kw: client)
+
+        _probe_hints(session_id, "http://127.0.0.1:9777", "quote_with_command")
+
+        assert capsys.readouterr().out == ""
 
 
 class TestCollectHints:

@@ -683,11 +683,10 @@ def _parse_detection_response_result(text: str) -> _ParseResult:
         return _ParseResult([])
 
     if result != "moment":
-        _logger.warning(
-            "detection response unexpected result=%r — expected 'moment' or 'none'",
+        _logger.info(
+            "detection response result=%r (expected 'moment') — parsing moments anyway",
             result,
         )
-        return _ParseResult([])
 
     raw_moments = data.get("moments")
     if not isinstance(raw_moments, list):

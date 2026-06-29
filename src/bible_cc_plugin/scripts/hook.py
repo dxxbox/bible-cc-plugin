@@ -230,6 +230,53 @@ def _clear_hint_watch(session_id: str) -> None:
         pass
 
 
+def _try_deliver_deferred_hints(
+    session_id: str,
+    base_url: str,
+    config,
+) -> int:
+    """Safety net: deliver hints from an expired watch that Stop failed to deliver.
+
+    Called from UserPromptSubmit (``_handle_turn_user``) at the start of each
+    user turn.  Reads the raw watch file directly — bypassing ``_read_hint_watch``
+    which auto-clears on expiration — so we can detect the *expired-but-not-yet-
+    consumed* state that means the previous Stop hook failed to emit.
+
+    Returns the number of hints delivered (0 if none).
+    """
+    p = _hint_watch_path(session_id)
+    try:
+        data = json.loads(p.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return 0
+
+    expires_at = float(data.get("expires_at", 0))
+    if expires_at > time.time():
+        return 0  # still active — leave for Stop hook
+
+    # Watch expired — Stop hook never delivered these hints.
+    watch_cursor = int(data.get("cursor", 0))
+    current_cursor = _read_hint_cursor(session_id)
+    if current_cursor > watch_cursor:
+        _clear_hint_watch(session_id)  # already delivered by some path
+        return 0
+
+    _logger.info(
+        "turn-user %s → safety net: expired watch cursor=%d ≥ current=%d — delivering",
+        session_id[:8],
+        watch_cursor,
+        current_cursor,
+    )
+    printed = _print_hints(
+        session_id,
+        base_url,
+        config.capture.hint_format,
+        hook_event_name="UserPromptSubmit",
+    )
+    _clear_hint_watch(session_id)
+    return printed
+
+
 def _collect_hints(
     session_id: str,
     base_url: str,
@@ -271,7 +318,7 @@ def _collect_hints(
         if any(m.get("id", 0) > cursor for m in moments):
             break
         if time.monotonic() >= deadline:
-            _logger.info(
+            _logger.debug(
                 "_collect_hints: session=%s no new hints fetched=%d cursor=%d",
                 session_id[:8],
                 len(moments),
@@ -392,6 +439,35 @@ def _print_hints(
     return 0
 
 
+def _probe_hints(
+    session_id: str,
+    base_url: str,
+    hint_format: str,
+    timeout: float = 1.0,
+    wait_seconds: float = 0.0,
+    poll_interval: float = _HINT_POLL_INTERVAL_SECONDS,
+) -> int:
+    """Silently poll for pending hints without emitting or advancing cursor.
+
+    Pure detection probe — writes hint_watch when new moments are found
+    so the Stop hook's watchdog can pick them up. Never touches stdout
+    or the hint cursor, leaving emission exclusively to Stop.
+    """
+    messages, _max_id = _collect_hints(
+        session_id, base_url, hint_format,
+        timeout=timeout, wait_seconds=wait_seconds,
+        poll_interval=poll_interval,
+    )
+    if messages:
+        _write_hint_watch(session_id)
+        _logger.info(
+            "_probe_hints: session=%s pending=%d",
+            session_id[:8],
+            len(messages),
+        )
+    return len(messages)
+
+
 def _should_poll_hints(config) -> bool:
     """Return whether hook handlers should poll pending moment hints."""
     return bool(config.capture.enabled and config.capture.mid_session_detection)
@@ -455,11 +531,9 @@ def _handle_turn_user(config, args) -> None:
         tid = body.get("turn_id")
         _logger.info("turn-user %s msg_len=%d → OK turn_id=%s", sid, mlen, tid)
         if _should_poll_hints(config):
-            printed = _print_hints(
-                args.session_id, base_url, config.capture.hint_format,
-                hook_event_name="UserPromptSubmit",
-            )
-            if body.get("queued") and printed == 0:
+            _try_deliver_deferred_hints(args.session_id, base_url, config)
+            _probe_hints(args.session_id, base_url, config.capture.hint_format)
+            if body.get("queued"):
                 _write_hint_watch(args.session_id)
     except httpx.HTTPStatusError as e:
         code, msg = _parse_daemon_error_body(e.response)
@@ -498,11 +572,9 @@ def _handle_turn_user(config, args) -> None:
                     tid2,
                 )
                 if _should_poll_hints(config):
-                    printed = _print_hints(
-                        args.session_id, base_url, config.capture.hint_format,
-                        hook_event_name="UserPromptSubmit",
-                    )
-                    if body2.get("queued") and printed == 0:
+                    _try_deliver_deferred_hints(args.session_id, base_url, config)
+                    _probe_hints(args.session_id, base_url, config.capture.hint_format)
+                    if body2.get("queued"):
                         _write_hint_watch(args.session_id)
             except Exception as recovery_err:
                 _logger.warning(
@@ -543,9 +615,8 @@ def _handle_turn_tool(config, args) -> None:
         cmd = arguments.get("command", "")[:80] if args.tool == "Bash" else ""
         _logger.debug("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
         if _should_poll_hints(config):
-            printed = _print_hints(
+            printed = _probe_hints(
                 args.session_id, base_url, config.capture.hint_format,
-                hook_event_name="PostToolUse",
             )
             if body.get("queued") and printed == 0:
                 _write_hint_watch(args.session_id)
@@ -592,9 +663,8 @@ def _handle_turn_tool(config, args) -> None:
                     olen2,
                 )
                 if _should_poll_hints(config):
-                    printed = _print_hints(
+                    printed = _probe_hints(
                         args.session_id, base_url, config.capture.hint_format,
-                        hook_event_name="PostToolUse",
                     )
                     if body2.get("queued") and printed == 0:
                         _write_hint_watch(args.session_id)
