@@ -701,19 +701,28 @@ def get_recovery(conn: sqlite3.Connection, current_session_id: str) -> dict | No
         ).fetchall()
         recovery_turns.extend(dict(r) for r in reversed(rows))
 
+    # Fetch actual turn counts (not limited by the 30-turn query above)
+    turn_count_rows = conn.execute(
+        f"SELECT session_id, turn_count FROM sessions WHERE session_id IN ({placeholders})",
+        unclosed_ids,
+    ).fetchall()
+    total_turns = sum(r["turn_count"] for r in turn_count_rows)
+
     moments_recovered = len(recovery_moments)
 
     _logger.info(
-        "crash recovery scan: %d unclosed sessions, %d moments, %d turns",
+        "crash recovery scan: %d unclosed sessions, %d moments, %d sampled turns, %d total turns",
         len(unclosed_ids),
         moments_recovered,
         len(recovery_turns),
+        total_turns,
     )
     return {
         "unclosed_sessions_found": len(unclosed_ids),
         "moments_recovered": moments_recovered,
         "_moments": recovery_moments,
         "_turns": recovery_turns,
+        "_total_turns": total_turns,
     }
 
 

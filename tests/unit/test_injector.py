@@ -168,6 +168,32 @@ class TestBuildCrashRecoveryContext:
         result = build_crash_recovery_context([], [])
         assert isinstance(result, str)
 
+    def test_uses_total_turns_over_len_turns(self):
+        """total_turns (from sessions.turn_count) overrides len(turns) capped at 30."""
+        from bible_cc_plugin.daemon.injector import build_crash_recovery_context
+
+        # Simulate: 237 real turns, but only 30 sampled for recovery
+        turns = [{"role": "user", "content": "msg"}] * 30
+        result = build_crash_recovery_context(
+            [{"moment_type": "decision", "title": "T", "narrative": "N"}],
+            turns,
+            total_turns=237,
+        )
+        assert "237 turns" in result
+        assert "30 turns" not in result
+
+    def test_uses_len_turns_when_total_turns_is_zero(self):
+        """Fallback to len(turns) when total_turns not provided (backward compat)."""
+        from bible_cc_plugin.daemon.injector import build_crash_recovery_context
+
+        turns = [{"role": "user", "content": "msg"}] * 30
+        result = build_crash_recovery_context(
+            [{"moment_type": "decision", "title": "T", "narrative": "N"}],
+            turns,
+            total_turns=0,
+        )
+        assert "30 turns" in result
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 1c.1 — Token budget

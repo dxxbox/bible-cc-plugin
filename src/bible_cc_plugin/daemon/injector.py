@@ -86,12 +86,20 @@ def build_moments_context(conn: sqlite3.Connection, session_id: str) -> str:
     return "\n".join(parts)
 
 
-def build_crash_recovery_context(moments: list[dict], turns: list[dict]) -> str:
-    """Marked with ``[Recovered from prior session]``."""
+def build_crash_recovery_context(
+    moments: list[dict], turns: list[dict], total_turns: int = 0
+) -> str:
+    """Marked with ``[Recovered from prior session]``.
+
+    *total_turns* is the actual turn count from ``sessions.turn_count`` —
+    more accurate than ``len(turns)`` which is capped at 30 per session
+    by the recovery query.
+    """
     lines = ["[Recovered from prior session]"]
 
     if turns:
-        lines.append(f"Previous session had {len(turns)} turns.")
+        actual_turns = total_turns or len(turns)
+        lines.append(f"Previous session had {actual_turns} turns.")
         for t in turns[-5:]:
             if t.get("role") == "user" and t.get("content"):
                 lines.append(f"[user] {(t['content'] or '')[:100]}")
@@ -166,7 +174,8 @@ def build_context(
             return build_empty_context(fallback_mode), sources
         moments = recovery_data.get("_moments", []) if include_crash_recovery_moments else []
         turns = recovery_data.get("_turns", []) if include_turns_summary else []
-        ctx = build_crash_recovery_context(moments, turns)
+        total_turns = recovery_data.get("_total_turns", 0)
+        ctx = build_crash_recovery_context(moments, turns, total_turns=total_turns)
         sources["crash_recovery"] = recovery_data.get("unclosed_sessions_found", 0)
         return apply_token_budget(ctx, token_budget), sources
 
