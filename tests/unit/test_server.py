@@ -589,6 +589,39 @@ class TestTurnEndpoints:
         server_mod._app_config.capture.enabled = True
         server_mod.reset_threshold("s2b4-d")
 
+    def test_turn_user_acknowledgment_skips_decision_detection(self, client):
+        """P0-2: 纯确认消息跳过 decision detection，session_start 不受影响。"""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        sid = "s2b4-ack"
+        client.post("/session/start", json={"session_id": sid})
+
+        # 第一条消息触发 session_start（始终 queue）
+        r = client.post("/turn/user", json={"session_id": sid, "message": "msg"})
+        assert r.json()["queued"] is True  # session_start queued
+
+        # 纯确认消息：session_start queued，但 decision detection 跳过
+        server_mod.reset_threshold(sid)
+        for _ in range(3):
+            client.post("/turn/user", json={"session_id": sid, "message": "msg"})
+        r = client.post("/turn/user", json={"session_id": sid, "message": "我同意。"})
+        assert r.json()["queued"] is True  # session_start
+        server_mod.reset_threshold(sid)
+
+    def test_non_ack_still_triggers_decision(self, client):
+        """有独立语义的消息正常触发 decision detection。"""
+        import bible_cc_plugin.daemon.server as server_mod
+
+        sid = "s2b4-nonack"
+        client.post("/session/start", json={"session_id": sid})
+        server_mod.reset_threshold(sid)
+        for _ in range(3):
+            client.post("/turn/user", json={"session_id": sid, "message": "msg"})
+        # "用PostgreSQL" 是完整决策语句，不走 acknowledgment 跳过逻辑
+        r = client.post("/turn/user", json={"session_id": sid, "message": "用PostgreSQL"})
+        assert r.json()["queued"] is True
+        server_mod.reset_threshold(sid)
+
 
 class TestSessionsList:
     """GET /daemon/sessions — list active/completed sessions."""

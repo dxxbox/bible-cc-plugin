@@ -19,7 +19,7 @@ hook → buffer (SQLite) → Phase 1 detection (async, mid-session) → dedup �
 
 1. **Non-blocking**: `/turn/user`、`/turn/assistant` 和 `/turn/tool` 端点必须立即返回。检测是异步队列任务。
 2. **完整 tool output**: PostToolUse 传入的 tool output 完整存入 turns 表。不做机械截断。默认 detection 不读取 tool arguments/output，只保留 tool name。
-3. **阈值触发**: `commit_threshold_turns`（默认 8）和 `commit_threshold_chars`（默认 16000）以先到达者为准触发 Phase 1 检测。
+3. **阈值触发**: `commit_threshold_turns`（默认 4）和 `commit_threshold_chars`（默认 2000）以先到达者为准触发 Phase 1 检测。
 4. **两层去重**: Phase 2 prompt 注入已知 moments + content-hash UNIQUE 约束。详见 L3 detection.md。
 5. **Flush 幂等**: 同一 moment 重复 flush 不产生副作用。BiBLE import 是异步的——返回 task_id，daemon 不等待完成。
 6. **mid_session_upload=false 时不立即 flush**: Phase 1 检测到的 moments 积累在 SQLite（flushed=0），等 session end 时统一 flush。

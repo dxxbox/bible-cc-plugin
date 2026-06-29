@@ -613,6 +613,11 @@ def _handle_turn_stop(config, args) -> None:
     Claude Code Stop fires after every assistant response ("once per turn").
     It carries ``last_assistant_message`` in stdin, which we buffer as the
     assistant's final text before polling any async detection hints.
+
+    When /turn/assistant queues detection (queued=True), we use a configurable
+    wait window (default 3.5s) to poll — detection typically finishes within
+    this window and the hint appears alongside the assistant response.  If the
+    window expires, hint_watch serves as the fallback for the next hook.
     """
     if not args.session_id:
         _logger.warning("turn-stop missing --session-id")
@@ -628,6 +633,27 @@ def _handle_turn_stop(config, args) -> None:
     if not poll_enabled:
         _logger.debug("turn-stop %s → hint polling disabled", args.session_id[:8])
         return
+
+    # ── Path A: detection just queued by /turn/assistant ──
+    if body.get("queued"):
+        wait = config.capture.stop_hint_wait_seconds
+        printed = _print_hints(
+            args.session_id,
+            base_url,
+            config.capture.hint_format,
+            wait_seconds=wait,
+            poll_interval=0.25,
+            hook_event_name="Stop",
+        )
+        if printed > 0:
+            _logger.info("turn-stop %s → hint caught in wait window", args.session_id[:8])
+            return
+        # window expired — hint_watch fallback
+        _write_hint_watch(args.session_id)
+        _logger.info("turn-stop %s → hint defer to next hook", args.session_id[:8])
+        return
+
+    # ── Path B: legacy hint_watch polling (no fresh detection queued) ──
     watch = _read_hint_watch(args.session_id)
     if watch is not None and _read_hint_cursor(args.session_id) > watch["cursor"]:
         _clear_hint_watch(args.session_id)

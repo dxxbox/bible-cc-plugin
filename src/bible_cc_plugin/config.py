@@ -84,6 +84,7 @@ class CaptureConfig(BaseModel):
     mid_session_detection: bool = True
     mid_session_upload: bool = False
     hint_format: str = "quote_with_command"
+    stop_hint_wait_seconds: float = 3.5  # Stop hook poll window when detection queued
     tool_result_max_chars: int = 250
 
     @field_validator("hint_format")
@@ -96,7 +97,7 @@ class CaptureConfig(BaseModel):
 
 class DetectionConfig(BaseModel):
     model: str = "deepseek-v4-flash"
-    max_tokens: int = 512
+    max_tokens: int = 1024  # detection output budget (thinking disabled, JSON only)
     temperature: float = 0.0
     retrospective_max_input_chars: int = 32000  # Phase 2 prompt truncation budget (~8K tokens)
 

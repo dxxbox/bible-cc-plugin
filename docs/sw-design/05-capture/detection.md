@@ -17,7 +17,7 @@
 ```
 1. 从 turns 表取最近 2-3 turns（覆盖上下文）
 2. 构建 prompt（见 §3.1）
-3. LLM call（model from detection config, max_tokens=512, temperature=0.0）
+3. LLM call（model from detection config, max_tokens=1024, temperature=0.0, thinking=disabled）
 4. 解析结构化输出
 5. 如果 result != "none":
      → content-hash = SHA-256(session_id + title + narrative)
@@ -181,7 +181,7 @@ Output constraints:
 | 参数 | Phase 1 | Phase 2 |
 |------|---------|---------|
 | model | detection.model (default deepseek-v4-flash) | same |
-| max_tokens | detection.max_tokens (default 512) | detection.max_tokens × 2（自动推导，不单独配置） |
+| max_tokens | detection.max_tokens (default 1024) | detection.max_tokens × 2（自动推导，不单独配置） |
 | temperature | 0.0 | 0.0 |
 | API key | ANTHROPIC_API_KEY (from env) | same |
 

@@ -53,7 +53,7 @@
           {
             "type": "command",
             "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && uv run python -m bible_cc_plugin.scripts.hook turn-stop",
-            "timeout": 3
+            "timeout": 10
           }
         ]
       }

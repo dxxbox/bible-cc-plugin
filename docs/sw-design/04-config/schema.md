@@ -36,16 +36,17 @@ class SearchConfig(BaseModel):
 class CaptureConfig(BaseModel):
     enabled: bool = True
     mode: str = "key_moments"
-    commit_threshold_turns: int = 8
-    commit_threshold_chars: int = 16000
+    commit_threshold_turns: int = 4
+    commit_threshold_chars: int = 2000
     mid_session_detection: bool = True
     mid_session_upload: bool = False
     hint_format: str = "quote_with_command"
+    stop_hint_wait_seconds: float = 3.5
     tool_result_max_chars: int = 250
 
 class DetectionConfig(BaseModel):
     model: str = "deepseek-v4-flash"
-    max_tokens: int = 512
+    max_tokens: int = 1024
     temperature: float = 0.0
 
 class BypassConfig(BaseModel):
@@ -137,11 +138,12 @@ def validate_inject_fallback(cls, v: str) -> str:
 |----|------|---------|-------|-------------|------------|
 | `enabled` | `bool` | `True` | — | — | `False` 时 daemon 仍接受 turn 写入，但不触发 Phase 1/2 检测。 |
 | `mode` | `str` | `"key_moments"` | `"key_moments"` | — | 目前仅支持此模式。 |
-| `commit_threshold_turns` | `int` | `8` | ≥ 1 | — | 与 `commit_threshold_chars` 先到达者触发。 |
-| `commit_threshold_chars` | `int` | `16000` | ≥ 1 | — | 同上。 |
+| `commit_threshold_turns` | `int` | `4` | ≥ 1 | — | 与 `commit_threshold_chars` 先到达者触发。 |
+| `commit_threshold_chars` | `int` | `2000` | ≥ 1 | — | 同上。 |
 | `mid_session_detection` | `bool` | `True` | — | — | `False` 时只在 session end 做 Phase 2。 |
 | `mid_session_upload` | `bool` | `False` | — | — | `True` 时 Phase 1 moment 立即 flush。 |
 | `hint_format` | `str` | `"quote_with_command"` | `"quote_with_command"` \| `"quote_only"` \| `"command_only"` \| `"narrative"` | — | 非法值回退到 `"command_only"`。 |
+| `stop_hint_wait_seconds` | `float` | `3.5` | 0.0–30.0 | — | Stop hook 中 detection 入队后的 hint poll 等待窗口（秒）。超时后写入 hint_watch 兜底。 |
 | `tool_result_max_chars` | `int` | `250` | 0–4000 | — | 保留给未来可配置 tool output 检测；默认策略不使用。 |
 
 ```python
@@ -160,7 +162,7 @@ def validate_hint_format(cls, v: str) -> str:
 | 键 | Type | Default | Range | Env Override | Validation |
 |----|------|---------|-------|-------------|------------|
 | `model` | `str` | `"deepseek-v4-flash"` | Anthropic model ID | — | 实现时优先取 `ANTHROPIC_SMALL_FAST_MODEL` → `ANTHROPIC_MODEL` → `BIBLE_CC_DETECTION_MODEL` → config default。 |
-| `max_tokens` | `int` | `512` | 1–4096 | — | 非法值回退到 512。 |
+| `max_tokens` | `int` | `1024` | 1–4096 | — | detection 输出 budget（thinking 已禁用，纯 JSON 输出）。非法值回退到 1024。 |
 | `temperature` | `float` | `0.0` | 0.0–1.0 | — | 建议保持 0.0。 |
 
 模型选择逻辑（实现参考）：
@@ -208,8 +210,8 @@ def is_bypassed(session_id: str, patterns: list[str]) -> bool:
   "daemon": {"port": 9777, "port_auto_fallback": false, "db_path": "~/.bible-cc/daemon.db"},
   "injection": {"enabled": true, "token_budget": 1200, "include_turns_summary": true, "include_moments": true, "crash_recovery_moments": true, "inject_fallback": "skip"},
   "search": {"default_top_k": 8, "default_min_score": 0.35},
-  "capture": {"enabled": true, "mode": "key_moments", "commit_threshold_turns": 8, "commit_threshold_chars": 16000, "mid_session_detection": true, "mid_session_upload": false, "hint_format": "quote_with_command", "tool_result_max_chars": 250},
-  "detection": {"model": "deepseek-v4-flash", "max_tokens": 512, "temperature": 0.0},
+  "capture": {"enabled": true, "mode": "key_moments", "commit_threshold_turns": 4, "commit_threshold_chars": 2000, "mid_session_detection": true, "mid_session_upload": false, "hint_format": "quote_with_command", "stop_hint_wait_seconds": 3.5, "tool_result_max_chars": 250},
+  "detection": {"model": "deepseek-v4-flash", "max_tokens": 1024, "temperature": 0.0},
   "bypass": {"session_patterns": []}
 }
 ```

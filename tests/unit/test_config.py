@@ -44,6 +44,13 @@ class TestConfigDefaults:
         config = AppConfig()
         assert config.capture.hint_format == "quote_with_command"
 
+    def test_default_stop_hint_wait_seconds(self):
+        """P0-1: stop_hint_wait_seconds default is 3.5."""
+        from bible_cc_plugin.config import AppConfig
+
+        config = AppConfig()
+        assert config.capture.stop_hint_wait_seconds == 3.5
+
 
 class TestConfigValidation:
     """Verify silent fallback on invalid values."""
@@ -185,6 +192,13 @@ class TestDetectionConfig:
 
         config = AppConfig()
         assert config.detection.model == "deepseek-v4-flash"
+
+    def test_detection_max_tokens_default(self):
+        """P0-3: max_tokens default is 1024 (thinking disabled, JSON only)."""
+        from bible_cc_plugin.config import AppConfig
+
+        config = AppConfig()
+        assert config.detection.max_tokens == 1024
 
 
 class TestCaptureModeValidation:

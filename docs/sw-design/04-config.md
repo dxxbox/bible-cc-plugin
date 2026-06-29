@@ -92,11 +92,12 @@ Env override: `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`
 |----|------|--------|------|
 | `enabled` | bool | `true` | 是否启用采集（false 时 hooks 静默跳过所有 buffer 操作） |
 | `mode` | string | `"key_moments"` | 采集模式：仅 `"key_moments"` |
-| `commit_threshold_turns` | int | `8` | 触发 Phase 1 检测的 turn 数阈值 |
-| `commit_threshold_chars` | int | `16000` | 触发 Phase 1 检测的字符数阈值 |
+| `commit_threshold_turns` | int | `4` | 触发 Phase 1 检测的 turn 数阈值 |
+| `commit_threshold_chars` | int | `2000` | 触发 Phase 1 检测的字符数阈值 |
 | `mid_session_detection` | bool | `true` | 是否启用 Phase 1 mid-session 检测 |
 | `mid_session_upload` | bool | `false` | Phase 1 检测到的 moment 是否立即上传 BiBLE |
 | `hint_format` | string | `"quote_with_command"` | moment hint 的展示格式：`"quote_with_command"` / `"quote_only"` / `"command_only"` / `"narrative"` |
+| `stop_hint_wait_seconds` | float | `3.5` | Stop hook 中 detection 入队后的 hint poll 等待窗口（秒） |
 | `tool_result_max_chars` | int | `250` | 保留给未来可配置 tool output 检测的摘要上限；默认策略不使用 |
 
 约束：
@@ -108,7 +109,7 @@ Env override: `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `model` | string | `"deepseek-v4-flash"` | Moment detection 使用的模型 |
-| `max_tokens` | int | `512` | 每次 detection LLM 调用的 max_tokens |
+| `max_tokens` | int | `1024` | 每次 detection LLM 调用的 max_tokens（thinking 已禁用） |
 | `temperature` | float（0.0-1.0） | `0.0` | Temperature（确定性输出） |
 
 约束：

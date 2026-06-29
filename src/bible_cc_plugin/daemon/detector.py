@@ -78,6 +78,71 @@ def _create_client() -> anthropic.Anthropic:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Pure-acknowledgment filter
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Messages that lack independent semantic content for decision detection.
+# When a user turn consists solely of an acknowledgment (e.g. "同意", "OK"),
+# it provides no standalone decision title — detection is deferred to
+# /turn/assistant which has the assistant's full response as context.
+_PURE_ACKNOWLEDGMENT: frozenset[str] = frozenset({
+    # ── 纯语气词 ──
+    "同意", "好的", "可以", "行", "好", "嗯", "对", "是的", "没错",
+    "ok", "OK", "yes", "Yes", "sure", "Sure", "lgtm", "LGTM",
+    # ── 含轻量主语 ──
+    "我同意", "我接受", "我认可", "我赞成", "我也同意", "我也赞成",
+    # ── 建议/方案 系 ──
+    "接受建议", "接受你的建议", "同意建议", "同意你的建议",
+    "接受方案", "同意方案", "接受这个方案", "同意这个方案",
+    "采纳", "采纳建议", "采纳方案", "我采纳", "我采纳建议",
+    "接受这个", "同意这个", "接受这个方向", "同意这个方向",
+    # ── 肯定评价 ──
+    "这个可以", "这个行", "这个好", "这个方案可以", "这个方案行",
+    "可以这样", "可以这么做", "这样可以", "这样做可以",
+    # ── 通用确认 ──
+    "没问题", "没问题了", "就这样", "就这么办", "按这个来",
+    "就按你说的", "就按这个", "听你的", "可以的", "好嘞",
+    # ── 认同系列 ──
+    "认可", "赞成", "赞同", "我认可", "我赞同", "我也认可", "我也赞同",
+    "说得对", "对的", "没错的", "确实", "确实是", "确实如此",
+    "是这个道理", "有理", "有道理", "说得没错",
+    # ── 收到/理解 ──
+    "收到", "了解", "明白", "懂了", "明白了", "了解了", "知道了", "清楚了",
+    "理解", "理解你的意思", "领会", "get", "got it",
+    # ── 完成/就绪 ──
+    "好了", "就这样吧", "搞定了", "完成了", "就绪", "准备就绪",
+    # ── 正面评价 ──
+    "不错", "很好", "蛮好", "挺好", "非常好", "很不错", "蛮不错的",
+    "这不错", "这个不错", "挺好的", "挺好的呀",
+    # ── 语气词变体 ──
+    "好呀", "好啊", "对呀", "对的呀", "对嘛", "对咯", "行吧", "行啊",
+    "行吧可以", "也行", "也可以", "也可", "都行",
+    # ── 批准型 ──
+    "批准", "通过", "准许", "允许", "许可", "不反对", "无异议",
+    # ── 命令式 ──
+    "做吧", "开始吧", "动手吧", "执行吧", "就用这个",
+    # ── 英文 ──
+    "go ahead", "go for it", "ack", "acknowledged",
+})
+
+
+def _is_pure_acknowledgment(message: str) -> bool:
+    """Check whether *message* is a pure acknowledgment that lacks
+    independent semantic content for decision detection.
+
+    Strips surrounding whitespace and trailing punctuation (。.!！？?～~…)
+    before matching against the PURE_ACKNOWLEDGMENT set.
+    """
+    import re
+
+    stripped = message.strip()
+    # strip trailing punctuation common in Chinese/English acknowledgments
+    stripped = re.sub(r"[。.!！？?～~…,，]+$", "", stripped)
+    stripped = stripped.strip()
+    return stripped in _PURE_ACKNOWLEDGMENT
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Phase 1 Prompt Template (detection.md §3.1)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -466,6 +531,7 @@ def _call_detection_api(
         model=config.model,
         max_tokens=max_tokens,
         temperature=config.temperature,
+        thinking={"type": "disabled"},
         system=_PHASE1_SYSTEM_PROMPT if phase == 1 else _PHASE2_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )

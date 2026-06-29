@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):  # pragma: no cover — tested via integration
     _worker_logger.info("detection worker stopped")
 
 
-app = FastAPI(title="bible-cc-daemon", version="0.22.9", lifespan=lifespan)
+app = FastAPI(title="bible-cc-daemon", version="0.23.0", lifespan=lifespan)
 
 _logger.info("daemon starting on port %s", _config.daemon.port)
 
@@ -708,7 +708,17 @@ async def turn_user(req: _TurnUserRequest):
         queued = True
 
         # Path B: threshold-based DECISION/ACCOMPLISHMENT detection
-        if check_threshold(req.session_id, turns=1, chars=len(req.message)):
+        # Skip pure acknowledgments — "同意"/"我同意"/"OK" etc. lack
+        # standalone semantic content; detection is deferred to /turn/assistant.
+        from bible_cc_plugin.daemon.detector import _is_pure_acknowledgment
+
+        ack = _is_pure_acknowledgment(req.message)
+        if ack:
+            _logger.info(
+                "turn/user %s ack=True → decision detection deferred",
+                req.session_id[:8],
+            )
+        if not ack and check_threshold(req.session_id, turns=1, chars=len(req.message)):
             await _detection_queue.put(
                 {
                     "session_id": req.session_id,

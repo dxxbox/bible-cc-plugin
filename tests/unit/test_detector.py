@@ -503,3 +503,126 @@ class TestNoRealAPICallInCI:
         # This must complete without touching network or env vars
         result = call_detection_llm("test", config, phase=1)
         assert isinstance(result, list)
+
+
+class TestPureAcknowledgment:
+    """P0-2: _is_pure_acknowledgment correctly identifies short confirmations."""
+
+    @staticmethod
+    def _check(message: str) -> bool:
+        from bible_cc_plugin.daemon.detector import _is_pure_acknowledgment
+
+        return _is_pure_acknowledgment(message)
+
+    def test_pure_tones(self):
+        assert self._check("同意")
+        assert self._check("好的")
+        assert self._check("可以")
+        assert self._check("行")
+        assert self._check("好")
+        assert self._check("嗯")
+        assert self._check("对")
+        assert self._check("OK")
+        assert self._check("yes")
+        assert self._check("Sure")
+
+    def test_light_subject(self):
+        assert self._check("我同意")
+        assert self._check("我接受")
+        assert self._check("我认可")
+        assert self._check("我赞成")
+        assert self._check("我也同意")
+
+    def test_suggestion_acceptance(self):
+        assert self._check("接受建议")
+        assert self._check("同意方案")
+        assert self._check("采纳")
+        assert self._check("采纳建议")
+        assert self._check("接受这个方向")
+
+    def test_agreement_series(self):
+        assert self._check("认可")
+        assert self._check("说得对")
+        assert self._check("确实")
+        assert self._check("有道理")
+
+    def test_understanding(self):
+        assert self._check("收到")
+        assert self._check("明白")
+        assert self._check("懂了")
+        assert self._check("知道了")
+        assert self._check("got it")
+
+    def test_completion(self):
+        assert self._check("好了")
+        assert self._check("搞定了")
+        assert self._check("完成了")
+
+    def test_positive_eval(self):
+        assert self._check("不错")
+        assert self._check("很好")
+        assert self._check("挺好的")
+
+    def test_tone_variants(self):
+        assert self._check("好呀")
+        assert self._check("行吧")
+        assert self._check("对呀")
+        assert self._check("也行")
+
+    def test_approval(self):
+        assert self._check("批准")
+        assert self._check("通过")
+        assert self._check("准许")
+        assert self._check("允许")
+        assert self._check("无异议")
+
+    def test_imperative(self):
+        assert self._check("做吧")
+        assert self._check("开始吧")
+        assert self._check("就用这个")
+
+    def test_english(self):
+        assert self._check("go ahead")
+        assert self._check("go for it")
+        assert self._check("ack")
+        assert self._check("acknowledged")
+
+    def test_strips_trailing_punctuation(self):
+        """消息末尾标点符号被 strip 后正确匹配。"""
+        assert self._check("同意。")
+        assert self._check("同意！")
+        assert self._check("同意...")
+        assert self._check("好的。")
+        assert self._check("OK.")
+        assert self._check("行～")
+
+    def test_negative_cases(self):
+        """有独立语义的消息不匹配。"""
+        assert not self._check("用PostgreSQL")
+        assert not self._check("建议用 Redis 替代")
+        assert not self._check("为什么这样设计？")
+        assert not self._check("这个方案有个问题")
+        assert not self._check("我倾向于方案A，因为性能更好")
+        assert not self._check("")
+        assert not self._check("   ")
+
+    def test_thinking_disabled_in_api_call(self):
+        """P0-3: _call_detection_api passes thinking={'type':'disabled'}."""
+        from bible_cc_plugin.daemon.detector import _call_detection_api
+
+        config = _default_config()
+        config.max_tokens = 1024
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"result":"none"}')]
+        mock_response.stop_reason = "end_turn"
+        mock_client.messages.create.return_value = mock_response
+
+        result = _call_detection_api(
+            mock_client, "test prompt", config, phase=1, max_tokens=1024,
+        )
+        assert isinstance(result, str)
+        call_kwargs = mock_client.messages.create.call_args.kwargs
+        assert call_kwargs["thinking"] == {"type": "disabled"}
+        assert call_kwargs["max_tokens"] == 1024
