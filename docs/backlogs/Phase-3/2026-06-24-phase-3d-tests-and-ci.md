@@ -120,12 +120,60 @@ ci() {
 
 CI 失败时保留 test server 日志（写到 `$TMPDIR/bible-test-server.log`）供排查。
 
+### F3d.4 — Flush Result Polling（延后自 Phase 3b）
+
+| 属性 | 说明 |
+|------|------|
+| **理由** | Phase 3b 只做 submit（`flushed=0→1`），不确认 BiBLE async import 完成。本 feature 补全 `05-capture/flush.md` 定义的完整 4 状态机。 |
+| **优先级** | P0 |
+| **依赖** | F3b.1（flush submit），client.py `get_task_status()` |
+
+**流程**：
+1. `buffer.py` 增加 `get_submitted_moments(session_id) → list[dict]` — 查询 `flushed=1` 的 moments
+2. Daemon 新增 `_poll_flush_results(session_id) → int` — 轮询已提交 moments 的 BiBLE task 状态
+3. 轮询逻辑：每 5s 查询 `get_task_status()`，最多 60 次（5 分钟总超时）
+4. 状态更新：
+   - `task status = completed` → `flushed = 2`
+   - `task status = failed/cancelled` → `flushed = -1`
+   - poll timeout → `flushed = -1`
+5. 触发点：
+   - `/session/end` flush 之后自动启动（替换 Phase 3b 的 `# TODO(Phase 3d)` 标记）
+   - `POST /daemon/session/poll` 手动触发
+6. 连续 3 次失败 → 产出 warning hint
+
+**诊断日志**：
+```
+[flush:poll] session=abc123 submitted=3 → polling...
+[flush:poll] task=xyz-1 → completed → flushed=2
+[flush:poll] task=xyz-2 → completed → flushed=2
+[flush:poll] task=xyz-3 → failed → flushed=-1 (reason: parser error)
+[flush:poll] DONE (2 completed, 1 failed, 45s elapsed)
+```
+
+**验收**：
+- [ ] `_poll_flush_results()` 完整轮询链路
+- [ ] `flushed=2` 确认完成
+- [ ] `flushed=-1` 失败标记（task failed + poll timeout）
+- [ ] `/session/end` 在 flush submit 后自动启动 poll（替换 TODO 标记）
+- [ ] `POST /daemon/session/poll` 端点可用
+- [ ] 每步输出 `[flush:poll]` 诊断日志
+- [ ] 连续 3 次失败 → warning hint
+- [ ] `buffer.py` `mark_moments_confirmed(moment_ids)` — `flushed=2`
+- [ ] `buffer.py` `mark_moments_failed(moment_ids, reason)` — `flushed=-1`
+
+**产出**：
+```
+src/bible_cc_plugin/daemon/buffer.py     ← (修改: poll CRUD)
+src/bible_cc_plugin/daemon/server.py     ← (修改: _poll_flush_results + 端点 + session/end 替换 TODO)
+tests/integration/test_capture_flush.py   ← (修改: 追加 poll 测试)
+```
+
 ---
 
 ## 实现顺序
 
 ```
-F3d.1 (集成测试) ──► F3d.2 (合约测试) ──► F3d.3 (CI 扩展)
+F3d.1 (集成测试) ──► F3d.2 (合约测试) ──► F3d.3 (CI 扩展) ──► F3d.4 (flush poll)
 ```
 
 | 顺序 | Feature | 理由 |
@@ -133,6 +181,7 @@ F3d.1 (集成测试) ──► F3d.2 (合约测试) ──► F3d.3 (CI 扩展)
 | **1st** | F3d.1 集成测试 | 需要 Phase 3c 全部功能就绪。先确保功能正确 |
 | **2nd** | F3d.2 合约测试 | 在 F3d.1 基础上增加 schema 验证维度 |
 | **3rd** | F3d.3 CI 扩展 | 所有测试通过后，接入 CI 自动化流水线 |
+| **4th** | F3d.4 flush poll | 补全 flushed 状态机（2/-1）——延后自 Phase 3b |
 
 ---
 
@@ -151,6 +200,12 @@ F3d.1 (集成测试) ──► F3d.2 (合约测试) ──► F3d.3 (CI 扩展)
 - [ ] `./scripts/dev.sh ci` 完整流水线 green
 - [ ] CI 失败时 test server 日志保留
 - [ ] CI 在 60s 内完成（test server 启动 2s + 测试 30s + cleanup 1s）
+
+### Flush Poll
+- [ ] `_poll_flush_results()` 完整链路（per F3d.4）
+- [ ] `flushed=2` 确认 + `flushed=-1` 失败标记
+- [ ] `/session/end` 的 `# TODO(Phase 3d)` 已替换为实际 poll 调用
+- [ ] `POST /daemon/session/poll` 端点可用
 
 ---
 

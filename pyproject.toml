@@ -10,7 +10,7 @@ packages = ["src/bible_cc_plugin"]
 
 [project]
 name = "bible-cc-plugin"
-version = "0.24.0"
+version = "0.25.0"
 description = "Claude Code plugin — BiBLE Atlas memory + knowledge broker"
 requires-python = ">=3.10"
 dependencies = [

@@ -1,6 +1,10 @@
 # 05-capture/flush.md — Flush to BiBLE Atlas（L3）
 
 > moment 推送到 BiBLE Atlas 的完整设计：序列化、import API、mid_session_upload、retry、push-all。
+>
+> **⚠️ Phase 阶段**: 本文描述最终态完整设计。Phase 3b 只实现 submit（§1-2, §5），
+> 状态机轮询（§3.2-3.3, flushed=2/-1）延后到 Phase 3d（F3d.4）。
+> 实现计划以 `docs/backlogs/Phase-3/2026-06-24-phase-3b-flush-and-mcp.md` 为准。
 
 ---
 

@@ -11,12 +11,15 @@ Design: 02-interfaces.md §3, 06-recall/mcp-tools.md.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
+
+from bible_cc_plugin.daemon.client import BiBLEClient, BiBLEError, BibleUnreachableError
 
 
 def _setup_logging():
@@ -169,7 +172,7 @@ TOOLS: list[dict] = [
 # ── Tool dispatcher ─────────────────────────────────────────────────────────
 
 
-def _handle_tool(name: str, arguments: dict) -> list:
+async def _handle_tool(name: str, arguments: dict) -> list:
     """Dispatch tool call → list of TextContent.
 
     Logging format per Phase 4 F4.6:
@@ -208,26 +211,185 @@ def _handle_tool(name: str, arguments: dict) -> list:
             ),
         })
 
-    # Phase 2 degradation — BiBLE connected in Phase 3/4
+    # Phase 3b: real BiBLE client call
+    try:
+        async with _build_client() as client:
+            result = await _dispatch(client, name, arguments)
+    except BiBLEError as exc:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        _logger.error(
+            "[mcp:tool] ERROR: %s → BiBLEError [%s] (%dms)",
+            name, getattr(exc, "code", "?"), elapsed_ms,
+        )
+        return _degradation_error(exc)
+    except BibleUnreachableError as exc:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        _logger.error(
+            "[mcp:tool] ERROR: %s → unreachable (%dms)", name, elapsed_ms,
+        )
+        return _degradation_error(exc)
+
     elapsed_ms = int((time.monotonic() - start) * 1000)
-    args_summary = ", ".join(
-        f"{k}={repr(v)[:60]}" for k, v in arguments.items()
-    )
+    result_summary = _summarize_result(name, result)
     _logger.info(
-        "[mcp:tool] %s(%s) → degradation (base_url=%s, %dms)",
-        name, args_summary, base_url, elapsed_ms,
+        "[mcp:tool] %s(%s) → %s (%dms)",
+        name,
+        ", ".join(f"{k}={repr(v)[:60]}" for k, v in arguments.items()),
+        result_summary,
+        elapsed_ms,
     )
+    return _json_content(result)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _build_client() -> BiBLEClient:
+    """Create a BiBLEClient from env vars."""
+    from bible_cc_plugin.config import BibleConfig
+
+    return BiBLEClient(BibleConfig(
+        base_url=os.getenv("BIBLE_ATLAS_BASE_URL", "http://localhost:5555"),
+        token=os.getenv("BIBLE_ATLAS_TOKEN", ""),
+        kb_index=os.getenv("BIBLE_CC_KB_INDEX", "bible-cc"),
+    ))
+
+
+async def _dispatch(client: BiBLEClient, name: str, args: dict) -> dict:
+    """Route tool call to the appropriate client method."""
+    if name == _TOOL_MEMORY_SEARCH:
+        results = await client.search_memory(
+            query=args["query"],
+            tag=args.get("tag", "memory"),
+            top_k=args.get("top_k"),
+            search_type=args.get("search_type"),
+        )
+        return {"results": results, "total": len(results)}
+
+    if name == _TOOL_MEMORY_SAVE:
+        messages = args.get("messages", [])
+        if not messages:
+            return {"error": "No messages to save.", "detail": "messages is required."}
+        payload = {
+            "messages": messages,
+            "title": args.get("title", ""),
+            "abstract": args.get("abstract", ""),
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        files = [("memory-save.json", content, "application/json")]
+        result = await client.import_memory(files)
+        return {"task_id": result.get("task_id"), "status": "queued"}
+
+    if name == _TOOL_MEMORY_GET:
+        result = await client.request_memory_download(
+            args["storage_path"],
+        )
+        task_id = result.get("task_id")
+        if not task_id:
+            return {"error": "Download task_id missing."}
+        return await _poll_download(client, "memory", task_id)
+
+    if name == _TOOL_KNOWLEDGE_SEARCH:
+        results = await client.search_knowledge_base(
+            query=args["query"],
+            tag=args["tag"],
+            top_k=args.get("top_k"),
+            search_type=args.get("search_type"),
+        )
+        return {"results": results, "total": len(results)}
+
+    if name == _TOOL_SKILL_SEARCH:
+        results = await client.search_skill(
+            query=args["query"],
+            tag=args.get("tag", "skill"),
+            top_k=args.get("top_k"),
+            search_type=args.get("search_type"),
+        )
+        return {"results": results, "total": len(results)}
+
+    if name == _TOOL_SKILL_GET:
+        result = await client.request_skill_download(
+            args["storage_path"],
+        )
+        task_id = result.get("task_id")
+        if not task_id:
+            return {"error": "Download task_id missing."}
+        return await _poll_download(client, "skill", task_id)
+
+    return {"error": f"Unknown tool: {name}"}
+
+
+async def _poll_download(
+    client: BiBLEClient, domain: str, task_id: str,
+) -> dict:
+    """Poll task status every 2s up to 30 times (60s timeout)."""
+    _logger.info(
+        "[mcp:tool] download poll task_id=%s domain=%s (60s timeout)",
+        task_id, domain,
+    )
+    for i in range(30):
+        await asyncio.sleep(2)
+        task = await client.get_task_status(task_id)
+        status = task.get("status", "")
+        if (i + 1) % 5 == 0:
+            _logger.info(
+                "[mcp:tool] polling task_id=%s (%ds/60s, status=%s)",
+                task_id, (i + 1) * 2, status,
+            )
+        if status == "completed":
+            artifact_id = task.get("result", {}).get("artifact_id")
+            if not artifact_id:
+                return {"error": "Task completed but no artifact_id.", "task_id": task_id}
+            content = await client.get_download_artifact(domain, artifact_id)
+            return {
+                "task_id": task_id,
+                "content": content.decode("utf-8", errors="replace"),
+            }
+        if status in ("failed", "cancelled"):
+            return {
+                "error": f"Download task {status}.",
+                "task_id": task_id,
+                "detail": task.get("result", {}).get("error", ""),
+            }
+    return {
+        "error": "Download timeout after 60s.",
+        "task_id": task_id,
+        "suggestion": "Check BiBLE /bible-cc:status or retry later.",
+    }
+
+
+def _degradation_error(exc: Exception) -> list:
+    """Map client exceptions to structured errors with distinct messages."""
+    if isinstance(exc, BibleUnreachableError):
+        cat, suggestion = "unreachable", "Check /bible-cc:status for connectivity."
+    elif isinstance(exc, BiBLEError) and "INVALID_RESPONSE" in getattr(exc, "code", ""):
+        cat, suggestion = "protocol error", (
+            "BiBLE returned an unexpected response. Check server version compatibility."
+        )
+    elif isinstance(exc, BiBLEError):
+        cat, suggestion = "request error", (
+            f"[{exc.code}] {exc.message}. Check your BiBLE configuration."
+        )
+    else:
+        cat, suggestion = "error", "Internal error."
+
     return _json_content({
-        "error": "BiBLE Atlas not yet connected (Phase 3).",
-        "detail": (
-            f"MCP tool '{name}' is registered but BiBLE integration "
-            "is scheduled for Phase 3/4. Local capture is working."
-        ),
-        "suggestion": (
-            "Use /bible-cc:review to manage locally captured moments. "
-            "Use /bible-cc:status for system health."
-        ),
+        "error": f"BiBLE Atlas {cat}.",
+        "detail": str(exc),
+        "suggestion": suggestion,
     })
+
+
+def _summarize_result(name: str, result: dict) -> str:
+    """Produce a compact log summary for the result."""
+    if "total" in result:
+        return f"{result['total']} hits"
+    if "task_id" in result:
+        return f"task_id={result['task_id']}"
+    if "content" in result:
+        return f"content_len={len(result['content'])}"
+    return "OK"
 
 
 def _json_content(data: dict) -> list:
@@ -255,6 +417,7 @@ def main():
     if base_url:
         try:
             import httpx
+
             r = httpx.get(f"{base_url.rstrip('/')}/health", timeout=3)
             if r.status_code == 200:
                 latency = int(r.elapsed.total_seconds() * 1000)
@@ -276,8 +439,9 @@ def main():
         name = tool_def["name"]
 
         def make_handler(n: str):
-            def handler(**kwargs):
-                return _handle_tool(n, kwargs)
+            async def handler(**kwargs):
+                return await _handle_tool(n, kwargs)
+
             return handler
 
         mcp.tool(name=name, description=tool_def["description"])(make_handler(name))

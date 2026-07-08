@@ -20,15 +20,25 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
     monkeypatch.setattr(
         "bible_cc_plugin.daemon.detector.detect_moments",
-        lambda turns, known_moments, phase, config: [],
+        lambda turns, known_moments, phase, config, session_start_only=False: [],
     )
 
     import bible_cc_plugin.daemon.server as server_mod
+
+    # No-op flush to avoid real HTTP calls in unit tests
+    async def _noop_flush(session_id: str):
+        return server_mod.FlushResult(moment_ids=[], flushed_count=0)
+
+    monkeypatch.setattr(
+        server_mod, "_flush_session_moments", _noop_flush,
+    )
 
     server_mod._db_conn = None
     server_mod._db_error = None
     server_mod._threshold_state.clear()
     server_mod._session_start_state.clear()
+    server_mod._phase2_events.clear()
+    server_mod._flush_locks.clear()
     server_mod._config = server_mod.load_config()
     server_mod._app_config = server_mod._config
 
@@ -48,6 +58,8 @@ def client(tmp_path, monkeypatch):
     server_mod._db_error = None
     server_mod._threshold_state.clear()
     server_mod._session_start_state.clear()
+    server_mod._phase2_events.clear()
+    server_mod._flush_locks.clear()
     server_mod._config = server_mod.load_config()
     server_mod._app_config = server_mod._config
     session_seq.clear()
@@ -218,8 +230,8 @@ class TestSessionEnd:
         assert r.json()["status"] == "already_completed"
         assert r.json().get("detection") is None
 
-    def test_returns_before_detection_completes(self, client):
-        """Endpoint returns <200ms."""
+    def test_returns_after_phase2_and_flush(self, client):
+        """Phase 3b: endpoint waits for Phase 2 + flush, returns <5s with mock."""
         import time
 
         client.post("/session/start", json={"session_id": "s2c1-async"})
@@ -227,7 +239,8 @@ class TestSessionEnd:
         r = client.post("/session/end", json={"session_id": "s2c1-async"})
         elapsed = (time.monotonic() - start) * 1000
         assert r.status_code == 200
-        assert elapsed < 200, f"/session/end took {elapsed:.0f}ms"
+        # Mocked detection completes instantly — should be well under 5s
+        assert elapsed < 5000, f"/session/end took {elapsed:.0f}ms"
 
     def test_resets_threshold_counter(self, client):
         """End clears threshold state for resource cleanup."""
@@ -728,7 +741,7 @@ class TestContextInject:
         assert r.status_code in (400, 422)
 
     def test_empty_fallback_returns_xml_block(self, client):
-        """When inject_fallback='empty', new session returns <relevant-memories></relevant-memories>."""
+        """When inject_fallback='empty', new session returns relevant-memories XML."""
         import bible_cc_plugin.daemon.server as server_mod
 
         server_mod._config.injection.inject_fallback = "empty"
@@ -796,7 +809,7 @@ class TestDetectionPipeline:
 
         from bible_cc_plugin.daemon.detector import MomentCandidate
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [MomentCandidate(type="decision", title="T", narrative="N")]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -844,7 +857,7 @@ class TestDetectionPipeline:
 
         captured = []
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             captured.extend(turns)
             return []
 
@@ -892,7 +905,7 @@ class TestDetectionPipeline:
 
         captured = []
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             captured.extend(turns)
             return []
 
@@ -943,7 +956,7 @@ class TestDetectionPipeline:
 
         captured = []
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             captured.extend(turns)
             return []
 
@@ -993,7 +1006,7 @@ class TestDetectionPipeline:
 
         from bible_cc_plugin.daemon.detector import MomentCandidate
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [MomentCandidate(type="decision", title="D", narrative="N")]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1036,7 +1049,7 @@ class TestDetectionPipeline:
         insert_session(conn, "s-phase2-filter")
         insert_turn_user(conn, "s-phase2-filter", "start work")
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [
                 MomentCandidate(
                     type="session_start",
@@ -1097,7 +1110,7 @@ class TestDetectionPipeline:
             ]
         )
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [next(detections)]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1155,7 +1168,7 @@ class TestDetectionPipeline:
             ]
         )
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [next(detections)]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1214,7 +1227,7 @@ class TestDetectionPipeline:
             ]
         )
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [next(detections)]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1284,7 +1297,7 @@ class TestDetectionPipeline:
             ]
         )
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [next(detections)]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1334,7 +1347,7 @@ class TestDetectionPipeline:
         conn = server_mod._get_db()
         insert_session(conn, "s1")
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return []
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1364,7 +1377,7 @@ class TestDetectionPipeline:
         server_mod._app_config.capture.enabled = False
         call_count = 0
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             nonlocal call_count
             call_count += 1
             return []
@@ -1396,7 +1409,7 @@ class TestDetectionPipeline:
 
         from bible_cc_plugin.daemon.detector import MomentCandidate
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [MomentCandidate(type="bug_fix", title="F", narrative="N")]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1445,7 +1458,7 @@ class TestPhase2Detection:
         insert_session(conn, "p2-s1")
         insert_turn_user(conn, "p2-s1", "hello")
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [
                 MomentCandidate(type="decision", title="New1", narrative="N1"),
                 MomentCandidate(type="accomplishment", title="New2", narrative="N2"),
@@ -1491,7 +1504,7 @@ class TestPhase2Detection:
         # Same candidate returned twice → dedup
         same = MomentCandidate(type="decision", title="Only Once", narrative="Same")
 
-        def mock_detect(turns, known_moments, phase, config):
+        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
             return [same, same]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1524,11 +1537,11 @@ class TestMomentsCRUD:
 
     def test_put_updates_title(self, client):
         """PUT changes title, GET reflects new value."""
+        import bible_cc_plugin.daemon.server as server_mod
         from bible_cc_plugin.daemon.buffer import (
             compute_content_hash,
             insert_moment,
         )
-        import bible_cc_plugin.daemon.server as server_mod
 
         conn = server_mod._get_db()
         insert_moment(conn, "s1", "decision", "Old", "N", compute_content_hash("s1", "Old", "N"))
@@ -1542,8 +1555,8 @@ class TestMomentsCRUD:
 
     def test_title_only_preserves_narrative(self, client):
         """PUT with only title leaves narrative unchanged."""
-        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
         import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
 
         conn = server_mod._get_db()
         insert_moment(
@@ -1564,8 +1577,8 @@ class TestMomentsCRUD:
 
     def test_narrative_only_preserves_title(self, client):
         """PUT with only narrative leaves title unchanged."""
-        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
         import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
 
         conn = server_mod._get_db()
         insert_moment(
@@ -1586,8 +1599,8 @@ class TestMomentsCRUD:
 
     def test_hash_changes_after_edit(self, client):
         """Editing a moment produces a different content_hash."""
-        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
         import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
 
         conn = server_mod._get_db()
         old_hash = compute_content_hash("st3", "Old", "Old narrative")
@@ -1606,8 +1619,8 @@ class TestMomentsCRUD:
 
     def test_duplicate_edited_content_returns_409(self, client):
         """Editing a moment to duplicate another moment's content → 409."""
-        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
         import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
 
         conn = server_mod._get_db()
         insert_moment(
@@ -1639,8 +1652,8 @@ class TestMomentsCRUD:
 
     def test_both_fields_empty_returns_400(self, client):
         """PUT with neither title nor narrative → 400."""
-        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
         import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
 
         conn = server_mod._get_db()
         insert_moment(conn, "st5", "decision", "T", "N", compute_content_hash("st5", "T", "N"))
@@ -1652,11 +1665,11 @@ class TestMomentsCRUD:
 
     def test_delete_removes(self, client):
         """DELETE removes moment, GET returns empty."""
+        import bible_cc_plugin.daemon.server as server_mod
         from bible_cc_plugin.daemon.buffer import (
             compute_content_hash,
             insert_moment,
         )
-        import bible_cc_plugin.daemon.server as server_mod
 
         conn = server_mod._get_db()
         insert_moment(conn, "s2", "decision", "T", "N", compute_content_hash("s2", "T", "N"))
@@ -1671,11 +1684,11 @@ class TestMomentsCRUD:
 
     def test_edit_flushed_returns_409(self, client):
         """Flushed moment cannot be edited."""
+        import bible_cc_plugin.daemon.server as server_mod
         from bible_cc_plugin.daemon.buffer import (
             compute_content_hash,
             insert_moment,
         )
-        import bible_cc_plugin.daemon.server as server_mod
 
         conn = server_mod._get_db()
         mid = insert_moment(conn, "s3", "decision", "T", "N", compute_content_hash("s3", "T", "N"))
@@ -1817,3 +1830,320 @@ class TestDebugEndpoints:
     def test_debug_turns_requires_debug_mode(self, client):
         r = client.get("/daemon/debug/turns?session_id=test&limit=10")
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b — Flush Logic
+# ---------------------------------------------------------------------------
+
+
+class TestFlushLogic:
+    @pytest.mark.asyncio
+    async def test_flush_session_moments_success(self, tmp_path, monkeypatch, httpx_mock):
+        """Flush retryable moments → client.import_memory called → FlushResult success."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "sess-flush-ok")
+        ch = compute_content_hash("sess-flush-ok", "Test", "narrative")
+        insert_moment(conn, "sess-flush-ok", "decision", "Test", "narrative", ch)
+
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            json={"success": True, "task_id": "task-flush-001", "status": "queued"},
+            status_code=202,
+        )
+
+        result = await server_mod._flush_session_moments("sess-flush-ok")
+
+        assert result.flushed_count == 1
+        assert result.task_id == "task-flush-001"
+        assert result.error is None
+
+        row = conn.execute(
+            "SELECT flushed, import_task_id FROM moments WHERE session_id=?",
+            ("sess-flush-ok",),
+        ).fetchone()
+        assert row["flushed"] == 1
+        assert row["import_task_id"] == "task-flush-001"
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_flush_session_moments_empty(self, tmp_path, monkeypatch):
+        """No retryable moments → skip, no client call."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+
+        from bible_cc_plugin.daemon.buffer import insert_session
+
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "sess-empty")
+
+        result = await server_mod._flush_session_moments("sess-empty")
+
+        assert result.flushed_count == 0
+        assert result.task_id is None
+        assert result.error is None
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_flush_session_moments_bible_unreachable(self, tmp_path, monkeypatch, httpx_mock):
+        """BiBLE unreachable → FlushResult with retryable=True."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "sess-unreachable")
+        ch = compute_content_hash("sess-unreachable", "Test", "n")
+        insert_moment(conn, "sess-unreachable", "decision", "Test", "n", ch)
+
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            status_code=500,
+        )
+
+        result = await server_mod._flush_session_moments("sess-unreachable")
+
+        assert result.flushed_count == 0
+        assert result.retryable is True
+        assert "unreachable" in (result.error or "").lower()
+
+        # Moment stays flushed=0
+        row = conn.execute(
+            "SELECT flushed, retry_count FROM moments WHERE session_id=?",
+            ("sess-unreachable",),
+        ).fetchone()
+        assert row["flushed"] == 0
+        assert row["retry_count"] == 1
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_flush_session_moments_bible_4xx(self, tmp_path, monkeypatch, httpx_mock):
+        """BiBLE 4xx → FlushResult with retryable=False."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "sess-4xx")
+        ch = compute_content_hash("sess-4xx", "Test", "n")
+        insert_moment(conn, "sess-4xx", "decision", "Test", "n", ch)
+
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            json={"error": {"code": "UNAUTHORIZED", "message": "Bad token"}},
+            status_code=401,
+        )
+
+        result = await server_mod._flush_session_moments("sess-4xx")
+
+        assert result.flushed_count == 0
+        assert result.retryable is False
+        assert "BiBLE request error" in (result.error or "")
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_flush_endpoint_returns_200_on_error(
+        self, tmp_path, monkeypatch, httpx_mock,
+    ):
+        """POST /daemon/session/flush catches errors → 200 with flush_error."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "sess-endpoint")
+        ch = compute_content_hash("sess-endpoint", "Test", "n")
+        insert_moment(conn, "sess-endpoint", "decision", "Test", "n", ch)
+
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            status_code=500,
+        )
+
+        from fastapi.testclient import TestClient
+
+        with TestClient(server_mod.app) as c:
+            resp = c.post(
+                "/daemon/session/flush", json={"session_id": "sess-endpoint"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["moments_flushed"] == 0
+        assert data["flush_error"] is not None
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_flush_endpoint_success(
+        self, tmp_path, monkeypatch, httpx_mock,
+    ):
+        """POST /daemon/session/flush success path."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "sess-endpoint-ok")
+        ch = compute_content_hash("sess-endpoint-ok", "Test", "n")
+        insert_moment(conn, "sess-endpoint-ok", "decision", "Test", "n", ch)
+
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            json={"success": True, "task_id": "task-ep-001", "status": "queued"},
+            status_code=202,
+        )
+
+        from fastapi.testclient import TestClient
+
+        with TestClient(server_mod.app) as c:
+            resp = c.post(
+                "/daemon/session/flush", json={"session_id": "sess-endpoint-ok"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["moments_flushed"] == 1
+        assert data["task_id"] == "task-ep-001"
+        assert data["flush_error"] is None
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_concurrent_flush_same_session(self, tmp_path, monkeypatch, httpx_mock):
+        """Per-session asyncio.Lock prevents duplicate import_memory calls."""
+        db_path = str(tmp_path / "daemon.db")
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        conn = server_mod._get_db()
+        assert conn is not None
+        insert_session(conn, "sess-concurrent")
+        for i in range(3):
+            ch = compute_content_hash("sess-concurrent", f"T{i}", f"n{i}")
+            insert_moment(conn, "sess-concurrent", "decision", f"T{i}", f"n{i}", ch)
+
+        call_count = 0
+
+        def count_calls(request):
+            nonlocal call_count
+            call_count += 1
+            import httpx as _h
+
+            return _h.Response(202, json={"task_id": f"task-{call_count}", "status": "queued"})
+
+        httpx_mock.add_callback(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            callback=count_calls,
+        )
+
+        # 3 concurrent flushes for same session
+        import asyncio as _asyncio
+
+        results = await _asyncio.gather(
+            server_mod._flush_session_moments("sess-concurrent"),
+            server_mod._flush_session_moments("sess-concurrent"),
+            server_mod._flush_session_moments("sess-concurrent"),
+        )
+
+        # Only 1 successful client call
+        assert call_count == 1
+        # One result has all 3 moments, others are empty
+        assert sum(r.flushed_count for r in results) == 3
+
+        conn.close()
+        server_mod._db_conn = None

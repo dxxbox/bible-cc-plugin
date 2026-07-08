@@ -132,14 +132,41 @@ def _is_pure_acknowledgment(message: str) -> bool:
 
     Strips surrounding whitespace and trailing punctuation (。.!！？?～~…)
     before matching against the PURE_ACKNOWLEDGMENT set.
+
+    Messages like "OK, do X" or "可以，按方案来" are NOT pure acks —
+    the comma-separated action suffix carries decision semantics.
     """
     import re
 
     stripped = message.strip()
-    # strip trailing punctuation common in Chinese/English acknowledgments
+    # Strip trailing punctuation common in Chinese/English acknowledgments
     stripped = re.sub(r"[。.!！？?～~…,，]+$", "", stripped)
     stripped = stripped.strip()
-    return stripped in _PURE_ACKNOWLEDGMENT
+
+    if stripped not in _PURE_ACKNOWLEDGMENT:
+        return False
+
+    # "OK, do X" → has comma + action suffix → NOT a pure ack
+    # The comma may have been stripped as trailing punctuation above,
+    # so also check the original message for comma-separated content
+    original = message.strip()
+    has_suffix = bool(re.search(r"[,，].+", original))
+    return not has_suffix
+
+
+# ── Proposal signals for fast-path decision detection ──────────────────────
+
+_PROPOSAL_SIGNALS: frozenset[str] = frozenset({
+    "建议", "方案", "推荐", "应该", "提议", "要不",
+    "是否", "要不要", "choose", "recommend", "option",
+    "建议方向", "建议方案", "推荐方案",
+    "可以这样", "这么做", "按这个", "照这个",
+})
+
+
+def _has_proposal_signal(content: str) -> bool:
+    """Check whether assistant content contains proposal language."""
+    return any(sig in content for sig in _PROPOSAL_SIGNALS)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -152,8 +179,16 @@ Identify if any KEY MOMENTS occurred in these recent turns.
 
 Key moment types:
 - SESSION_START: the user defines the topic/scope of work
-- DECISION: the user confirms a choice, approach, or design direction
-- ACCOMPLISHMENT: something was completed, verified, and accepted
+- DECISION: the user confirms a choice, approach, design direction,
+  phase transition, or constraint. Any explicit "yes/agree/proceed/start"
+  with stated intent qualifies.
+- ACCOMPLISHMENT: a task, milestone, or phase was completed, verified,
+  and accepted. Progress markers like "X is done" or "phase Y complete"
+  qualify.
+
+You MUST classify every key moment into exactly one of these three types.
+Do NOT invent other type names. If unsure between DECISION and
+ACCOMPLISHMENT, use DECISION.
 
 Do NOT flag:
 - Intermediate bug fixes or error corrections
@@ -166,26 +201,48 @@ If no key moment occurred, output: {"result": "none"}
 Do NOT include markdown fences or extra text. Output ONLY the JSON object."""
 
 
-def build_phase1_prompt(turns: list[dict]) -> str:
+def build_phase1_prompt(
+    turns: list[dict], *, session_start_only: bool = False,
+) -> str:
     """Build the Phase 1 detection prompt from recent turns (detection.md §3.1).
 
     Args:
         turns: List of turn dicts with keys: role, content, tool_name, tool_output.
+        session_start_only: If True, the task only accepts SESSION_START moments.
+            The prompt instructs the LLM to skip DECISION/ACCOMPLISHMENT.
 
     Returns:
         A complete prompt string suitable as the user message to the LLM.
         The system prompt is attached separately via the API.
     """
-    lines = [
-        "Key moment types:",
-        "- SESSION_START: the user defines the topic/scope of work",
-        "- DECISION: the user confirms a choice, approach, or design direction",
-        "- ACCOMPLISHMENT: something was completed, verified, and accepted",
-        "",
-        "Do NOT flag intermediate bug fixes or error corrections.",
-        "",
-        "Recent conversation:",
-    ]
+    if session_start_only:
+        lines = [
+            "You are ONLY detecting SESSION_START moments. Do NOT report DECISION or"
+            " ACCOMPLISHMENT for this request.",
+            "- SESSION_START: the user defines the topic/scope of work",
+            "",
+            "If there is no SESSION_START, output: {\"result\": \"none\"}",
+            "",
+            "Recent conversation:",
+        ]
+    else:
+        lines = [
+            "Key moment types:",
+            "- SESSION_START: the user defines the topic/scope of work",
+            "- DECISION: the user confirms a choice, approach, design direction,",
+            "  phase transition, or constraint. Any explicit \"yes/agree/proceed/start\"",
+            "  with stated intent qualifies.",
+            "- ACCOMPLISHMENT: a task, milestone, or phase was completed, verified,",
+            "  and accepted. Progress markers like \"X is done\" or \"phase Y complete\" qualify.",
+            "",
+            "You MUST classify every key moment into exactly one of these three types.",
+            "Do NOT invent other type names. If unsure between DECISION and",
+            "ACCOMPLISHMENT, use DECISION.",
+            "",
+            "Do NOT flag intermediate bug fixes or error corrections.",
+            "",
+            "Recent conversation:",
+        ]
     if any(t.get("session_start_anchor") for t in turns):
         lines.extend(
             [
@@ -600,6 +657,8 @@ def detect_moments(
     known_moments: list[MomentCandidate] | None,
     phase: Literal[1, 2],
     config: DetectionConfig,
+    *,
+    session_start_only: bool = False,
 ) -> list[MomentCandidate]:
     """Unified entry point for Phase 1 and Phase 2 detection.
 
@@ -608,13 +667,15 @@ def detect_moments(
         known_moments: Phase 1 already-detected moments (Phase 2 only; Phase 1: None).
         phase: 1 or 2.  Phase 2 uses a different prompt (not yet implemented).
         config: DetectionConfig.
+        session_start_only: If True, only accept SESSION_START moments.
+            The LLM is instructed to skip DECISION/ACCOMPLISHMENT.
 
     Returns:
         List of MomentCandidate (may be empty).  NEVER raises.
     """
     try:
         if phase == 1:
-            prompt = build_phase1_prompt(turns)
+            prompt = build_phase1_prompt(turns, session_start_only=session_start_only)
             return call_detection_llm(prompt, config, phase=1)
         else:
             prompt = build_phase2_prompt(

@@ -6,8 +6,6 @@ Pure functions, no DB, no HTTP.
 
 from __future__ import annotations
 
-import pytest
-
 
 def _make_moment(type="decision", title="Test", narrative="Test narrative"):
     from bible_cc_plugin.daemon.detector import MomentCandidate

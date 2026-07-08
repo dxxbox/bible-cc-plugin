@@ -10,10 +10,14 @@ Phase 1d: request-id middleware, verbose health, debug endpoints.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sqlite3
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -43,6 +47,33 @@ _detection_queue: asyncio.Queue = asyncio.Queue()
 _threshold_state: dict[str, dict] = {}  # session_id → {turns, chars}
 _session_start_state: dict[str, dict] = {}  # session_id → {anchor_seq: int}
 _app_config = _config  # may be updated by lifespan startup
+
+# ── Phase 3b flush infrastructure ──────────────────────────────────────────
+
+
+@dataclass
+class FlushResult:
+    """Outcome of a flush operation — success or failure with diagnostics."""
+    moment_ids: list[int]
+    flushed_count: int
+    task_id: str | None = None
+    retryable: bool = False
+    error: str | None = None
+
+
+_flush_locks: dict[str, asyncio.Lock] = {}  # per-session concurrency control
+
+
+@dataclass
+class _Phase2Completion:
+    """Signaling object for synchronous Phase 2 wait in /session/end."""
+    event: asyncio.Event
+    cancelled: bool = False
+    error: Exception | None = None
+    completed_at: str | None = None
+
+
+_phase2_events: dict[str, _Phase2Completion] = {}
 
 
 @asynccontextmanager
@@ -157,12 +188,48 @@ async def _detection_worker():
                 task.get("session_id", "?")[:8],
                 task.get("phase", "?"),
             )
+            # Signal Phase 2 completion (Phase 3b F3b.3)
+            if task.get("phase") == 2:
+                _signal_phase2_complete(task["session_id"])
         except Exception:
             _worker_logger.error("detection worker crashed, restarting...", exc_info=True)
+            # Signal Phase 2 failure so /session/end doesn't hang forever
+            if task is not None and task.get("phase") == 2:
+                _signal_phase2_complete(task["session_id"], error=Exception(
+                    "Phase 2 worker crashed — see logs for details",
+                ))
             await asyncio.sleep(1)
         finally:
             if task is not None:
                 _detection_queue.task_done()
+
+
+def _signal_phase2_complete(
+    session_id: str, error: Exception | None = None,
+) -> None:
+    """Signal that Phase 2 detection has completed (success or failure).
+
+    Called by the detection worker.  If ``comp.cancelled`` is True,
+    the result is silently discarded (timeout already happened).
+    """
+    comp = _phase2_events.get(session_id)
+    if comp is None:
+        return
+    if comp.cancelled:
+        _worker_logger.warning(
+            "Phase 2 completed after timeout — moments discarded for %s",
+            session_id[:8],
+        )
+        # Don't write results — cancelled means /session/end already
+        # flushed Phase 1 and marked the session completed.
+        _phase2_events.pop(session_id, None)
+        return
+    comp.error = error
+    comp.completed_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    comp.event.set()
+    # Worker owns cleanup — pop after signalling so post-LLM
+    # cancelled check can still find this entry.
+    _phase2_events.pop(session_id, None)
 
 
 # ── Detection stats (in-memory, for debug endpoint) ──────────────────
@@ -187,6 +254,16 @@ async def _process_detection_task(task: dict):
     if not _app_config.capture.enabled:
         _worker_logger.debug("detection skipped — capture disabled")
         return
+
+    # Phase 3b F3b.3: check if /session/end timed out before we write results
+    if phase == 2:
+        comp = _phase2_events.get(session_id)
+        if comp is not None and comp.cancelled:
+            _worker_logger.warning(
+                "Phase 2 cancelled — /session/end already timed out for %s",
+                session_id[:8],
+            )
+            return
 
     conn = _get_db()
     if conn is None:
@@ -252,14 +329,27 @@ async def _process_detection_task(task: dict):
     # 2. Call LLM detection（non-blocking: run in thread to avoid blocking event loop）
     config = _app_config.detection
     start = time.monotonic()
+    _ss_only = session_start_only if phase == 1 else False
     candidates = await asyncio.to_thread(
         detect_moments,
         turns,
         known_moments or None,
         phase,
         config,
+        session_start_only=_ss_only,
     )
     elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    # Phase 2 timeout may have occurred during the LLM call —
+    # check cancelled again before writing moments to DB.
+    if phase == 2:
+        comp = _phase2_events.get(session_id)
+        if comp is not None and comp.cancelled:
+            _worker_logger.warning(
+                "Phase 2 cancelled after LLM — moments discarded for %s",
+                session_id[:8],
+            )
+            return
 
     _detection_stats["total"] += 1
     if phase == 1:
@@ -270,6 +360,8 @@ async def _process_detection_task(task: dict):
     inserted = 0
     dedup = 0
     updated = 0
+    filtered = 0
+    flushed_moment_ids: list[int] = []  # for mid_session_upload
     allowed_types = (
         tuple(task.get("moment_types"))
         if task.get("moment_types")
@@ -282,13 +374,28 @@ async def _process_detection_task(task: dict):
     for c in candidates:
         # Guard: only key moment types
         if c.type not in allowed_types:
-            _worker_logger.debug("detect: filtered non-key type=%r title=%s", c.type, c.title)
+            filtered += 1
+            _worker_logger.info(
+                "detect: filtered type=%r title=%s allowed_types=%s",
+                c.type, c.title, allowed_types,
+            )
             continue
 
         content_hash = compute_content_hash(session_id, c.title, c.narrative)
         if phase == 1 and c.type == "session_start" and phase1_anchor_seq is not None:
             existing = get_moment_by_anchor(conn, session_id, c.type, phase1_anchor_seq)
             if existing is not None:
+                # Only refine session_start in the first 3 turns — after that
+                # the session topic is established and updates add noise.
+                session_turn_count = _get_session_turn_count(conn, session_id)
+                if session_turn_count > 3:
+                    dedup += 1
+                    _detection_stats["dedup_hits"] += 1
+                    _worker_logger.debug(
+                        "detect: anchor update frozen — turn_count=%d > 3",
+                        session_turn_count,
+                    )
+                    continue
                 if existing["flushed"] == 0:
                     if update_pending_moment_from_detection(
                         conn,
@@ -299,6 +406,7 @@ async def _process_detection_task(task: dict):
                         phase1_end_seq,
                     ):
                         updated += 1
+                        flushed_moment_ids.append(existing["id"])
                         _worker_logger.info(
                             "detect: phase=%d session=%s type=%s title=%s "
                             "dedup=UPDATED_ANCHOR anchor_seq=%d",
@@ -337,6 +445,7 @@ async def _process_detection_task(task: dict):
             _worker_logger.debug("detect: dedup skipped — %s", c.title)
         else:
             inserted += 1
+            flushed_moment_ids.append(mid)
             _worker_logger.info(
                 "detect: phase=%d session=%s type=%s title=%s dedup=INSERTED",
                 phase,
@@ -345,15 +454,29 @@ async def _process_detection_task(task: dict):
                 c.title,
             )
 
-    if inserted or updated or dedup:
+    if inserted or updated or dedup or filtered:
         _worker_logger.info(
-            "detection complete: session=%s inserted=%d updated=%d dedup=%d latency=%dms",
+            "detection complete: session=%s inserted=%d updated=%d dedup=%d"
+            " filtered=%d latency=%dms",
             session_id[:8],
             inserted,
             updated,
             dedup,
+            filtered,
             elapsed_ms,
         )
+        # Phase 3b: mid_session_upload — immediately flush new/updated moments
+        if phase == 1 and _app_config.capture.mid_session_upload and flushed_moment_ids:
+            for mid in flushed_moment_ids:
+                fr = await _flush_single_moment(conn, mid)
+                if fr.error:
+                    _logger.warning(
+                        "[flush:mid] FAILED moment_id=%d error=%s", mid, fr.error,
+                    )
+                else:
+                    _logger.info(
+                        "[flush:mid] moment_id=%d task_id=%s DONE", mid, fr.task_id,
+                    )
 
 
 def _phase1_anchor_seq(turns: list[dict]) -> int | None:
@@ -624,7 +747,7 @@ async def session_start(req: _SessionStartRequest):
 
 @app.post("/session/end")
 async def session_end(req: _SessionEndRequest):
-    """Mark a session completed.  Phase 1: no LLM / no flush."""
+    """End a session: Phase 2 → flush → mark completed (Phase 3b)."""
     conn = _get_db()
     if conn is None:
         raise HTTPException(503, "daemon database unavailable")
@@ -642,21 +765,339 @@ async def session_end(req: _SessionEndRequest):
             "status": "already_completed",
         }
 
-    mark_session_completed(conn, req.session_id)
     _recovery_cache.pop(req.session_id, None)
     _session_start_state.pop(req.session_id, None)
     reset_threshold(req.session_id)
-    _logger.info("session/end %s completed", req.session_id)
 
+    # Phase 2 detection with synchronous wait
     detection = None
+    phase2_error = None
     if _app_config.capture.enabled:
+        comp = _Phase2Completion(event=asyncio.Event())
+        _phase2_events[req.session_id] = comp
         await _detection_queue.put({"session_id": req.session_id, "phase": 2})
         detection = "queued"
+
+        try:
+            await asyncio.wait_for(comp.event.wait(), timeout=20.0)
+            if comp.error:
+                phase2_error = str(comp.error)
+                _logger.error(
+                    "session/end %s Phase 2 failed: %s",
+                    req.session_id[:8], comp.error,
+                )
+            else:
+                _logger.info(
+                    "session/end %s Phase 2 completed at=%s",
+                    req.session_id[:8], comp.completed_at,
+                )
+        except asyncio.TimeoutError:
+            comp.cancelled = True
+            _logger.warning(
+                "session/end %s Phase 2 timeout (20s) — flushing Phase 1 only",
+                req.session_id[:8],
+            )
+
+    # Flush all retryable moments (Phase 1 + Phase 2 if completed)
+    flush_result = await _flush_session_moments(req.session_id)
+
+    # Mark completed AFTER flush
+    mark_session_completed(conn, req.session_id)
+    _logger.info("session/end %s completed", req.session_id)
+
+    # Completion object stays in _phase2_events until the worker
+    # signals — we must NOT pop it here or the worker's post-LLM
+    # cancelled check will miss it and write moments after timeout.
     return {
         "session_id": req.session_id,
-        "moments_flushed": 0,
+        "moments_flushed": flush_result.flushed_count,
+        "task_id": flush_result.task_id,
+        "flush_error": flush_result.error,
         "status": "completed",
         "detection": detection,
+        "phase2_error": phase2_error,
+    }
+
+
+# ── Phase 3b flush functions ───────────────────────────────────────────────
+
+
+async def _flush_session_moments(session_id: str) -> FlushResult:
+    """Flush all retryable moments for a session to BiBLE Atlas.
+
+    Per-session ``asyncio.Lock`` prevents concurrent duplicate submissions.
+    Failures increment ``retry_count`` and return a diagnostic ``FlushResult``
+    — the HTTP endpoint always returns 200 (graceful degradation).
+    """
+    lock = _flush_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        from bible_cc_plugin.daemon.buffer import (
+            get_retryable_moments,
+            mark_moments_submitted,
+        )
+        from bible_cc_plugin.daemon.buffer import (
+            increment_retry_count as _inc_retry,
+        )
+        from bible_cc_plugin.daemon.client import BiBLEClient, BiBLEError, BibleUnreachableError
+
+        conn = _get_db()
+        if conn is None:
+            return FlushResult(
+                moment_ids=[], flushed_count=0,
+                retryable=True, error="database unavailable",
+            )
+
+        moments = get_retryable_moments(conn, session_id)
+        if not moments:
+            _logger.info("[flush] session=%s no pending moments, skip", session_id[:8])
+            return FlushResult(moment_ids=[], flushed_count=0)
+
+        moment_ids = [m["id"] for m in moments]
+        _logger.info(
+            "[flush] session=%s moments=%d bundling…", session_id[:8], len(moments),
+        )
+
+        try:
+            # Serialize to moments.json per fixed schema
+            payload = {
+                "moments": [
+                    {
+                        "id": m["id"],
+                        "moment_type": m["moment_type"],
+                        "title": m["title"],
+                        "narrative": m["narrative"],
+                        "content_hash": m["content_hash"],
+                        "turn_range_start": m["turn_range_start"],
+                        "turn_range_end": m["turn_range_end"],
+                        "phase": m["phase"],
+                        "detected_at": m["detected_at"],
+                    }
+                    for m in moments
+                ],
+                "session_id": session_id,
+                "flushed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "metrics": {
+                    "total_turns": _get_session_turn_count(conn, session_id),
+                    "total_chars": _get_session_buffered_chars(conn, session_id),
+                },
+            }
+
+            # Write to tempfile for multipart upload
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            with tempfile.NamedTemporaryFile(
+                suffix=".json", mode="w", delete=False, encoding="utf-8",
+            ) as tf:
+                json.dump(payload, tf, ensure_ascii=False)
+                tmp_path = tf.name
+
+            try:
+                with open(tmp_path, "rb") as f:
+                    content = f.read()
+            finally:
+                os.unlink(tmp_path)
+
+            filename = f"moments-{session_id[:8]}-{ts}.json"
+            files = [(filename, content, "application/json")]
+
+            config = _app_config.bible
+            client = BiBLEClient(config)
+            try:
+                result = await client.import_memory(
+                    files, kb_index=config.kb_index, tag="memory",
+                )
+            finally:
+                await client.aclose()
+
+            task_id = result.get("task_id", "unknown")
+            mark_moments_submitted(conn, moment_ids, task_id)
+            _logger.info(
+                "[flush] session=%s flushed=%d task_id=%s DONE",
+                session_id[:8], len(moments), task_id,
+            )
+            return FlushResult(
+                moment_ids=moment_ids, flushed_count=len(moments),
+                task_id=task_id,
+            )
+
+        except BiBLEError as exc:
+            _inc_retry(conn, moment_ids)
+            retryable = "INVALID_RESPONSE" in str(exc.code) if hasattr(exc, "code") else False
+            _logger.error("[flush] session=%s ERROR 4xx code=%s", session_id[:8], exc.code)
+            return FlushResult(
+                moment_ids=moment_ids, flushed_count=0,
+                retryable=retryable, error=f"BiBLE request error: {exc}",
+            )
+        except BibleUnreachableError as exc:
+            _inc_retry(conn, moment_ids)
+            _logger.error("[flush] session=%s UNREACHABLE %s", session_id[:8], exc)
+            return FlushResult(
+                moment_ids=moment_ids, flushed_count=0,
+                retryable=True, error=f"BiBLE Atlas unreachable: {exc}",
+            )
+        except Exception as exc:
+            _inc_retry(conn, moment_ids)
+            _logger.error(
+                "[flush] session=%s UNEXPECTED %s", session_id[:8], exc, exc_info=True,
+            )
+            return FlushResult(
+                moment_ids=moment_ids, flushed_count=0,
+                retryable=True, error=f"Flush failed: {exc}",
+            )
+
+
+async def _flush_single_moment(
+    conn: sqlite3.Connection, moment_id: int,
+) -> FlushResult:
+    """Flush a single moment — used by ``mid_session_upload``.
+
+    Shares the same per-session ``_flush_locks`` lock as batch flush.
+    """
+    from bible_cc_plugin.daemon.buffer import (
+        increment_retry_count as _inc_retry,
+    )
+    from bible_cc_plugin.daemon.buffer import (
+        mark_moments_submitted,
+    )
+    from bible_cc_plugin.daemon.client import BiBLEClient, BiBLEError, BibleUnreachableError
+
+    # Read session_id first (lock-free) to find the right lock key
+    row = conn.execute(
+        "SELECT session_id FROM moments WHERE id=?", (moment_id,),
+    ).fetchone()
+    if row is None:
+        return FlushResult(moment_ids=[], flushed_count=0, error="moment not found")
+    session_id = row["session_id"]
+
+    lock = _flush_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        # Re-read AFTER acquiring lock — batch flush may have already
+        # submitted this moment while we were waiting.
+        row = conn.execute(
+            "SELECT * FROM moments WHERE id=?", (moment_id,),
+        ).fetchone()
+        if row is None:
+            return FlushResult(moment_ids=[], flushed_count=0, error="moment not found")
+        m = dict(row)
+        if m["flushed"] != 0:
+            _logger.info(
+                "[flush:mid] moment_id=%d already flushed=%d, skip",
+                moment_id, m["flushed"],
+            )
+            return FlushResult(moment_ids=[moment_id], flushed_count=0)
+
+        try:
+            payload = {
+                "moments": [
+                    {
+                        "id": m["id"],
+                        "moment_type": m["moment_type"],
+                        "title": m["title"],
+                        "narrative": m["narrative"],
+                        "content_hash": m["content_hash"],
+                        "turn_range_start": m["turn_range_start"],
+                        "turn_range_end": m["turn_range_end"],
+                        "phase": m["phase"],
+                        "detected_at": m["detected_at"],
+                    }
+                ],
+                "session_id": session_id,
+                "flushed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "metrics": {
+                    "total_turns": _get_session_turn_count(conn, session_id),
+                    "total_chars": _get_session_buffered_chars(conn, session_id),
+                },
+            }
+
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            with tempfile.NamedTemporaryFile(
+                suffix=".json", mode="w", delete=False, encoding="utf-8",
+            ) as tf:
+                json.dump(payload, tf, ensure_ascii=False)
+                tmp_path = tf.name
+
+            try:
+                with open(tmp_path, "rb") as f:
+                    content = f.read()
+            finally:
+                os.unlink(tmp_path)
+
+            filename = f"moments-{session_id[:8]}-{ts}.json"
+            files = [(filename, content, "application/json")]
+
+            config = _app_config.bible
+            client = BiBLEClient(config)
+            try:
+                result = await client.import_memory(
+                    files, kb_index=config.kb_index, tag="memory",
+                )
+            finally:
+                await client.aclose()
+
+            task_id = result.get("task_id", "unknown")
+            mark_moments_submitted(conn, [moment_id], task_id)
+            _logger.info(
+                "[flush:mid] moment_id=%d task_id=%s DONE", moment_id, task_id,
+            )
+            return FlushResult(
+                moment_ids=[moment_id], flushed_count=1, task_id=task_id,
+            )
+
+        except BiBLEError as exc:
+            _inc_retry(conn, [moment_id])
+            retryable = "INVALID_RESPONSE" in str(exc.code) if hasattr(exc, "code") else False
+            _logger.error("[flush:mid] moment_id=%d ERROR %s", moment_id, exc)
+            return FlushResult(
+                moment_ids=[moment_id], flushed_count=0,
+                retryable=retryable, error=f"BiBLE request error: {exc}",
+            )
+        except BibleUnreachableError as exc:
+            _inc_retry(conn, [moment_id])
+            _logger.error("[flush:mid] moment_id=%d UNREACHABLE %s", moment_id, exc)
+            return FlushResult(
+                moment_ids=[moment_id], flushed_count=0,
+                retryable=True, error=f"BiBLE Atlas unreachable: {exc}",
+            )
+        except Exception as exc:
+            _inc_retry(conn, [moment_id])
+            _logger.error(
+                "[flush:mid] moment_id=%d UNEXPECTED %s", moment_id, exc, exc_info=True,
+            )
+            return FlushResult(
+                moment_ids=[moment_id], flushed_count=0,
+                retryable=True, error=f"Flush failed: {exc}",
+            )
+
+
+def _get_session_turn_count(conn: sqlite3.Connection, session_id: str) -> int:
+    row = conn.execute(
+        "SELECT turn_count FROM sessions WHERE session_id=?", (session_id,),
+    ).fetchone()
+    return row["turn_count"] if row else 0
+
+
+def _get_session_buffered_chars(conn: sqlite3.Connection, session_id: str) -> int:
+    row = conn.execute(
+        "SELECT buffered_chars FROM sessions WHERE session_id=?", (session_id,),
+    ).fetchone()
+    return row["buffered_chars"] if row else 0
+
+
+# ── /daemon/session/flush endpoint ──────────────────────────────────────────
+
+
+class _FlushRequest(BaseModel):
+    session_id: str
+
+
+@app.post("/daemon/session/flush")
+async def manual_flush(req: _FlushRequest):
+    """Manually flush moments for a session without ending it."""
+    result = await _flush_session_moments(req.session_id)
+    return {
+        "session_id": req.session_id,
+        "moments_flushed": result.flushed_count,
+        "task_id": result.task_id,
+        "flush_error": result.error,
     }
 
 
@@ -708,17 +1149,40 @@ async def turn_user(req: _TurnUserRequest):
         queued = True
 
         # Path B: threshold-based DECISION/ACCOMPLISHMENT detection
-        # Skip pure acknowledgments — "同意"/"我同意"/"OK" etc. lack
-        # standalone semantic content; detection is deferred to /turn/assistant.
-        from bible_cc_plugin.daemon.detector import _is_pure_acknowledgment
+        # Pure acknowledgments skip threshold check UNLESS the assistant
+        # just made a proposal — then "OK" is a decision, not an ack.
+        from bible_cc_plugin.daemon.detector import (
+            _has_proposal_signal,
+            _is_pure_acknowledgment,
+        )
 
         ack = _is_pure_acknowledgment(req.message)
+        fast_path = False
         if ack:
-            _logger.info(
-                "turn/user %s ack=True → decision detection deferred",
-                req.session_id[:8],
+            # Check if assistant just made a proposal → "OK" is a decision
+            from bible_cc_plugin.daemon.buffer import get_recent_turns
+
+            recent = get_recent_turns(conn, req.session_id, limit=2)
+            last_assistant = next(
+                (t for t in recent if t.get("role") == "assistant"), None,
             )
-        if not ack and check_threshold(req.session_id, turns=1, chars=len(req.message)):
+            if last_assistant and _has_proposal_signal(
+                last_assistant.get("content", ""),
+            ):
+                fast_path = True
+                _logger.info(
+                    "turn/user %s ack=True + proposal signal → fast-path decision detection",
+                    req.session_id[:8],
+                )
+            else:
+                _logger.info(
+                    "turn/user %s ack=True → decision detection deferred",
+                    req.session_id[:8],
+                )
+
+        if fast_path or (
+            not ack and check_threshold(req.session_id, turns=1, chars=len(req.message))
+        ):
             await _detection_queue.put(
                 {
                     "session_id": req.session_id,
@@ -729,6 +1193,7 @@ async def turn_user(req: _TurnUserRequest):
                     "moment_types": ["decision", "accomplishment"],
                 }
             )
+            queued = True
     return {"turn_id": turn_id, "queued": queued}
 
 

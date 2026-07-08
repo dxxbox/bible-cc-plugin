@@ -1,6 +1,10 @@
 # 06-recall/mcp-tools.md — MCP Tools（L3）
 
 > 模型驱动的 MCP 工具：schema、BiBLE V4 映射、实现约束、错误处理。6 活跃 + 2 postponed。
+>
+> **⚠️ Phase 阶段**: 本文描述最终态完整设计。Phase 3b 实现 6 活跃 tool 真实调用 +
+> degradation + 下载轮询。§3 代码示例为 sync 伪代码，实际实现以 async handler（见
+> `docs/backlogs/Phase-3/2026-06-24-phase-3b-flush-and-mcp.md`）为准。
 
 ---
 

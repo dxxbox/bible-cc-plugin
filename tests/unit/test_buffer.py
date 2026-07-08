@@ -971,3 +971,123 @@ class TestGetAllSessionTurns:
         from bible_cc_plugin.daemon.buffer import get_all_session_turns
 
         assert get_all_session_turns(conn_wal, "nonexistent") == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b — Flush CRUD
+# ---------------------------------------------------------------------------
+
+
+class TestFlushCRUD:
+    def test_get_retryable_moments_includes_flushed_zero(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            get_retryable_moments,
+            insert_moment,
+            insert_session,
+        )
+
+        insert_session(conn_wal, "sess-x")
+        ch = compute_content_hash("sess-x", "Retry", "n")
+        insert_moment(conn_wal, "sess-x", "decision", "Retry", "n", ch)
+
+        result = get_retryable_moments(conn_wal, "sess-x")
+        assert len(result) == 1
+        assert result[0]["flushed"] == 0
+
+    def test_get_retryable_moments_excludes_flushed_one(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            get_retryable_moments,
+            insert_moment,
+            insert_session,
+        )
+
+        insert_session(conn_wal, "sess-y")
+        ch = compute_content_hash("sess-y", "Done", "n")
+        mid = insert_moment(conn_wal, "sess-y", "decision", "Done", "n", ch)
+        conn_wal.execute("UPDATE moments SET flushed=1 WHERE id=?", (mid,))
+        conn_wal.commit()
+
+        result = get_retryable_moments(conn_wal, "sess-y")
+        assert result == []
+
+    def test_get_retryable_moments_includes_flushed_negative_one(self, conn_wal):
+        """Phase 3d readiness: flushed=-1 moments are retryable."""
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            get_retryable_moments,
+            insert_moment,
+            insert_session,
+        )
+
+        insert_session(conn_wal, "sess-z")
+        ch = compute_content_hash("sess-z", "Failed", "n")
+        mid = insert_moment(conn_wal, "sess-z", "decision", "Failed", "n", ch)
+        conn_wal.execute("UPDATE moments SET flushed=-1 WHERE id=?", (mid,))
+        conn_wal.commit()
+
+        result = get_retryable_moments(conn_wal, "sess-z")
+        assert len(result) == 1
+        assert result[0]["flushed"] == -1
+
+    def test_mark_moments_submitted_updates_fields(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+            mark_moments_submitted,
+        )
+
+        insert_session(conn_wal, "sess-submit")
+        ch1 = compute_content_hash("sess-submit", "M1", "n1")
+        ch2 = compute_content_hash("sess-submit", "M2", "n2")
+        m1 = insert_moment(conn_wal, "sess-submit", "decision", "M1", "n1", ch1)
+        m2 = insert_moment(conn_wal, "sess-submit", "decision", "M2", "n2", ch2)
+
+        mark_moments_submitted(conn_wal, [m1, m2], "task-abc")
+
+        row1 = conn_wal.execute(
+            "SELECT flushed, import_task_id, flushed_at FROM moments WHERE id=?",
+            (m1,),
+        ).fetchone()
+        assert row1["flushed"] == 1
+        assert row1["import_task_id"] == "task-abc"
+        assert row1["flushed_at"] is not None
+
+        row2 = conn_wal.execute(
+            "SELECT flushed, import_task_id FROM moments WHERE id=?",
+            (m2,),
+        ).fetchone()
+        assert row2["flushed"] == 1
+        assert row2["import_task_id"] == "task-abc"
+
+    def test_mark_moments_submitted_empty_list_noop(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import mark_moments_submitted
+
+        mark_moments_submitted(conn_wal, [], "task-empty")  # should not raise
+
+    def test_increment_retry_count(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            increment_retry_count,
+            insert_moment,
+            insert_session,
+        )
+
+        insert_session(conn_wal, "sess-retry")
+        ch = compute_content_hash("sess-retry", "Retry", "n")
+        mid = insert_moment(conn_wal, "sess-retry", "decision", "Retry", "n", ch)
+
+        increment_retry_count(conn_wal, [mid])
+        increment_retry_count(conn_wal, [mid])
+
+        row = conn_wal.execute(
+            "SELECT retry_count FROM moments WHERE id=?", (mid,),
+        ).fetchone()
+        assert row["retry_count"] == 2
+
+    def test_increment_retry_count_empty_list_noop(self, conn_wal):
+        from bible_cc_plugin.daemon.buffer import increment_retry_count
+
+        increment_retry_count(conn_wal, [])  # should not raise

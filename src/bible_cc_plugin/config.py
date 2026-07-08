@@ -175,6 +175,8 @@ def _apply_env_overrides(data: dict) -> None:
         data.setdefault("bible", {})["base_url"] = v
     if v := os.getenv("BIBLE_ATLAS_TOKEN"):
         data.setdefault("bible", {})["token"] = v
+    if v := os.getenv("BIBLE_CC_KB_INDEX"):
+        data.setdefault("bible", {})["kb_index"] = v
     if v := os.getenv("BIBLE_CC_DAEMON_PORT"):
         try:
             data.setdefault("daemon", {})["port"] = int(v)
@@ -208,6 +210,7 @@ def _debug_trace(config: AppConfig, config_path: Path) -> None:
         f"loading from: {config_path}",
         f"bible.base_url = {config.bible.base_url!r}",
         f"bible.token = {'<set>' if config.bible.token else '<none>'}",
+        f"bible.kb_index = {config.bible.kb_index!r}",
         f"daemon.port = {config.daemon.port}",
         f"daemon.db_path = {config.daemon.db_path}",
         f"daemon.port_auto_fallback = {config.daemon.port_auto_fallback}",
