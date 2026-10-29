@@ -74,3 +74,38 @@ class TestDoStartDebugEnv:
 
         # Explicit operator env still wins — do not strip it.
         assert captured["env"]["BIBLE_CC_DEBUG"] == "1"
+
+
+class TestDoStatusOutput:
+    def test_running_prints_to_stdout(self, monkeypatch, capsys):
+        import bible_cc_plugin.scripts.daemon as daemon_cli
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"pid": 42, "port": 9777, "uptime": 125}
+
+        class _Client:
+            def get(self, url):
+                return _Resp()
+
+        monkeypatch.setattr(daemon_cli, "_local_client", lambda timeout: _Client())
+        daemon_cli._do_status("http://127.0.0.1:9777")
+
+        out = capsys.readouterr().out
+        assert "running" in out
+        assert "PID=42" in out
+
+    def test_stopped_prints_to_stdout(self, monkeypatch, capsys):
+        import bible_cc_plugin.scripts.daemon as daemon_cli
+
+        class _Client:
+            def get(self, url):
+                raise ConnectionError("refused")
+
+        monkeypatch.setattr(daemon_cli, "_local_client", lambda timeout: _Client())
+        daemon_cli._do_status("http://127.0.0.1:9777")
+
+        out = capsys.readouterr().out
+        assert "not running" in out

@@ -166,24 +166,28 @@ def _do_stop(base_url: str, *, force: bool = False) -> None:
 
 
 def _do_status(base_url: str) -> None:
+    """Print daemon status to stdout (verify-install.sh greps stdout)."""
     try:
         r = _local_client(timeout=2).get(f"{base_url}/daemon/health")
         if r.status_code == 200:
             data = r.json()
             uptime_m = data["uptime"] // 60
             uptime_s = data["uptime"] % 60
-            _logger.info(
-                "Daemon: running (PID=%s, Port=%s, Uptime=%dm%ds)",
-                data["pid"],
-                data["port"],
-                uptime_m,
-                uptime_s,
+            message = (
+                f"Daemon: running (PID={data['pid']}, Port={data['port']}, "
+                f"Uptime={uptime_m}m{uptime_s}s)"
             )
+            _logger.info(message)
+            print(message)
             return
     except Exception as e:
-        _logger.info("Daemon: not running (%s)", e)
+        message = f"Daemon: not running ({e})"
+        _logger.info(message)
+        print(message)
         return
-    _logger.info("Daemon: not running (HTTP %d)", r.status_code)
+    message = f"Daemon: not running (HTTP {r.status_code})"
+    _logger.info(message)
+    print(message)
 
 
 if __name__ == "__main__":
