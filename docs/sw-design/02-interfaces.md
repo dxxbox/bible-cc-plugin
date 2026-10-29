@@ -191,20 +191,22 @@ Response:
 三域 Import 均为异步。请求编码 `multipart/form-data`。返回 `202 + task_id + status=queued`。
 
 ```
-POST /api/import/memory        → {files[], kb_index, tag="memory", parser_script?, vector_model?, parser_context?, ...}
-POST /api/import/knowledge-base → {files[], kb_index, tag, parser_script?, vector_model?, parser_context?, ...}
-POST /api/import/skill          → {files[], kb_index, tag="skill", parser_script?, vector_model?, parser_context?, ...}
+POST /api/import/memory        → {files, kb_index, tag="memory", parser_script?, vector_model?, parser_context?, ...}
+POST /api/import/knowledge-base → {files, kb_index, tag, parser_script?, vector_model?, parser_context?, ...}
+POST /api/import/skill          → {files, kb_index, tag="skill", parser_script?, vector_model?, parser_context?, ...}
 
 Response: {success: true, task_id: string, domain: string, kb_index: string, tag: string, status: "queued"}
 ```
 
 任务状态查询：`GET /api/control/admin/tasks/{task_id}`。状态流转：`queued → running → completed / failed / cancelled`。
 
-**⚠️ Flush 序列化设计待定**：daemon 的 flush 操作需要将 moments（结构化 JSON 对象，含 title/narrative/moment_type 等字段）通过 `multipart/form-data` 的 `files[]` 上传到 `/api/import/memory`。具体方案：
-- 将 moments 序列化为 JSON 文件后作为 `files[]` 上传（一个文件含多条 moments，或一个文件一条 moment）
-- `kb_index` 从 config 读取（`bible.kb_index`，默认 `"bible-cc"`，见 `04-config/schema.md`）
-- `tag` 固定为 `"memory"`
-此设计需在 `05-capture/flush.md`（L3）中落实。
+**Flush 序列化**（详见 `05-capture/flush.md` §2）：daemon 的 flush 通过
+`multipart/form-data` 的 `files` 字段上传到 `/api/import/memory`：
+
+- 必须包含恰好一个 `meta.json`（`memory_id` / `title` / `abstract` 必填）。
+- 完整 moments JSON 作为附件上传（不参与检索）。
+- `kb_index` 从 config 读取（`bible.kb_index`，默认 `"bible-cc"`，见 `04-config/schema.md`）；
+  `tag` 固定为 `"memory"`。
 
 ### 2.4 Download API
 

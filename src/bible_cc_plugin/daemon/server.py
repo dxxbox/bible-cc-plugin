@@ -13,7 +13,6 @@ import asyncio
 import json
 import os
 import sqlite3
-import tempfile
 import time
 import uuid
 from collections import deque
@@ -1007,6 +1006,56 @@ async def session_end(req: _SessionEndRequest):
 # ── Phase 3b flush functions ───────────────────────────────────────────────
 
 
+def _get_session_created_at(conn: sqlite3.Connection, session_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT created_at FROM sessions WHERE session_id=?", (session_id,)
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+def _iso8601_or_none(value: str | None) -> str | None:
+    """Normalize SQLite ``datetime('now')`` to ISO-8601 (``T`` separator)."""
+    if not value:
+        return None
+    text = str(value).strip()
+    return text.replace(" ", "T", 1) if text else None
+
+
+def _build_memory_meta(
+    *,
+    session_id: str,
+    moments: list[dict],
+    created_at: str | None,
+    updated_at: str,
+    single_moment_id: int | None = None,
+) -> dict:
+    """Build the BiBLE ``meta.json`` for a flush.
+
+    BiBLE indexes only ``abstract`` + ``overview`` as the searchable chunk;
+    the full moments JSON is uploaded separately as an attachment.
+    """
+    abstract = " | ".join(f"[{m['moment_type']}] {m['title']}" for m in moments)
+    overview = "\n".join(f"[{m['moment_type']}] {m['title']}: {m['narrative']}" for m in moments)
+    if single_moment_id is not None:
+        memory_id = f"bible-cc-{session_id}-m{single_moment_id}"
+        title = moments[0]["title"] if moments else memory_id
+    else:
+        memory_id = f"bible-cc-{session_id}"
+        title = f"Claude Code session {session_id[:8]}"
+        if moments:
+            title = f"{title}: {moments[0]['title']}"
+    return {
+        "memory_id": memory_id,
+        "title": title[:200],
+        "abstract": (abstract or title)[:500],
+        "overview": (overview or abstract or title)[:2000],
+        "created_at": _iso8601_or_none(created_at) or updated_at,
+        "updated_at": updated_at,
+        "source_client": "bible-cc",
+        "language": "zh",
+    }
+
+
 async def _flush_session_moments(session_id: str) -> FlushResult:
     """Flush all retryable moments for a session to BiBLE Atlas.
 
@@ -1048,8 +1097,8 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
         )
 
         try:
-            # Serialize to moments.json per fixed schema
-            payload = {
+            updated_at = _utc_now_iso()
+            moments_doc = {
                 "moments": [
                     {
                         "id": m["id"],
@@ -1065,32 +1114,33 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
                     for m in moments
                 ],
                 "session_id": session_id,
-                "flushed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "flushed_at": updated_at,
                 "metrics": {
                     "total_turns": _get_session_turn_count(conn, session_id),
                     "total_chars": _get_session_buffered_chars(conn, session_id),
                 },
             }
+            meta = _build_memory_meta(
+                session_id=session_id,
+                moments=moments,
+                created_at=_get_session_created_at(conn, session_id),
+                updated_at=updated_at,
+            )
 
-            # Write to tempfile for multipart upload
             ts = time.strftime("%Y%m%d-%H%M%S")
-            with tempfile.NamedTemporaryFile(
-                suffix=".json",
-                mode="w",
-                delete=False,
-                encoding="utf-8",
-            ) as tf:
-                json.dump(payload, tf, ensure_ascii=False)
-                tmp_path = tf.name
-
-            try:
-                with open(tmp_path, "rb") as f:
-                    content = f.read()
-            finally:
-                os.unlink(tmp_path)
-
             filename = f"moments-{session_id[:8]}-{ts}.json"
-            files = [(filename, content, "application/json")]
+            files = [
+                (
+                    "meta.json",
+                    json.dumps(meta, ensure_ascii=False).encode("utf-8"),
+                    "application/json",
+                ),
+                (
+                    filename,
+                    json.dumps(moments_doc, ensure_ascii=False).encode("utf-8"),
+                    "application/json",
+                ),
+            ]
 
             config = _app_config.bible
             client = BiBLEClient(config)
@@ -1233,7 +1283,8 @@ async def _flush_single_moment(
 
         flush_start = time.monotonic()
         try:
-            payload = {
+            updated_at = _utc_now_iso()
+            moment_doc = {
                 "moments": [
                     {
                         "id": m["id"],
@@ -1248,31 +1299,34 @@ async def _flush_single_moment(
                     }
                 ],
                 "session_id": session_id,
-                "flushed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "flushed_at": updated_at,
                 "metrics": {
                     "total_turns": _get_session_turn_count(conn, session_id),
                     "total_chars": _get_session_buffered_chars(conn, session_id),
                 },
             }
+            meta = _build_memory_meta(
+                session_id=session_id,
+                moments=[m],
+                created_at=_get_session_created_at(conn, session_id),
+                updated_at=updated_at,
+                single_moment_id=moment_id,
+            )
 
             ts = time.strftime("%Y%m%d-%H%M%S")
-            with tempfile.NamedTemporaryFile(
-                suffix=".json",
-                mode="w",
-                delete=False,
-                encoding="utf-8",
-            ) as tf:
-                json.dump(payload, tf, ensure_ascii=False)
-                tmp_path = tf.name
-
-            try:
-                with open(tmp_path, "rb") as f:
-                    content = f.read()
-            finally:
-                os.unlink(tmp_path)
-
-            filename = f"moments-{session_id[:8]}-{ts}.json"
-            files = [(filename, content, "application/json")]
+            filename = f"moment-{moment_id}-{ts}.json"
+            files = [
+                (
+                    "meta.json",
+                    json.dumps(meta, ensure_ascii=False).encode("utf-8"),
+                    "application/json",
+                ),
+                (
+                    filename,
+                    json.dumps(moment_doc, ensure_ascii=False).encode("utf-8"),
+                    "application/json",
+                ),
+            ]
 
             config = _app_config.bible
             client = BiBLEClient(config)

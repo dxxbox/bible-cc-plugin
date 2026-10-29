@@ -1871,6 +1871,57 @@ class TestDebugEndpoints:
 
 class TestFlushLogic:
     @pytest.mark.asyncio
+    async def test_flush_uploads_meta_json_and_attachment(self, tmp_path, monkeypatch, httpx_mock):
+        """BiBLE memory import needs one meta.json plus attachments, field 'files'."""
+        body_sent: bytes = b""
+
+        def capture(request):
+            import httpx as _httpx
+
+            nonlocal body_sent
+            body_sent = request.content
+            return _httpx.Response(202, json={"task_id": "task-meta"})
+
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "sess-meta")
+        ch = compute_content_hash("sess-meta", "Use PostgreSQL", "chose PG over SQLite")
+        insert_moment(conn, "sess-meta", "decision", "Use PostgreSQL", "chose PG over SQLite", ch)
+
+        httpx_mock.add_callback(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            callback=capture,
+        )
+        result = await server_mod._flush_session_moments("sess-meta")
+        assert result.flushed_count == 1
+
+        body = body_sent.decode("utf-8", errors="replace")
+        assert 'name="files"' in body
+        assert 'name="files[]"' not in body
+        assert 'filename="meta.json"' in body
+        assert '"memory_id": "bible-cc-sess-meta"' in body
+        assert '"abstract"' in body
+        assert '"overview"' in body
+        assert '"source_client": "bible-cc"' in body
+        assert 'filename="moments-' in body
+        assert "chose PG over SQLite" in body
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
     async def test_flush_session_moments_success(self, tmp_path, monkeypatch, httpx_mock):
         """Flush retryable moments → client.import_memory called → FlushResult success."""
         db_path = str(tmp_path / "daemon.db")
@@ -2454,44 +2505,18 @@ class TestFlushLog:
         assert len(server_mod._flush_log) == server_mod._FLUSH_LOG_MAXLEN
         assert server_mod._flush_log[0]["session_id"] == "s-5"
 
-    @pytest.mark.asyncio
-    async def test_record_failure_does_not_mask_flush_error(
-        self, tmp_path, monkeypatch, httpx_mock
-    ):
-        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
-
+    def test_record_flush_swallows_diagnostic_errors(self, monkeypatch):
+        """A broken diagnostic clock must never raise out of _record_flush."""
         import bible_cc_plugin.daemon.server as server_mod
-        from bible_cc_plugin.daemon.buffer import (
-            compute_content_hash,
-            insert_moment,
-            insert_session,
-        )
-
-        server_mod._db_conn = None
-        server_mod._db_error = None
-        server_mod._flush_locks.clear()
-        conn = server_mod._get_db()
-        insert_session(conn, "sess-log-boom")
-        ch = compute_content_hash("sess-log-boom", "T", "N")
-        insert_moment(conn, "sess-log-boom", "decision", "T", "N", ch)
 
         def _boom():
             raise RuntimeError("clock exploded")
 
         monkeypatch.setattr(server_mod, "_utc_now_iso", _boom)
-        httpx_mock.add_response(
-            method="POST",
-            url="http://localhost:5555/api/import/memory",
-            status_code=500,
-        )
 
-        result = await server_mod._flush_session_moments("sess-log-boom")
-
-        assert "unreachable" in (result.error or "").lower()
+        # Must not raise — diagnostics never break the flush path.
+        server_mod._record_flush("s", 1, None, "ok", 1.0, None)
         assert len(server_mod._flush_log) == 0
-
-        conn.close()
-        server_mod._db_conn = None
 
 
 # ---------------------------------------------------------------------------

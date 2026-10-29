@@ -22,31 +22,40 @@
 
 ## 2. 序列化
 
-moments（结构化 JSON）通过 multipart/form-data 上传到 BiBLE import API。
+moments 通过 multipart/form-data 上传到 BiBLE memory import API。
+
+**BiBLE 契约**（`bible/api/upload/memory_upload_api.py` + `memory_parser/`）：
+
+- multipart 字段名为 **`files`**（不是 `files[]`）。
+- 必须包含**恰好一个** `meta.json`：必填 `memory_id` / `title` / `abstract`；
+  `title ≤ 200`、`abstract ≤ 500`、`overview ≤ 2000`。
+- 其余文件作为附件持久化；BiBLE 的检索 chunk **只来自** `abstract` + `overview`。
+
+**Flush 映射（每 session 一个 memory 条目）：**
+
+| meta.json 字段 | 来源 |
+|---|---|
+| `memory_id` | `bible-cc-{session_id}`（单 moment flush：`bible-cc-{session_id}-m{moment_id}`） |
+| `title` | `Claude Code session {sid[:8]}: {首个 moment 标题}`（截断 200） |
+| `abstract` | 所有 moment 的 `[{type}] {title}` 以 ` \| ` 连接（截断 500） |
+| `overview` | 所有 moment 的 `[{type}] {title}: {narrative}` 换行连接（截断 2000） |
+| `created_at` | `sessions.created_at`（转 ISO-8601） |
+| `updated_at` | flush 时间（ISO-8601 UTC） |
+| `source_client` | `"bible-cc"` |
+| `language` | `"zh"` |
+
+附件：`moments-{sid[:8]}-{ts}.json`（完整 moments 数组 + session_id + metrics），
+不参与检索，仅供回溯。
 
 ```python
-import json, tempfile, os, httpx
-
-def flush_moments(moments: list[dict], kb_index: str, base_url: str, token: str | None) -> str:
-    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
-        json.dump({"moments": moments, "flushed_at": datetime.now().isoformat()}, f)
-        tmp_path = f.name
-
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    with open(tmp_path, "rb") as f:
-        files = {"files[]": ("moments.json", f, "application/json")}
-        data = {"kb_index": kb_index, "tag": "memory"}
-        response = httpx.post(
-            f"{base_url}/api/import/memory",
-            files=files, data=data, headers=headers, timeout=30
-        )
-    os.unlink(tmp_path)
-    return response.json()["task_id"]
+files = [
+    ("meta.json", meta_bytes, "application/json"),
+    (f"moments-{session_id[:8]}-{ts}.json", moments_bytes, "application/json"),
+]
 ```
 
 - `kb_index` 来自 `bible.kb_index`（默认 `"bible-cc"`），`tag` 固定 `"memory"`。
-- 临时文件上传后立即删除。
-- ⚠️ 文件格式需与 BiBLE parse_memory.py 的解析逻辑匹配，实现时确认。
+- 失败时 moments 保持 `flushed=0`，`retry_count` 递增（见 §3.4）。
 
 ---
 

@@ -335,6 +335,54 @@ class TestImportMemory:
         assert "vector_model" not in body_str
         assert "parser_context" not in body_str
 
+    @pytest.mark.asyncio
+    async def test_files_multipart_field_is_named_files(self, httpx_mock):
+        """BiBLE binds ``files: list[UploadFile]`` — field name must be ``files``."""
+        body_sent: bytes = b""
+
+        def capture(request):
+            import httpx
+
+            nonlocal body_sent
+            body_sent = request.content
+            return httpx.Response(202, json={"task_id": "task-field"})
+
+        httpx_mock.add_callback(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            callback=capture,
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            await client.import_memory([("meta.json", b"{}", "application/json")])
+        body_str = body_sent.decode("utf-8", errors="replace")
+        assert 'name="files"' in body_str
+        assert 'name="files[]"' not in body_str
+
+
+class TestErrorCodeExtraction:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ({"error": {"code": "TAG_INVALID", "message": "bad"}}, "TAG_INVALID"),
+            ({"detail": {"code": "INVALID_ARGUMENT", "message": "bad"}}, "INVALID_ARGUMENT"),
+            ({"code": "INVALID_ARGUMENT", "message": "bad"}, "INVALID_ARGUMENT"),
+            ({"message": "no code here"}, "UNKNOWN"),
+        ],
+    )
+    async def test_4xx_code_extraction(self, httpx_mock, payload, expected):
+        """BiBLE error envelopes differ: error/detail/top-level code."""
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/api/x",
+            json=payload,
+            status_code=400,
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            with pytest.raises(BiBLEError) as exc_info:
+                await client._request("GET", "/api/x")
+        assert exc_info.value.code == expected
+
 
 # ---------------------------------------------------------------------------
 # Test Search

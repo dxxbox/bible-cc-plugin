@@ -98,6 +98,25 @@ def _parse_json(response: httpx.Response) -> dict[str, Any]:
         )
 
 
+def _extract_error(response: httpx.Response) -> tuple[str, str]:
+    """Extract ``(code, message)`` from a BiBLE error envelope.
+
+    Three shapes exist in the wild:
+
+    - ``{"error": {"code", "message"}}`` — documented V4 shape
+    - ``{"detail": {"code", "message"}}`` — FastAPI ``HTTPException(detail=...)``
+    - ``{"code", "message"}`` — test-mode flat shape
+    """
+    body = _safe_json(response)
+    for key in ("error", "detail"):
+        value = body.get(key)
+        if isinstance(value, dict) and value.get("code"):
+            return str(value["code"]), str(value.get("message", ""))
+    if body.get("code"):
+        return str(body["code"]), str(body.get("message", ""))
+    return "UNKNOWN", response.text[:200]
+
+
 def _safe_json(response: httpx.Response) -> dict[str, Any]:
     """Parse JSON body defensively — returns {} on failure.
 
@@ -422,9 +441,7 @@ class BiBLEClient:
         status = response.status_code
 
         if 400 <= status < 500:
-            body = _safe_json(response)
-            code = body.get("error", {}).get("code", "UNKNOWN")
-            message = body.get("error", {}).get("message", response.text[:200])
+            code, message = _extract_error(response)
             _record_request(
                 method,
                 path,
@@ -815,7 +832,7 @@ class BiBLEClient:
         Returns the API response dict, e.g. ``{"task_id": "abc-123", ...}``.
 
         Raises ``BiBLEError`` when *files* is empty — BiBLE V4 requires at
-        least one ``files[]`` field.
+        least one ``files`` field.
         """
         if not files:
             raise BiBLEError(
@@ -833,9 +850,9 @@ class BiBLEClient:
         # httpx expects files as list[tuple[str, tuple[str, bytes, str]]]
         httpx_files: list[tuple[str, tuple[str, bytes, str]]] = []
         for filename, content, content_type in files:
-            httpx_files.append(("files[]", (filename, content, content_type)))
+            httpx_files.append(("files", (filename, content, content_type)))
         if parser_script is not None:
-            # parser_script is its own multipart field, not a files[] entry
+            # parser_script is its own multipart field, not a files entry
             httpx_files.append(("parser_script", parser_script))
 
         response = await self._request(
