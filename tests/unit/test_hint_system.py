@@ -65,9 +65,7 @@ class TestFormatHint:
         m = _make_moment(type="accomplishment", title="Rate limiting done")
         for mode in ("quote_with_command", "quote_only", "command_only", "narrative"):
             result = format_hint(m, mode)
-            assert m.title in result or "Accomplishment" in result, (
-                f"mode={mode} missing context"
-            )
+            assert m.title in result or "Accomplishment" in result, f"mode={mode} missing context"
 
 
 class TestFormatErrorHint:

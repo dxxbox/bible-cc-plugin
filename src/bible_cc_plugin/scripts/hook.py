@@ -454,8 +454,11 @@ def _probe_hints(
     or the hint cursor, leaving emission exclusively to Stop.
     """
     messages, _max_id = _collect_hints(
-        session_id, base_url, hint_format,
-        timeout=timeout, wait_seconds=wait_seconds,
+        session_id,
+        base_url,
+        hint_format,
+        timeout=timeout,
+        wait_seconds=wait_seconds,
         poll_interval=poll_interval,
     )
     if messages:
@@ -616,7 +619,9 @@ def _handle_turn_tool(config, args) -> None:
         _logger.debug("turn-tool %s %s %s out=%d → OK", sid, args.tool, cmd, olen)
         if _should_poll_hints(config):
             printed = _probe_hints(
-                args.session_id, base_url, config.capture.hint_format,
+                args.session_id,
+                base_url,
+                config.capture.hint_format,
             )
             if body.get("queued") and printed == 0:
                 _write_hint_watch(args.session_id)
@@ -664,7 +669,9 @@ def _handle_turn_tool(config, args) -> None:
                 )
                 if _should_poll_hints(config):
                     printed = _probe_hints(
-                        args.session_id, base_url, config.capture.hint_format,
+                        args.session_id,
+                        base_url,
+                        config.capture.hint_format,
                     )
                     if body2.get("queued") and printed == 0:
                         _write_hint_watch(args.session_id)

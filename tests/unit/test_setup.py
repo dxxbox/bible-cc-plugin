@@ -60,9 +60,7 @@ class TestWriteMcpJson:
         fake_script = tmp_path / "src" / "pkg" / "scripts" / "fake_setup.py"
         fake_script.parent.mkdir(parents=True)
         fake_script.write_text("")
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.setup.__file__", str(fake_script)
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.setup.__file__", str(fake_script))
 
         _write_mcp_json("http://localhost:5555", "test-token")
 
@@ -84,9 +82,7 @@ class TestWriteMcpJson:
         fake_script = tmp_path / "src" / "pkg" / "scripts" / "fake_setup.py"
         fake_script.parent.mkdir(parents=True)
         fake_script.write_text("")
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.setup.__file__", str(fake_script)
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.setup.__file__", str(fake_script))
 
         _write_mcp_json("http://localhost:5555", "")
 
@@ -101,11 +97,11 @@ class TestWriteMcpJson:
         fake_script = tmp_path / "src" / "pkg" / "scripts" / "fake_setup.py"
         fake_script.parent.mkdir(parents=True)
         fake_script.write_text("")
-        monkeypatch.setattr(
-            "bible_cc_plugin.scripts.setup.__file__", str(fake_script)
-        )
+        monkeypatch.setattr("bible_cc_plugin.scripts.setup.__file__", str(fake_script))
 
         _write_mcp_json("http://localhost:5555/", "")
 
         data = json.loads((tmp_path / ".mcp.json").read_text())
-        assert data["mcpServers"]["bible-cc"]["env"]["BIBLE_ATLAS_BASE_URL"] == "http://localhost:5555"
+        assert (
+            data["mcpServers"]["bible-cc"]["env"]["BIBLE_ATLAS_BASE_URL"] == "http://localhost:5555"
+        )

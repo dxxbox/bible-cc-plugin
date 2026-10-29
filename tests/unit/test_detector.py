@@ -620,7 +620,11 @@ class TestPureAcknowledgment:
         mock_client.messages.create.return_value = mock_response
 
         result = _call_detection_api(
-            mock_client, "test prompt", config, phase=1, max_tokens=1024,
+            mock_client,
+            "test prompt",
+            config,
+            phase=1,
+            max_tokens=1024,
         )
         assert isinstance(result, str)
         call_kwargs = mock_client.messages.create.call_args.kwargs

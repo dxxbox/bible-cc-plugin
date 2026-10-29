@@ -15,7 +15,9 @@ class TestEnsureDaemonStarted:
 
         class MockResponse:
             status_code = 200
-            def json(self): return {"pid": 99999, "port": 9777}
+
+            def json(self):
+                return {"pid": 99999, "port": 9777}
 
         monkeypatch.setattr(httpx.Client, "get", lambda *a, **kw: MockResponse())
         spawned = []
@@ -36,7 +38,9 @@ class TestEnsureDaemonStarted:
 
         class MockOkResponse:
             status_code = 200
-            def json(self): return {"pid": 12345, "port": 9777}
+
+            def json(self):
+                return {"pid": 12345, "port": 9777}
 
         def mock_get(url, *args, **kwargs):
             call_count[0] += 1
@@ -62,6 +66,7 @@ class TestEnsureDaemonStarted:
 
         def _raise(*a, **kw):
             raise MockConnectError()
+
         monkeypatch.setattr(httpx.Client, "get", _raise)
         spawned = []
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: spawned.append(1) or None)

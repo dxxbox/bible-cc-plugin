@@ -29,10 +29,7 @@ DAEMON_LOGGER = "bible_cc"
 # Format strings
 # ---------------------------------------------------------------------------
 
-_TEXT_FMT = (
-    "[%(asctime)s] [%(levelname)s] %(name)s "
-    "%(filename)s:%(lineno)d: %(message)s"
-)
+_TEXT_FMT = "[%(asctime)s] [%(levelname)s] %(name)s %(filename)s:%(lineno)d: %(message)s"
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +132,7 @@ def configure_logging(
         # Fault-tolerant: warn to stderr if available, otherwise swallow
         for h in logger.handlers:
             if isinstance(h, logging.StreamHandler):
-                h.stream.write(
-                    f"[WARNING] Failed to create log file: {file}\n"
-                )
+                h.stream.write(f"[WARNING] Failed to create log file: {file}\n")
                 break
 
 

@@ -39,9 +39,7 @@ def _setup_logging():
     # File handler — append mode
     fh = logging.FileHandler(str(log_path), encoding="utf-8")
     fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter(
-        "[%(asctime)s] [%(name)s] %(levelname)s %(message)s"
-    ))
+    fh.setFormatter(logging.Formatter("[%(asctime)s] [%(name)s] %(levelname)s %(message)s"))
     logger.addHandler(fh)
 
     # Also log to stderr for MCP diagnostics
@@ -148,10 +146,7 @@ TOOLS: list[dict] = [
     },
     {
         "name": _TOOL_MEMORY_DELETE,
-        "description": (
-            "[POSTPONED] Delete a memory — "
-            "not yet available in BiBLE V4 API."
-        ),
+        "description": ("[POSTPONED] Delete a memory — not yet available in BiBLE V4 API."),
         "inputSchema": {
             "type": "object",
             "properties": {"storage_path": {"type": "string"}},
@@ -160,10 +155,7 @@ TOOLS: list[dict] = [
     },
     {
         "name": _TOOL_KNOWLEDGE_LIST,
-        "description": (
-            "[POSTPONED] List knowledge entries — "
-            "not yet available in BiBLE V4 API."
-        ),
+        "description": ("[POSTPONED] List knowledge entries — not yet available in BiBLE V4 API."),
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
@@ -186,13 +178,16 @@ async def _handle_tool(name: str, arguments: dict) -> list:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _logger.warning(
             "[mcp:tool] POSTPONED: %s → not yet available (%dms)",
-            name, elapsed_ms,
+            name,
+            elapsed_ms,
         )
-        return _json_content({
-            "error": f"Tool '{name}' is not yet available.",
-            "detail": "This BiBLE V4 API endpoint has not been implemented yet.",
-            "suggestion": "Check /bible-cc:status for updates.",
-        })
+        return _json_content(
+            {
+                "error": f"Tool '{name}' is not yet available.",
+                "detail": "This BiBLE V4 API endpoint has not been implemented yet.",
+                "suggestion": "Check /bible-cc:status for updates.",
+            }
+        )
 
     # Missing base URL — config error
     base_url = os.getenv("BIBLE_ATLAS_BASE_URL", "")
@@ -200,16 +195,19 @@ async def _handle_tool(name: str, arguments: dict) -> list:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _logger.warning(
             "[mcp:tool] CONFIG: %s → BIBLE_ATLAS_BASE_URL not set (%dms)",
-            name, elapsed_ms,
+            name,
+            elapsed_ms,
         )
-        return _json_content({
-            "error": "BiBLE Atlas not configured.",
-            "detail": "BIBLE_ATLAS_BASE_URL is not set.",
-            "suggestion": (
-                "Run 'uv run python -m bible_cc_plugin.scripts.setup' "
-                "or set BIBLE_ATLAS_BASE_URL. Then check /bible-cc:status."
-            ),
-        })
+        return _json_content(
+            {
+                "error": "BiBLE Atlas not configured.",
+                "detail": "BIBLE_ATLAS_BASE_URL is not set.",
+                "suggestion": (
+                    "Run 'uv run python -m bible_cc_plugin.scripts.setup' "
+                    "or set BIBLE_ATLAS_BASE_URL. Then check /bible-cc:status."
+                ),
+            }
+        )
 
     # Phase 3b: real BiBLE client call
     try:
@@ -219,13 +217,17 @@ async def _handle_tool(name: str, arguments: dict) -> list:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _logger.error(
             "[mcp:tool] ERROR: %s → BiBLEError [%s] (%dms)",
-            name, getattr(exc, "code", "?"), elapsed_ms,
+            name,
+            getattr(exc, "code", "?"),
+            elapsed_ms,
         )
         return _degradation_error(exc)
     except BibleUnreachableError as exc:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         _logger.error(
-            "[mcp:tool] ERROR: %s → unreachable (%dms)", name, elapsed_ms,
+            "[mcp:tool] ERROR: %s → unreachable (%dms)",
+            name,
+            elapsed_ms,
         )
         return _degradation_error(exc)
 
@@ -248,11 +250,13 @@ def _build_client() -> BiBLEClient:
     """Create a BiBLEClient from env vars."""
     from bible_cc_plugin.config import BibleConfig
 
-    return BiBLEClient(BibleConfig(
-        base_url=os.getenv("BIBLE_ATLAS_BASE_URL", "http://localhost:5555"),
-        token=os.getenv("BIBLE_ATLAS_TOKEN", ""),
-        kb_index=os.getenv("BIBLE_CC_KB_INDEX", "bible-cc"),
-    ))
+    return BiBLEClient(
+        BibleConfig(
+            base_url=os.getenv("BIBLE_ATLAS_BASE_URL", "http://localhost:5555"),
+            token=os.getenv("BIBLE_ATLAS_TOKEN", ""),
+            kb_index=os.getenv("BIBLE_CC_KB_INDEX", "bible-cc"),
+        )
+    )
 
 
 async def _dispatch(client: BiBLEClient, name: str, args: dict) -> dict:
@@ -321,12 +325,15 @@ async def _dispatch(client: BiBLEClient, name: str, args: dict) -> dict:
 
 
 async def _poll_download(
-    client: BiBLEClient, domain: str, task_id: str,
+    client: BiBLEClient,
+    domain: str,
+    task_id: str,
 ) -> dict:
     """Poll task status every 2s up to 30 times (60s timeout)."""
     _logger.info(
         "[mcp:tool] download poll task_id=%s domain=%s (60s timeout)",
-        task_id, domain,
+        task_id,
+        domain,
     )
     for i in range(30):
         await asyncio.sleep(2)
@@ -335,7 +342,9 @@ async def _poll_download(
         if (i + 1) % 5 == 0:
             _logger.info(
                 "[mcp:tool] polling task_id=%s (%ds/60s, status=%s)",
-                task_id, (i + 1) * 2, status,
+                task_id,
+                (i + 1) * 2,
+                status,
             )
         if status == "completed":
             artifact_id = task.get("result", {}).get("artifact_id")
@@ -364,21 +373,25 @@ def _degradation_error(exc: Exception) -> list:
     if isinstance(exc, BibleUnreachableError):
         cat, suggestion = "unreachable", "Check /bible-cc:status for connectivity."
     elif isinstance(exc, BiBLEError) and "INVALID_RESPONSE" in getattr(exc, "code", ""):
-        cat, suggestion = "protocol error", (
-            "BiBLE returned an unexpected response. Check server version compatibility."
+        cat, suggestion = (
+            "protocol error",
+            ("BiBLE returned an unexpected response. Check server version compatibility."),
         )
     elif isinstance(exc, BiBLEError):
-        cat, suggestion = "request error", (
-            f"[{exc.code}] {exc.message}. Check your BiBLE configuration."
+        cat, suggestion = (
+            "request error",
+            (f"[{exc.code}] {exc.message}. Check your BiBLE configuration."),
         )
     else:
         cat, suggestion = "error", "Internal error."
 
-    return _json_content({
-        "error": f"BiBLE Atlas {cat}.",
-        "detail": str(exc),
-        "suggestion": suggestion,
-    })
+    return _json_content(
+        {
+            "error": f"BiBLE Atlas {cat}.",
+            "detail": str(exc),
+            "suggestion": suggestion,
+        }
+    )
 
 
 def _summarize_result(name: str, result: dict) -> str:
@@ -423,9 +436,7 @@ def main():
                 latency = int(r.elapsed.total_seconds() * 1000)
                 _logger.info("[mcp:server] BiBLE health=OK (%dms)", latency)
             else:
-                _logger.warning(
-                    "[mcp:server] BiBLE health=HTTP %d (%s)", r.status_code, base_url
-                )
+                _logger.warning("[mcp:server] BiBLE health=HTTP %d (%s)", r.status_code, base_url)
         except Exception as e:
             _logger.warning("[mcp:server] BiBLE health=UNREACHABLE (%s)", e)
     else:

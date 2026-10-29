@@ -666,7 +666,8 @@ def count_total_turns(conn: sqlite3.Connection) -> int:
 
 
 def get_retryable_moments(
-    conn: sqlite3.Connection, session_id: str,
+    conn: sqlite3.Connection,
+    session_id: str,
 ) -> list[dict]:
     """Return moments that need flush/retry: flushed IN (0, -1).
 
@@ -676,15 +677,16 @@ def get_retryable_moments(
     Excludes flushed=1 (already submitted) and flushed=2 (confirmed).
     """
     rows = conn.execute(
-        "SELECT * FROM moments WHERE session_id=? AND flushed IN (0, -1)"
-        " ORDER BY detected_at DESC",
+        "SELECT * FROM moments WHERE session_id=? AND flushed IN (0, -1) ORDER BY detected_at DESC",
         (session_id,),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def mark_moments_submitted(
-    conn: sqlite3.Connection, moment_ids: list[int], task_id: str,
+    conn: sqlite3.Connection,
+    moment_ids: list[int],
+    task_id: str,
 ) -> None:
     """Mark moments as submitted to BiBLE: flushed=1, import_task_id, flushed_at."""
     if not moment_ids:
@@ -699,7 +701,8 @@ def mark_moments_submitted(
 
 
 def increment_retry_count(
-    conn: sqlite3.Connection, moment_ids: list[int],
+    conn: sqlite3.Connection,
+    moment_ids: list[int],
 ) -> None:
     """Increment retry_count for failed flush attempts."""
     if not moment_ids:

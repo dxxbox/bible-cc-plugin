@@ -47,8 +47,7 @@ class TestMCPToolRegistration:
         from bible_cc_plugin.mcp.server import TOOLS
 
         postponed = [
-            t for t in TOOLS
-            if t["name"] in {"bible_memory_delete", "bible_knowledge_list"}
+            t for t in TOOLS if t["name"] in {"bible_memory_delete", "bible_knowledge_list"}
         ]
         for t in postponed:
             assert "not yet available" in t["description"].lower()
@@ -174,10 +173,13 @@ class TestMCPSave:
             json={"task_id": "task-save-1", "status": "queued"},
             status_code=202,
         )
-        result = await _invoke_tool("bible_memory_save", {
-            "messages": [{"role": "user", "content": "hello"}],
-            "title": "Test",
-        })
+        result = await _invoke_tool(
+            "bible_memory_save",
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+                "title": "Test",
+            },
+        )
         assert result["task_id"] == "task-save-1"
         assert result["status"] == "queued"
 
@@ -193,9 +195,13 @@ class TestMCPSearch:
             json={"total": 1, "results": {"knowledge_base": [{"doc_id": "kb1"}]}},
             status_code=200,
         )
-        result = await _invoke_tool("bible_knowledge_search", {
-            "query": "design", "tag": "design",
-        })
+        result = await _invoke_tool(
+            "bible_knowledge_search",
+            {
+                "query": "design",
+                "tag": "design",
+            },
+        )
         assert result["total"] == 1
 
     @pytest.mark.asyncio

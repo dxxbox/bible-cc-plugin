@@ -1083,7 +1083,8 @@ class TestFlushCRUD:
         increment_retry_count(conn_wal, [mid])
 
         row = conn_wal.execute(
-            "SELECT retry_count FROM moments WHERE id=?", (mid,),
+            "SELECT retry_count FROM moments WHERE id=?",
+            (mid,),
         ).fetchone()
         assert row["retry_count"] == 2
 

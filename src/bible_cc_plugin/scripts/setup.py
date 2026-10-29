@@ -127,9 +127,7 @@ def _kill_daemon_if_running(port: int | None = None) -> None:
         port = AppConfig().daemon.port
 
     try:
-        r = httpx.Client(trust_env=False, timeout=3).post(
-            f"http://127.0.0.1:{port}/daemon/stop"
-        )
+        r = httpx.Client(trust_env=False, timeout=3).post(f"http://127.0.0.1:{port}/daemon/stop")
         if r.status_code == 200:
             _logger.info("Daemon stopped gracefully.")
             print("Daemon stopped gracefully.")

@@ -402,9 +402,7 @@ class TestHookTurnUser:
         )
         # Write expired watch
         watch_path = tmp_path / f".hint_watch_{sid}"
-        watch_path.write_text(
-            json.dumps({"cursor": 0, "expires_at": _time.time() - 10})
-        )
+        watch_path.write_text(json.dumps({"cursor": 0, "expires_at": _time.time() - 10}))
 
         print_calls = []
         monkeypatch.setattr(
@@ -418,8 +416,12 @@ class TestHookTurnUser:
 
         class FakeResponse:
             status_code = 200
-            def json(self): return {"turn_id": 1, "queued": False}
-            def raise_for_status(self): pass
+
+            def json(self):
+                return {"turn_id": 1, "queued": False}
+
+            def raise_for_status(self):
+                pass
 
         client = httpx.Client(trust_env=False)
         monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
@@ -455,9 +457,7 @@ class TestHookTurnUser:
         )
         # Write watch still active (far future)
         watch_path = tmp_path / f".hint_watch_{sid}"
-        watch_path.write_text(
-            json.dumps({"cursor": 0, "expires_at": _time.time() + 60})
-        )
+        watch_path.write_text(json.dumps({"cursor": 0, "expires_at": _time.time() + 60}))
 
         print_calls = []
         monkeypatch.setattr(
@@ -471,8 +471,12 @@ class TestHookTurnUser:
 
         class FakeResponse:
             status_code = 200
-            def json(self): return {"turn_id": 1, "queued": False}
-            def raise_for_status(self): pass
+
+            def json(self):
+                return {"turn_id": 1, "queued": False}
+
+            def raise_for_status(self):
+                pass
 
         client = httpx.Client(trust_env=False)
         monkeypatch.setattr(client, "post", lambda *a, **kw: FakeResponse())
@@ -1346,8 +1350,7 @@ class TestPrintHints:
         root.propagate = False
 
         assert any(
-            "_collect_hints: GET /daemon/moments failed" in r.message
-            for r in caplog.records
+            "_collect_hints: GET /daemon/moments failed" in r.message for r in caplog.records
         )
 
     def test_non_200_response_logs_and_returns(self, monkeypatch, caplog):
@@ -1380,8 +1383,7 @@ class TestPrintHints:
         root.propagate = False
 
         assert any(
-            "_collect_hints: GET /daemon/moments failed" in r.message
-            for r in caplog.records
+            "_collect_hints: GET /daemon/moments failed" in r.message for r in caplog.records
         )
 
 
@@ -1523,9 +1525,7 @@ class TestCollectHints:
         monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
         monkeypatch.setattr(httpx, "Client", lambda **kw: client)
 
-        messages, max_id = _collect_hints(
-            session_id, "http://127.0.0.1:9777", "quote_with_command"
-        )
+        messages, max_id = _collect_hints(session_id, "http://127.0.0.1:9777", "quote_with_command")
 
         assert len(messages) == 1
         assert "Postgres" in messages[0]
@@ -1574,9 +1574,7 @@ class TestCollectHints:
         monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
         monkeypatch.setattr(httpx, "Client", lambda **kw: client)
 
-        messages, max_id = _collect_hints(
-            session_id, "http://127.0.0.1:9777", "quote_only"
-        )
+        messages, max_id = _collect_hints(session_id, "http://127.0.0.1:9777", "quote_only")
 
         assert len(messages) == 1
         assert "New moment" in messages[0]
@@ -1589,14 +1587,13 @@ class TestCollectHints:
 
         client = httpx.Client(trust_env=False)
         monkeypatch.setattr(
-            client, "get",
+            client,
+            "get",
             lambda *a, **kw: (_ for _ in ()).throw(httpx.ConnectError("refused")),
         )
         monkeypatch.setattr(httpx, "Client", lambda **kw: client)
 
-        messages, max_id = _collect_hints(
-            "abc-123", "http://127.0.0.1:9777", "quote_with_command"
-        )
+        messages, max_id = _collect_hints("abc-123", "http://127.0.0.1:9777", "quote_with_command")
 
         assert messages == []
         assert max_id == 0
@@ -1634,9 +1631,7 @@ class TestCollectHints:
         monkeypatch.setattr(client, "get", lambda *a, **kw: FakeResponse())
         monkeypatch.setattr(httpx, "Client", lambda **kw: client)
 
-        messages, max_id = _collect_hints(
-            session_id, "http://127.0.0.1:9777", "quote_only"
-        )
+        messages, max_id = _collect_hints(session_id, "http://127.0.0.1:9777", "quote_only")
 
         assert messages == []
         assert max_id == 0  # no new hints, no cursor advancement needed

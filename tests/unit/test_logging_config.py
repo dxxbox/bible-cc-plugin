@@ -118,8 +118,7 @@ class TestStderrHandler:
         stderr_handlers = [
             h
             for h in logger.handlers
-            if isinstance(h, logging.StreamHandler)
-            and getattr(h, "stream", None) is sys.stderr
+            if isinstance(h, logging.StreamHandler) and getattr(h, "stream", None) is sys.stderr
         ]
         assert len(stderr_handlers) >= 1
 
