@@ -18,8 +18,8 @@ GET /daemon/health
 |----|------|------|
 | daemon | status, uptime, pid, port | 进程状态 |
 | sessions | active, completed | session 统计 |
-| buffer | total_turns, pending_moments | 当前 session 缓冲数据 |
-| bible | reachable, latency_ms, base_url | BiBLE Atlas 连通性 |
+| buffer | total_turns, pending_moments | 全局缓冲计数 |
+| bible | reachable, latency_ms, base_url, error, checked_at | BiBLE Atlas 连通性（`reachable` 首次探测前为 `null`；失败时 `latency_ms` 为 `null`） |
 | sqlite | integrity, schema_version, size_bytes, db_path | 数据库健康 |
 
 ### 1.3 逻辑
@@ -28,7 +28,9 @@ GET /daemon/health
 1. 调 GET /daemon/health
 2. 如果 daemon 无响应 → 展示 "daemon: not running"，提示检查端口
 3. 格式化各域输出
-4. bible_connectivity: 展示 daemon 启动时的连通性检查结果
+4. bible_connectivity: 读取后台探测缓存（启动即探测，之后每 30s 刷新，超时 3s）
+   首次探测完成前 reachable 为 null；需要 DNS/TCP/HTTP 分解时调
+   GET /daemon/health?verbose=true
 ```
 
 ### 1.4 输出示例
@@ -44,7 +46,7 @@ sessions
   active:     2
   completed:  15
 
-buffer (current session)
+buffer (global)
   turns:      12
   pending moments: 3
 
@@ -56,6 +58,22 @@ sqlite (~/.bible-cc/daemon.db)
   integrity:  ok
   schema:     v1
   size:       2.3 MB
+```
+
+BiBLE 不可达时：
+
+```
+bible atlas (http://localhost:5555)
+  status:     unreachable
+  error:      connection refused
+  checked:    2026-10-29T12:00:00Z
+```
+
+daemon 刚启动、首次探测尚未完成时：
+
+```
+bible atlas (http://localhost:5555)
+  status:     checking…
 ```
 
 ---

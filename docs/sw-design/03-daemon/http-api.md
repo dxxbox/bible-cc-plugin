@@ -1,6 +1,6 @@
 # 03-daemon/http-api.md — HTTP API Detailed Spec（L3）
 
-> Daemon 全部 12 个 HTTP 端点的完整 spec：请求/响应 schema、错误码、时序约束、内部实现要点。与 `02-interfaces.md` 一致，本文补充实现细节。
+> Daemon 全部 HTTP 端点的完整 spec：请求/响应 schema、错误码、时序约束、内部实现要点。与 `02-interfaces.md` 一致，本文补充实现细节。
 
 ---
 
@@ -115,7 +115,7 @@ HTTP 状态码：
 
 活性检测 + 诊断探针。
 
-**Request:** （无 body）
+**Request:** 无 body；可选 query `verbose=true`。
 
 **Response (200):**
 ```json
@@ -126,24 +126,56 @@ HTTP 状态码：
   "uptime": 3600,
   "sessions": {"active": 1, "completed": 42},
   "buffer": {"total_turns": 156, "pending_moments": 3},
-  "bible_connectivity": {"reachable": true, "latency_ms": 45},
+  "bible_connectivity": {
+    "reachable": true,
+    "latency_ms": 45.2,
+    "base_url": "http://localhost:5555",
+    "error": null,
+    "checked_at": "2026-10-29T12:00:00Z"
+  },
   "sqlite": {"integrity": "ok", "schema_version": 1, "size_bytes": 204800}
 }
 ```
 
+`bible_connectivity` 字段语义：
+- `reachable`：首次后台探测完成前为 `null`，之后为 `bool`。
+- `latency_ms`：探测总耗时（毫秒）；失败时为 `null`。
+- `base_url`：探测目标（来自 `bible.base_url`）。
+- `error`：失败原因（`timeout` / `connection refused` / `http 500: CODE` / `unhealthy status=...`）；成功时为 `null`。
+- `checked_at`：最近一次探测完成的 ISO-8601 UTC 时间。
+
 **内部流程:**
 1. `pid`、`port` 取自 daemon 进程自身（port 可能是 auto_fallback 后的实际端口）。
 2. 计算 `uptime = now - daemon_start_time`。
-2. 查询 SQLite：
+3. 查询 SQLite：
    ```sql
    SELECT COUNT(*) FROM sessions WHERE status='active';
    SELECT COUNT(*) FROM sessions WHERE status='completed';
    SELECT COUNT(*) FROM turns;
    SELECT COUNT(*) FROM moments WHERE flushed=0;
    ```
-3. BiBLE 连通性：`GET {base_url}/api/health`（或对应的 ping 端点），计时。
-   如失败 → `reachable=false, latency_ms=null`。超时 3s。
-4. SQLite 完整性：`PRAGMA integrity_check;` + `SELECT COUNT(*) FROM schema_version;` + 文件大小。
+4. BiBLE 连通性：**读后台探测缓存**（不发起网络请求）。daemon lifespan 启动时立即探测一次，之后每 30s 刷新；单次探测 `GET {base_url}/health`，超时 3s。失败 → `reachable=false, latency_ms=null, error=<原因>`。
+5. SQLite 完整性：`PRAGMA integrity_check;` + `SELECT COUNT(*) FROM schema_version;` + 文件大小。
+
+**Verbose 模式（`?verbose=true`）：**
+- 在标准字段外追加 `startup_timings`、`sqlite_detailed`、`config_sources`（Phase 1d）。
+- `bible_connectivity` 替换为一次**同步详细探测**的结果，并追加 `steps`：
+  ```json
+  "bible_connectivity": {
+    "reachable": true,
+    "latency_ms": 22.0,
+    "base_url": "http://localhost:5555",
+    "error": null,
+    "checked_at": "2026-10-29T12:00:00Z",
+    "steps": [
+      {"step": "dns",  "ok": true, "latency_ms": 5.0,  "detail": "127.0.0.1"},
+      {"step": "tcp",  "ok": true, "latency_ms": 2.0,  "detail": "127.0.0.1:5555"},
+      {"step": "http", "ok": true, "latency_ms": 15.0, "detail": "status=200"}
+    ]
+  }
+  ```
+- 三级探测共享一个 3s deadline；任一阶段失败即提前结束，`error` 带阶段前缀（`dns:` / `tcp:` / `http:`）。
+- 详细探测结果同时刷新缓存摘要；探测本身异常时回退缓存快照，端点仍返回 200。
 
 **错误:** 无（此端点永不失败——即使子检查失败也返回 degraded 状态）。
 
@@ -642,13 +674,83 @@ DELETE FROM moments WHERE id = ? AND flushed = 0;
 
 ---
 
-## 7. 时序约束汇总
+## 7. Debug 端点（仅 `BIBLE_CC_DEBUG=1`）
+
+所有 `/daemon/debug/*` 端点沿用 Phase 1d 约定：非 debug 模式返回 404 `{"error":{"code":"NOT_FOUND","message":"debug mode disabled"}}`。Phase 3c 的两个端点采用**请求时检查**（始终注册），因此 `--debug` 启动或手动设置 `BIBLE_CC_DEBUG=1` 即可访问。
+
+### 7.1 `GET /daemon/debug/flush-log`
+
+某 session 的 flush 历史（内存缓冲，daemon 重启后丢失）。
+
+**Request:** query `session_id`（必需）、`limit`（可选，默认 100，clamp 1..100）。
+
+**Response (200):**
+```json
+{
+  "session_id": "abc123",
+  "flushes": [
+    {
+      "time": "2026-10-29T12:00:00Z",
+      "session_id": "abc123",
+      "moments_count": 3,
+      "task_id": "xyz-456",
+      "status": "ok",
+      "latency_ms": 1200.3,
+      "error": null
+    }
+  ]
+}
+```
+
+- 最新在前；未知 session 返回空数组（诊断端点不把"无记录"当错误）。
+- 记录成功与失败；`status` 为 `"ok"` / `"error"`，失败时 `task_id` 为 `null`、`error` 为原因（截断 500 字符）。
+- 仅在真正发起上传时记录：DB 不可用、无 pending moments、moment 已 flush 跳过均不记录。
+- 缺少 `session_id` → 422 `{"error":{"code":"BAD_REQUEST",...}}`。
+
+### 7.2 `GET /daemon/debug/bible-requests`
+
+最近 BiBLE API 调用（内存 ring buffer，`maxlen=200`）。
+
+**Request:** query `limit`（可选，默认 50，clamp 1..200）、`include_health`（可选，默认 `false`）。
+
+**Response (200):**
+```json
+{
+  "requests": [
+    {
+      "time": "2026-10-29T12:00:00Z",
+      "method": "POST",
+      "path": "/api/import/memory",
+      "status": 202,
+      "latency_ms": 1200.3,
+      "http_ok": true,
+      "is_health": false,
+      "error": null
+    }
+  ]
+}
+```
+
+- `http_ok` 只表示 HTTP 层成功（2xx）；2xx 但响应解析失败的业务错误仍为 `true`，由 `error` 字段补充。
+- 默认隐藏 `/health` 探测（每 30s 一条，会淹没业务请求）；`include_health=true` 返回全部。
+- `path` 已剥除 query/fragment，不记录 token、请求/响应 body、Authorization header。
+- 只覆盖**本 daemon 进程**发起的调用；MCP server 是独立进程，其调用不在此列表中。
+- 最新在前；无记录时返回空数组。
+
+### 7.3 其他 debug 端点
+
+`GET /daemon/debug/schema`、`/tables/{name}`、`/turns`、`/detections`、`/detections/stats` 为 Phase 1d/2b 交付，行为不变（前三个仅在导入时 debug 模式注册；后两个请求时检查）。
+
+---
+
+## 8. 时序约束汇总
 
 | 端点 | 最大延迟 | 是否阻塞 | 依赖外部 |
 |------|---------|---------|---------|
 | `POST /daemon/start` | ~500ms | 是（startup 序列同步） | 否 |
 | `POST /daemon/stop` | ~10s | 是（等 flush 完毕） | 否 |
-| `GET /daemon/health` | ~3s | 是（BiBLE ping） | BiBLE（3s timeout） |
+| `GET /daemon/health` | ~5ms | 否（读后台探测缓存） | 否 |
+| `GET /daemon/health?verbose=true` | ~3s | 是（同步三级探测） | BiBLE（3s timeout） |
 | `POST /session/start` | ~50ms | 否 | 否 |
 | `POST /session/end` | ~20s | **是（LLM）** | BiBLE（flush） |
 | `POST /turn/user` | <10ms | 否（检测异步） | 否 |
@@ -659,19 +761,23 @@ DELETE FROM moments WHERE id = ? AND flushed = 0;
 | `GET /daemon/moments` | ~5ms | 否 | 否 |
 | `DELETE /daemon/moments/{id}` | ~5ms | 否 | 否 |
 | `PUT /daemon/moments/{id}` | ~5ms | 否 | 否 |
+| `GET /daemon/debug/flush-log` | ~1ms | 否 | 否 |
+| `GET /daemon/debug/bible-requests` | ~1ms | 否 | 否 |
 
 ---
 
-## 8. 并发与线程安全
+## 9. 并发与线程安全
 
 - **FastAPI + uvicorn**：异步框架。所有端点用 `async def`。
 - **SQLite 连接**：单连接——`sqlite3` 模块是线程安全的但非并发。用 WAL + busy_timeout 代替连接池。
 - **异步检测队列**：`asyncio.Queue`。单 worker 消费。所有 SQLite 写入在主线程/同一连接上执行，无竞态。
 - **Phase 2 + flush 后台任务**：`asyncio.create_task`。任务间不共享可变状态。
+- **Phase 3c 诊断缓冲**：`_connectivity_state` 与两个 `deque`（flush log、request log）仅在同一事件循环内追加/读取，无需锁；探测结果 last-writer-wins。
+- **Phase 3c connectivity monitor**：lifespan 启动时创建、shutdown 时 cancel；单次探测异常被捕获后继续下一周期。
 
 ---
 
-## 9. 参考文档
+## 10. 参考文档
 
 - [`../../02-interfaces.md`](../02-interfaces.md) — L1 接口定义（本文与之保持一致）
 - [`startup.md`](startup.md) — 启动序列

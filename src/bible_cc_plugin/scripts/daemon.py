@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -22,6 +23,7 @@ from bible_cc_plugin.config import load_config
 from bible_cc_plugin.logging_config import configure_logging, get_logger
 
 _logger = get_logger("daemon")
+
 
 def _resolve_log_path(config) -> Path:
     """Return the expanded log file path from config."""
@@ -85,6 +87,11 @@ def _do_start(port: int, config, *, debug: bool) -> None:
     log_fh = open(str(log_path), "a")
 
     log_level = "debug" if debug else "info"
+    env = os.environ.copy()
+    if debug:
+        # --debug must also enable the daemon's debug endpoints
+        # (server._debug_mode is parsed from BIBLE_CC_DEBUG at import time).
+        env["BIBLE_CC_DEBUG"] = "1"
     _logger.info("Starting on 127.0.0.1:%d...", port)
     subprocess.Popen(
         [
@@ -101,6 +108,7 @@ def _do_start(port: int, config, *, debug: bool) -> None:
         ],
         stdout=log_fh,
         stderr=log_fh,
+        env=env,
     )
     deadline = time.time() + 5
     while time.time() < deadline:

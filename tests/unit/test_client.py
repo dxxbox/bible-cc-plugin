@@ -14,6 +14,8 @@ from bible_cc_plugin.daemon.client import (
     HealthResult,
     _parse_json,
     _safe_json,
+    clear_request_log,
+    get_recent_requests,
 )
 
 # ---------------------------------------------------------------------------
@@ -218,7 +220,8 @@ class TestImportMemory:
         )
         async with BiBLEClient(_bible_config(kb_index="config-index")) as client:
             result = await client.import_memory(
-                [("m.json", b"{}", "application/json")], kb_index="explicit-index",
+                [("m.json", b"{}", "application/json")],
+                kb_index="explicit-index",
             )
         assert result["task_id"] == "task-003"
 
@@ -392,7 +395,10 @@ class TestSearchMemory:
         )
         async with BiBLEClient(_bible_config()) as client:
             await client.search_memory(
-                "query", top_k=5, search_type="hybrid", kb_index="kb-x",
+                "query",
+                top_k=5,
+                search_type="hybrid",
+                kb_index="kb-x",
             )
         assert body_sent["top_k"] == 5
         assert body_sent["search_type"] == "hybrid"
@@ -476,9 +482,7 @@ class TestSearchSkill:
                 "domain": "SKILL",
                 "total": 1,
                 "results": {
-                    "skill": [
-                        {"doc_id": "s1", "section_title": "TDD skill", "score": 0.95}
-                    ]
+                    "skill": [{"doc_id": "s1", "section_title": "TDD skill", "score": 0.95}]
                 },
             },
             status_code=200,
@@ -499,7 +503,9 @@ class TestSearchSkill:
             return httpx.Response(200, json={"total": 0, "results": {"skill": []}})
 
         httpx_mock.add_callback(
-            method="POST", url="http://localhost:5555/api/search/skill", callback=capture,
+            method="POST",
+            url="http://localhost:5555/api/search/skill",
+            callback=capture,
         )
         async with BiBLEClient(_bible_config()) as client:
             await client.search_skill("query")
@@ -554,7 +560,8 @@ class TestDownloadSubmit:
         )
         async with BiBLEClient(_bible_config()) as client:
             await client.request_memory_download(
-                "/memories/doc1.json", download_name="my-memory.json",
+                "/memories/doc1.json",
+                download_name="my-memory.json",
             )
         assert body_sent["download_name"] == "my-memory.json"
 
@@ -940,3 +947,324 @@ class TestClientLifecycle:
         assert _strip_trailing_slash("http://example.com/") == "http://example.com"
         assert _strip_trailing_slash("http://example.com") == "http://example.com"
         assert _strip_trailing_slash("http://example.com/path/") == "http://example.com/path"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3c — verbose health probe
+# ---------------------------------------------------------------------------
+
+
+def _raise(exc):
+    """Return a callable that raises ``exc`` — for monkeypatch stubs."""
+
+    def _fn(*args, **kwargs):
+        raise exc
+
+    return _fn
+
+
+@pytest.fixture
+def clean_request_log():
+    """Ensure the module-level request ring buffer is empty around each test."""
+    clear_request_log()
+    yield
+    clear_request_log()
+
+
+class TestHealthCheckVerbose:
+    @pytest.mark.asyncio
+    async def test_verbose_success_returns_three_steps(self, httpx_mock, monkeypatch):
+        import bible_cc_plugin.daemon.client as client_mod
+
+        monkeypatch.setattr(client_mod, "_dns_lookup", lambda host, port: ["127.0.0.1"])
+        monkeypatch.setattr(client_mod, "_tcp_probe", lambda addrs, port, timeout: "127.0.0.1")
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/health",
+            json={"status": "ok"},
+            status_code=200,
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            result = await client.check_health(verbose=True)
+        assert result.reachable is True
+        assert result.latency_ms is not None
+        assert result.base_url == "http://localhost:5555"
+        assert result.error is None
+        assert result.steps is not None
+        assert [s["step"] for s in result.steps] == ["dns", "tcp", "http"]
+        assert all(s["ok"] for s in result.steps)
+
+    @pytest.mark.asyncio
+    async def test_verbose_dns_failure_stops_early(self, monkeypatch):
+        import socket
+
+        import bible_cc_plugin.daemon.client as client_mod
+
+        monkeypatch.setattr(
+            client_mod,
+            "_dns_lookup",
+            _raise(socket.gaierror("name or service not known")),
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            result = await client.check_health(verbose=True)
+        assert result.reachable is False
+        assert result.latency_ms is None
+        assert result.error is not None and result.error.startswith("dns:")
+        assert result.steps is not None
+        assert [s["step"] for s in result.steps] == ["dns"]
+        assert result.steps[0]["ok"] is False
+        assert result.steps[0]["detail"] == "NXDOMAIN"
+
+    @pytest.mark.asyncio
+    async def test_verbose_tcp_failure_stops_early(self, monkeypatch):
+        import bible_cc_plugin.daemon.client as client_mod
+
+        monkeypatch.setattr(client_mod, "_dns_lookup", lambda host, port: ["127.0.0.1"])
+        monkeypatch.setattr(
+            client_mod,
+            "_tcp_probe",
+            _raise(ConnectionRefusedError("connection refused")),
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            result = await client.check_health(verbose=True)
+        assert result.reachable is False
+        assert result.error is not None and result.error.startswith("tcp:")
+        assert result.steps is not None
+        assert [s["step"] for s in result.steps] == ["dns", "tcp"]
+        assert result.steps[1]["ok"] is False
+        assert result.steps[1]["detail"] == "connection refused"
+
+    @pytest.mark.asyncio
+    async def test_verbose_http_timeout(self, httpx_mock, monkeypatch):
+        import httpx as _httpx
+
+        import bible_cc_plugin.daemon.client as client_mod
+
+        monkeypatch.setattr(client_mod, "_dns_lookup", lambda host, port: ["127.0.0.1"])
+        monkeypatch.setattr(client_mod, "_tcp_probe", lambda addrs, port, timeout: "127.0.0.1")
+        httpx_mock.add_exception(
+            _httpx.ReadTimeout("slow"),
+            method="GET",
+            url="http://localhost:5555/health",
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            result = await client.check_health(verbose=True)
+        assert result.reachable is False
+        assert result.error is not None and result.error.startswith("http:")
+        assert result.steps is not None
+        assert result.steps[-1]["step"] == "http"
+        assert result.steps[-1]["ok"] is False
+        assert result.steps[-1]["detail"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_verbose_unhealthy_status(self, httpx_mock, monkeypatch):
+        import bible_cc_plugin.daemon.client as client_mod
+
+        monkeypatch.setattr(client_mod, "_dns_lookup", lambda host, port: ["127.0.0.1"])
+        monkeypatch.setattr(client_mod, "_tcp_probe", lambda addrs, port, timeout: "127.0.0.1")
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/health",
+            json={"status": "error"},
+            status_code=200,
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            result = await client.check_health(verbose=True)
+        assert result.reachable is False
+        assert result.error == "unhealthy status=error"
+        assert result.steps is not None
+        assert result.steps[-1]["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_failure_latency_is_none_and_error_set(self, httpx_mock):
+        httpx_mock.add_response(method="GET", url="http://localhost:5555/health", status_code=500)
+        async with BiBLEClient(_bible_config()) as client:
+            result = await client.check_health()
+        assert result.reachable is False
+        assert result.latency_ms is None
+        assert result.error is not None and "500" in result.error
+
+    @pytest.mark.asyncio
+    async def test_connect_error_sets_reason(self, httpx_mock):
+        httpx_mock.add_exception(_connect_error(), method="GET", url="http://localhost:5555/health")
+        async with BiBLEClient(_bible_config()) as client:
+            result = await client.check_health()
+        assert result.reachable is False
+        assert result.latency_ms is None
+        assert result.error == "connection refused"
+
+    @pytest.mark.asyncio
+    async def test_default_timeout_is_3s(self, monkeypatch):
+        captured = {}
+
+        async def fake_request(self, method, path, **kwargs):
+            import httpx as _httpx
+
+            captured["method"] = method
+            captured["path"] = path
+            captured.update(kwargs)
+            return _httpx.Response(200, json={"status": "ok"})
+
+        monkeypatch.setattr(BiBLEClient, "_request", fake_request)
+        async with BiBLEClient(_bible_config()) as client:
+            result = await client.check_health()
+        assert result.reachable is True
+        assert captured["timeout"] == 3.0
+
+    @pytest.mark.asyncio
+    async def test_explicit_timeout_wins(self, monkeypatch):
+        captured = {}
+
+        async def fake_request(self, method, path, **kwargs):
+            import httpx as _httpx
+
+            captured.update(kwargs)
+            return _httpx.Response(200, json={"status": "ok"})
+
+        monkeypatch.setattr(BiBLEClient, "_request", fake_request)
+        async with BiBLEClient(_bible_config()) as client:
+            await client.check_health(timeout=1.5)
+        assert captured["timeout"] == 1.5
+
+
+class TestRequestTimeoutPlumbing:
+    @pytest.mark.asyncio
+    async def test_request_omits_timeout_when_none(self, monkeypatch):
+        """httpx treats timeout=None as 'no timeout' — must not be forwarded."""
+        import httpx as _httpx
+
+        captured = {}
+
+        class FakeHTTP:
+            async def request(self, **kwargs):
+                captured.update(kwargs)
+                return _httpx.Response(200, json={})
+
+        monkeypatch.setattr(BiBLEClient, "_http", property(lambda self: FakeHTTP()))
+        async with BiBLEClient(_bible_config()) as client:
+            await client._request("GET", "/x")
+        assert "timeout" not in captured
+
+    @pytest.mark.asyncio
+    async def test_request_forwards_explicit_timeout(self, monkeypatch):
+        import httpx as _httpx
+
+        captured = {}
+
+        class FakeHTTP:
+            async def request(self, **kwargs):
+                captured.update(kwargs)
+                return _httpx.Response(200, json={})
+
+        monkeypatch.setattr(BiBLEClient, "_http", property(lambda self: FakeHTTP()))
+        async with BiBLEClient(_bible_config()) as client:
+            await client._request("GET", "/x", timeout=1.5)
+        assert captured["timeout"] == 1.5
+
+
+# ---------------------------------------------------------------------------
+# Phase 3c — request ring buffer
+# ---------------------------------------------------------------------------
+
+
+class TestRequestRingBuffer:
+    @pytest.mark.asyncio
+    async def test_records_success_with_sanitized_path(self, httpx_mock, clean_request_log):
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/x?token=secret&q=1",
+            json={"ok": True},
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            await client._request("POST", "/api/x?token=secret&q=1")
+        entries = get_recent_requests(include_health=True)
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["path"] == "/api/x"
+        assert entry["status"] == 200
+        assert entry["http_ok"] is True
+        assert entry["is_health"] is False
+        assert "secret" not in json.dumps(entries)
+
+    @pytest.mark.asyncio
+    async def test_records_timeout(self, httpx_mock, clean_request_log):
+        import httpx as _httpx
+
+        httpx_mock.add_exception(
+            _httpx.ReadTimeout("slow"),
+            method="GET",
+            url="http://localhost:5555/api/slow",
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            with pytest.raises(BibleUnreachableError):
+                await client._request("GET", "/api/slow")
+        entry = get_recent_requests(include_health=True)[0]
+        assert entry["status"] is None
+        assert entry["http_ok"] is False
+        assert entry["error"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_records_4xx(self, httpx_mock, clean_request_log):
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/api/auth",
+            json={"error": {"code": "UNAUTHORIZED", "message": "nope"}},
+            status_code=401,
+        )
+        async with BiBLEClient(_bible_config()) as client:
+            with pytest.raises(BiBLEError):
+                await client._request("GET", "/api/auth")
+        entry = get_recent_requests(include_health=True)[0]
+        assert entry["status"] == 401
+        assert entry["http_ok"] is False
+        assert entry["error"] == "UNAUTHORIZED"
+
+    @pytest.mark.asyncio
+    async def test_records_5xx(self, httpx_mock, clean_request_log):
+        httpx_mock.add_response(method="GET", url="http://localhost:5555/api/down", status_code=503)
+        async with BiBLEClient(_bible_config()) as client:
+            with pytest.raises(BibleUnreachableError):
+                await client._request("GET", "/api/down")
+        entry = get_recent_requests(include_health=True)[0]
+        assert entry["status"] == 503
+        assert entry["http_ok"] is False
+        assert entry["error"] == "http 503"
+
+    def test_maxlen_drops_oldest(self, clean_request_log):
+        from bible_cc_plugin.daemon.client import REQUEST_LOG_MAXLEN, _record_request
+
+        for i in range(REQUEST_LOG_MAXLEN + 5):
+            _record_request("GET", f"/r/{i}", status=200, latency_ms=1.0, http_ok=True)
+        entries = get_recent_requests(REQUEST_LOG_MAXLEN, include_health=True)
+        assert len(entries) == REQUEST_LOG_MAXLEN
+        assert entries[0]["path"] == f"/r/{REQUEST_LOG_MAXLEN + 4}"
+        assert "/r/0" not in {e["path"] for e in entries}
+
+    def test_health_entries_hidden_by_default(self, clean_request_log):
+        from bible_cc_plugin.daemon.client import _record_request
+
+        _record_request("GET", "/health", status=200, latency_ms=1.0, http_ok=True)
+        _record_request("POST", "/api/import/memory", status=202, latency_ms=2.0, http_ok=True)
+        assert [e["path"] for e in get_recent_requests(10)] == ["/api/import/memory"]
+        assert [e["path"] for e in get_recent_requests(10, include_health=True)] == [
+            "/api/import/memory",
+            "/health",
+        ]
+
+    def test_newest_first_and_limit(self, clean_request_log):
+        from bible_cc_plugin.daemon.client import _record_request
+
+        for i in range(5):
+            _record_request("GET", f"/r/{i}", status=200, latency_ms=1.0, http_ok=True)
+        assert [e["path"] for e in get_recent_requests(2, include_health=True)] == [
+            "/r/4",
+            "/r/3",
+        ]
+
+    def test_clear_request_log(self, clean_request_log):
+        from bible_cc_plugin.daemon.client import _record_request
+
+        _record_request("GET", "/x", status=200, latency_ms=1.0, http_ok=True)
+        assert get_recent_requests(10, include_health=True)
+        clear_request_log()
+        assert get_recent_requests(10, include_health=True) == []

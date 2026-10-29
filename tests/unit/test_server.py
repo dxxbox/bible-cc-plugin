@@ -13,6 +13,36 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_connectivity_monitor(_isolate_bible_cc_env, monkeypatch):
+    """Disable the background connectivity monitor and reset diagnostics.
+
+    ``TestClient`` runs the FastAPI lifespan, which starts a real BiBLE probe
+    loop.  Unmocked ``GET /health`` calls would trip pytest-httpx's
+    ``assert_all_requests_were_expected`` teardown check.  Tests that exercise
+    monitor behaviour request ``real_connectivity_monitor`` explicitly.
+    """
+    import bible_cc_plugin.daemon.server as server_mod
+    from bible_cc_plugin.daemon.client import clear_request_log
+
+    real_monitor = server_mod._connectivity_monitor
+
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(server_mod, "_connectivity_monitor", _noop)
+    server_mod._reset_connectivity_state()
+    server_mod._flush_log.clear()
+    clear_request_log()
+    return real_monitor
+
+
+@pytest.fixture
+def real_connectivity_monitor(_neutralize_connectivity_monitor):
+    """Return the original monitor coroutine for behaviour tests."""
+    return _neutralize_connectivity_monitor
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """Return a TestClient pointed at a temporary SQLite database."""
@@ -30,7 +60,9 @@ def client(tmp_path, monkeypatch):
         return server_mod.FlushResult(moment_ids=[], flushed_count=0)
 
     monkeypatch.setattr(
-        server_mod, "_flush_session_moments", _noop_flush,
+        server_mod,
+        "_flush_session_moments",
+        _noop_flush,
     )
 
     server_mod._db_conn = None
@@ -1956,6 +1988,9 @@ class TestFlushLogic:
         assert row["flushed"] == 0
         assert row["retry_count"] == 1
 
+        # F3c.2: no automatic retry — exactly one import attempt
+        assert len(httpx_mock.get_requests()) == 1
+
         conn.close()
         server_mod._db_conn = None
 
@@ -2001,7 +2036,10 @@ class TestFlushLogic:
 
     @pytest.mark.asyncio
     async def test_flush_endpoint_returns_200_on_error(
-        self, tmp_path, monkeypatch, httpx_mock,
+        self,
+        tmp_path,
+        monkeypatch,
+        httpx_mock,
     ):
         """POST /daemon/session/flush catches errors → 200 with flush_error."""
         db_path = str(tmp_path / "daemon.db")
@@ -2034,7 +2072,8 @@ class TestFlushLogic:
 
         with TestClient(server_mod.app) as c:
             resp = c.post(
-                "/daemon/session/flush", json={"session_id": "sess-endpoint"},
+                "/daemon/session/flush",
+                json={"session_id": "sess-endpoint"},
             )
         assert resp.status_code == 200
         data = resp.json()
@@ -2046,7 +2085,10 @@ class TestFlushLogic:
 
     @pytest.mark.asyncio
     async def test_flush_endpoint_success(
-        self, tmp_path, monkeypatch, httpx_mock,
+        self,
+        tmp_path,
+        monkeypatch,
+        httpx_mock,
     ):
         """POST /daemon/session/flush success path."""
         db_path = str(tmp_path / "daemon.db")
@@ -2080,7 +2122,8 @@ class TestFlushLogic:
 
         with TestClient(server_mod.app) as c:
             resp = c.post(
-                "/daemon/session/flush", json={"session_id": "sess-endpoint-ok"},
+                "/daemon/session/flush",
+                json={"session_id": "sess-endpoint-ok"},
             )
         assert resp.status_code == 200
         data = resp.json()
@@ -2147,3 +2190,398 @@ class TestFlushLogic:
 
         conn.close()
         server_mod._db_conn = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3c — connectivity cache + verbose health
+# ---------------------------------------------------------------------------
+
+
+class TestConnectivityHealth:
+    def test_connectivity_null_before_first_probe(self, client):
+        conn = client.get("/daemon/health").json()["bible_connectivity"]
+        assert conn["reachable"] is None
+        assert conn["latency_ms"] is None
+        assert conn["checked_at"] is None
+        assert "base_url" in conn
+        assert "error" in conn
+
+    def test_health_reads_cached_connectivity(self, client):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._connectivity_state.reachable = True
+        server_mod._connectivity_state.latency_ms = 12.5
+        server_mod._connectivity_state.base_url = "http://example.test:1234"
+        server_mod._connectivity_state.error = None
+        server_mod._connectivity_state.checked_at = "2026-10-29T12:00:00Z"
+
+        conn = client.get("/daemon/health").json()["bible_connectivity"]
+        assert conn["reachable"] is True
+        assert conn["latency_ms"] == 12.5
+        assert conn["base_url"] == "http://example.test:1234"
+        assert conn["checked_at"] == "2026-10-29T12:00:00Z"
+
+    def test_health_200_when_unreachable(self, client):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._connectivity_state.reachable = False
+        server_mod._connectivity_state.error = "timeout"
+
+        r = client.get("/daemon/health")
+        assert r.status_code == 200
+        conn = r.json()["bible_connectivity"]
+        assert conn["reachable"] is False
+        assert conn["error"] == "timeout"
+
+    def test_verbose_health_includes_steps(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.client import HealthResult
+
+        async def fake_detailed():
+            result = HealthResult(
+                reachable=True,
+                latency_ms=22.0,
+                base_url="http://localhost:5555",
+                steps=[
+                    {"step": "dns", "ok": True, "latency_ms": 5.0, "detail": "127.0.0.1"},
+                    {"step": "tcp", "ok": True, "latency_ms": 2.0, "detail": "127.0.0.1:5555"},
+                    {"step": "http", "ok": True, "latency_ms": 15.0, "detail": "status=200"},
+                ],
+            )
+            server_mod._apply_connectivity_result(result)
+            return result
+
+        monkeypatch.setattr(server_mod, "_probe_connectivity_detailed", fake_detailed)
+
+        conn = client.get("/daemon/health?verbose=true").json()["bible_connectivity"]
+        assert conn["reachable"] is True
+        assert conn["latency_ms"] == 22.0
+        assert [s["step"] for s in conn["steps"]] == ["dns", "tcp", "http"]
+
+    def test_verbose_health_probe_failure_falls_back(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._connectivity_state.reachable = False
+        server_mod._connectivity_state.error = "connection refused"
+
+        async def boom():
+            raise RuntimeError("probe exploded")
+
+        monkeypatch.setattr(server_mod, "_probe_connectivity_detailed", boom)
+
+        r = client.get("/daemon/health?verbose=true")
+        assert r.status_code == 200
+        conn = r.json()["bible_connectivity"]
+        assert conn["reachable"] is False
+        assert conn["error"] == "connection refused"
+        assert "steps" not in conn
+
+
+# ---------------------------------------------------------------------------
+# Phase 3c — connectivity probe + monitor
+# ---------------------------------------------------------------------------
+
+
+class TestConnectivityProbe:
+    @pytest.mark.asyncio
+    async def test_probe_success_updates_cache(self, httpx_mock):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/health",
+            json={"status": "ok"},
+            status_code=200,
+        )
+        await server_mod._probe_connectivity()
+
+        state = server_mod._connectivity_state
+        assert state.reachable is True
+        assert state.latency_ms is not None
+        assert state.checked_at is not None
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_updates_cache(self, httpx_mock):
+        import httpx as _httpx
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        httpx_mock.add_exception(
+            _httpx.ConnectError("connection refused"),
+            method="GET",
+            url="http://localhost:5555/health",
+        )
+        await server_mod._probe_connectivity()
+
+        state = server_mod._connectivity_state
+        assert state.reachable is False
+        assert state.latency_ms is None
+        assert state.error == "connection refused"
+
+    @pytest.mark.asyncio
+    async def test_monitor_periodic_refresh_and_cancel(
+        self, real_connectivity_monitor, monkeypatch
+    ):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        calls = []
+
+        async def fake_probe():
+            calls.append(1)
+
+        monkeypatch.setattr(server_mod, "_probe_connectivity", fake_probe)
+        monkeypatch.setattr(server_mod, "_CONNECTIVITY_INTERVAL_S", 0.01)
+
+        task = asyncio.create_task(real_connectivity_monitor())
+        try:
+            for _ in range(200):
+                if len(calls) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(calls) >= 2
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
+# ---------------------------------------------------------------------------
+# Phase 3c — flush diagnostic log
+# ---------------------------------------------------------------------------
+
+
+class TestFlushLog:
+    @pytest.mark.asyncio
+    async def test_success_appends_flush_log(self, tmp_path, monkeypatch, httpx_mock):
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "sess-log-ok")
+        ch = compute_content_hash("sess-log-ok", "T", "N")
+        insert_moment(conn, "sess-log-ok", "decision", "T", "N", ch)
+
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            json={"success": True, "task_id": "task-log-1", "status": "queued"},
+            status_code=202,
+        )
+        await server_mod._flush_session_moments("sess-log-ok")
+
+        assert len(server_mod._flush_log) == 1
+        entry = server_mod._flush_log[-1]
+        assert entry["session_id"] == "sess-log-ok"
+        assert entry["moments_count"] == 1
+        assert entry["task_id"] == "task-log-1"
+        assert entry["status"] == "ok"
+        assert entry["latency_ms"] is not None
+        assert entry["error"] is None
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_failure_appends_flush_log(self, tmp_path, monkeypatch, httpx_mock):
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "sess-log-fail")
+        ch = compute_content_hash("sess-log-fail", "T", "N")
+        insert_moment(conn, "sess-log-fail", "decision", "T", "N", ch)
+
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            status_code=500,
+        )
+        result = await server_mod._flush_session_moments("sess-log-fail")
+
+        assert result.retryable is True
+        entry = server_mod._flush_log[-1]
+        assert entry["status"] == "error"
+        assert entry["task_id"] is None
+        assert "unreachable" in (entry["error"] or "").lower()
+        assert entry["latency_ms"] is not None
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_no_moments_does_not_append(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import insert_session
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "sess-log-empty")
+
+        await server_mod._flush_session_moments("sess-log-empty")
+
+        assert len(server_mod._flush_log) == 0
+
+        conn.close()
+        server_mod._db_conn = None
+
+    def test_flush_log_is_bounded(self):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        for i in range(server_mod._FLUSH_LOG_MAXLEN + 5):
+            server_mod._record_flush(f"s-{i}", 1, None, "ok", 1.0, None)
+        assert len(server_mod._flush_log) == server_mod._FLUSH_LOG_MAXLEN
+        assert server_mod._flush_log[0]["session_id"] == "s-5"
+
+    @pytest.mark.asyncio
+    async def test_record_failure_does_not_mask_flush_error(
+        self, tmp_path, monkeypatch, httpx_mock
+    ):
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+        )
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        conn = server_mod._get_db()
+        insert_session(conn, "sess-log-boom")
+        ch = compute_content_hash("sess-log-boom", "T", "N")
+        insert_moment(conn, "sess-log-boom", "decision", "T", "N", ch)
+
+        def _boom():
+            raise RuntimeError("clock exploded")
+
+        monkeypatch.setattr(server_mod, "_utc_now_iso", _boom)
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            status_code=500,
+        )
+
+        result = await server_mod._flush_session_moments("sess-log-boom")
+
+        assert "unreachable" in (result.error or "").lower()
+        assert len(server_mod._flush_log) == 0
+
+        conn.close()
+        server_mod._db_conn = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3c — diagnostic endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestPhase3cDebugEndpoints:
+    def test_flush_log_requires_debug_mode(self, client):
+        r = client.get("/daemon/debug/flush-log?session_id=x")
+        assert r.status_code == 404
+        assert r.json()["error"]["code"] == "NOT_FOUND"
+
+    def test_bible_requests_requires_debug_mode(self, client):
+        r = client.get("/daemon/debug/bible-requests")
+        assert r.status_code == 404
+
+    def test_flush_log_filters_by_session_newest_first(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+        server_mod._record_flush("s1", 1, "t1", "ok", 10.0, None)
+        server_mod._record_flush("s2", 2, "t2", "ok", 20.0, None)
+        server_mod._record_flush("s1", 3, None, "error", 30.0, "boom")
+
+        data = client.get("/daemon/debug/flush-log?session_id=s1").json()
+        assert data["session_id"] == "s1"
+        assert [e["moments_count"] for e in data["flushes"]] == [3, 1]
+
+    def test_flush_log_unknown_session_returns_empty(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+        data = client.get("/daemon/debug/flush-log?session_id=nope").json()
+        assert data == {"session_id": "nope", "flushes": []}
+
+    def test_flush_log_missing_session_id_returns_422(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+        r = client.get("/daemon/debug/flush-log")
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "BAD_REQUEST"
+
+    def test_flush_log_limit_clamped(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+        for i in range(3):
+            server_mod._record_flush("s-limit", i + 1, None, "ok", 1.0, None)
+
+        one = client.get("/daemon/debug/flush-log?session_id=s-limit&limit=1").json()
+        assert len(one["flushes"]) == 1
+        all_entries = client.get("/daemon/debug/flush-log?session_id=s-limit&limit=999").json()
+        assert len(all_entries["flushes"]) == 3
+
+    def test_bible_requests_limit_and_order(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.client import _record_request
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+        for i in range(3):
+            _record_request("GET", f"/api/r{i}", status=200, latency_ms=1.0, http_ok=True)
+
+        data = client.get("/daemon/debug/bible-requests?limit=2").json()
+        assert [e["path"] for e in data["requests"]] == ["/api/r2", "/api/r1"]
+
+        all_entries = client.get("/daemon/debug/bible-requests?limit=999").json()
+        assert len(all_entries["requests"]) == 3
+
+    def test_bible_requests_hides_health_by_default(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+        from bible_cc_plugin.daemon.client import _record_request
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+        _record_request("GET", "/health", status=200, latency_ms=1.0, http_ok=True)
+        _record_request("POST", "/api/import/memory", status=202, latency_ms=2.0, http_ok=True)
+
+        default = client.get("/daemon/debug/bible-requests").json()
+        assert [e["path"] for e in default["requests"]] == ["/api/import/memory"]
+
+        with_health = client.get("/daemon/debug/bible-requests?include_health=true").json()
+        assert [e["path"] for e in with_health["requests"]] == [
+            "/api/import/memory",
+            "/health",
+        ]
+
+    def test_bible_requests_empty(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+        data = client.get("/daemon/debug/bible-requests").json()
+        assert data == {"requests": []}

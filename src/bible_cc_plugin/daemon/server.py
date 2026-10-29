@@ -16,8 +16,10 @@ import sqlite3
 import tempfile
 import time
 import uuid
-from contextlib import asynccontextmanager
+from collections import deque
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -27,6 +29,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from bible_cc_plugin.config import load_config
+from bible_cc_plugin.daemon.client import (
+    REQUEST_LOG_MAXLEN,
+    HealthResult,
+    get_recent_requests,
+)
 from bible_cc_plugin.logging_config import configure_logging, get_logger, setup_logging
 
 _logger = setup_logging(level="INFO")
@@ -54,6 +61,7 @@ _app_config = _config  # may be updated by lifespan startup
 @dataclass
 class FlushResult:
     """Outcome of a flush operation — success or failure with diagnostics."""
+
     moment_ids: list[int]
     flushed_count: int
     task_id: str | None = None
@@ -67,6 +75,7 @@ _flush_locks: dict[str, asyncio.Lock] = {}  # per-session concurrency control
 @dataclass
 class _Phase2Completion:
     """Signaling object for synchronous Phase 2 wait in /session/end."""
+
     event: asyncio.Event
     cancelled: bool = False
     error: Exception | None = None
@@ -76,18 +85,170 @@ class _Phase2Completion:
 _phase2_events: dict[str, _Phase2Completion] = {}
 
 
+# ── Phase 3c connectivity + diagnostics infrastructure ─────────────────────
+_CONNECTIVITY_INTERVAL_S: float = 30.0  # background probe cadence
+_FLUSH_LOG_MAXLEN: int = 100
+
+
+@dataclass
+class _ConnectivityState:
+    """Cached result of the most recent BiBLE health probe."""
+
+    reachable: bool | None = None
+    latency_ms: float | None = None
+    base_url: str = ""
+    error: str | None = None
+    checked_at: str | None = None
+
+
+_connectivity_state = _ConnectivityState()
+_flush_log: deque[dict] = deque(maxlen=_FLUSH_LOG_MAXLEN)
+
+
+def _utc_now_iso() -> str:
+    """ISO-8601 UTC timestamp with ``Z`` suffix."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _reset_connectivity_state(*, base_url: str | None = None) -> None:
+    """Reset the cached connectivity snapshot (startup and test helper)."""
+    _connectivity_state.reachable = None
+    _connectivity_state.latency_ms = None
+    _connectivity_state.base_url = base_url if base_url is not None else ""
+    _connectivity_state.error = None
+    _connectivity_state.checked_at = None
+
+
+def _apply_connectivity_result(result: HealthResult) -> None:
+    """Update the cached snapshot from a probe result."""
+    _connectivity_state.reachable = result.reachable
+    _connectivity_state.latency_ms = result.latency_ms
+    _connectivity_state.base_url = result.base_url or _connectivity_state.base_url
+    _connectivity_state.error = result.error
+    _connectivity_state.checked_at = _utc_now_iso()
+
+
+def _connectivity_snapshot() -> dict:
+    """Serialize the cached snapshot for the health endpoint."""
+    return {
+        "reachable": _connectivity_state.reachable,
+        "latency_ms": _connectivity_state.latency_ms,
+        "base_url": _connectivity_state.base_url,
+        "error": _connectivity_state.error,
+        "checked_at": _connectivity_state.checked_at,
+    }
+
+
+def _health_result_payload(result: HealthResult, *, include_steps: bool) -> dict:
+    """Build a ``bible_connectivity`` payload from a verbose probe result."""
+    payload = {
+        "reachable": result.reachable,
+        "latency_ms": result.latency_ms,
+        "base_url": result.base_url,
+        "error": result.error,
+        "checked_at": _connectivity_state.checked_at,
+    }
+    if include_steps:
+        payload["steps"] = result.steps or []
+    return payload
+
+
+async def _probe_connectivity() -> None:
+    """Run one BiBLE health probe and update the cache (never raises)."""
+    from bible_cc_plugin.daemon.client import BiBLEClient
+
+    previous = _connectivity_state.reachable
+    client = BiBLEClient(_app_config.bible)
+    try:
+        result = await client.check_health()
+    finally:
+        await client.aclose()
+    _apply_connectivity_result(result)
+    if result.reachable:
+        log = _logger.debug if previous is True else _logger.info
+        log(
+            "[connectivity] reachable base_url=%s latency_ms=%s",
+            result.base_url,
+            result.latency_ms,
+        )
+    else:
+        log = _logger.debug if previous is False else _logger.warning
+        log(
+            "[connectivity] unreachable base_url=%s error=%s",
+            result.base_url,
+            result.error,
+        )
+
+
+async def _probe_connectivity_detailed() -> HealthResult:
+    """Verbose probe (DNS → TCP → HTTP) for ``/daemon/health?verbose=true``."""
+    from bible_cc_plugin.daemon.client import BiBLEClient
+
+    client = BiBLEClient(_app_config.bible)
+    try:
+        result = await client.check_health(verbose=True)
+    finally:
+        await client.aclose()
+    _apply_connectivity_result(result)
+    return result
+
+
+async def _connectivity_monitor() -> None:
+    """Probe BiBLE on startup, then refresh every ``_CONNECTIVITY_INTERVAL_S``."""
+    while True:
+        try:
+            await _probe_connectivity()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — monitor must survive probe errors
+            _logger.warning("[connectivity] unexpected probe error", exc_info=True)
+        await asyncio.sleep(_CONNECTIVITY_INTERVAL_S)
+
+
+def _record_flush(
+    session_id: str,
+    moments_count: int,
+    task_id: str | None,
+    status: str,
+    latency_ms: float,
+    error: str | None,
+) -> None:
+    """Append one flush attempt to the in-memory diagnostic log."""
+    try:
+        _flush_log.append(
+            {
+                "time": _utc_now_iso(),
+                "session_id": session_id,
+                "moments_count": moments_count,
+                "task_id": task_id,
+                "status": status,
+                "latency_ms": round(latency_ms, 1),
+                "error": (error[:500] if error else None),
+            }
+        )
+    except Exception:  # noqa: BLE001 — diagnostics must never break flush
+        _logger.warning("[flush] failed to record flush log entry", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # pragma: no cover — tested via integration
-    """FastAPI lifespan: start detection worker on startup, graceful stop."""
+    """FastAPI lifespan: start detection + connectivity workers, graceful stop."""
     global _app_config
     _app_config = load_config()
+    _reset_connectivity_state(base_url=_app_config.bible.base_url)
     worker_task = asyncio.create_task(_detection_worker(), name="detection-worker")
+    monitor_task = asyncio.create_task(_connectivity_monitor(), name="connectivity-monitor")
     _worker_logger.info("detection worker started — queue ready")
-    yield
-    _worker_logger.info("detection worker stopping — sentinel sent")
-    await _detection_queue.put(None)
-    await worker_task
-    _worker_logger.info("detection worker stopped")
+    try:
+        yield
+    finally:
+        monitor_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await monitor_task
+        _worker_logger.info("detection worker stopping — sentinel sent")
+        await _detection_queue.put(None)
+        await worker_task
+        _worker_logger.info("detection worker stopped")
 
 
 app = FastAPI(title="bible-cc-daemon", version="0.23.0", lifespan=lifespan)
@@ -195,9 +356,12 @@ async def _detection_worker():
             _worker_logger.error("detection worker crashed, restarting...", exc_info=True)
             # Signal Phase 2 failure so /session/end doesn't hang forever
             if task is not None and task.get("phase") == 2:
-                _signal_phase2_complete(task["session_id"], error=Exception(
-                    "Phase 2 worker crashed — see logs for details",
-                ))
+                _signal_phase2_complete(
+                    task["session_id"],
+                    error=Exception(
+                        "Phase 2 worker crashed — see logs for details",
+                    ),
+                )
             await asyncio.sleep(1)
         finally:
             if task is not None:
@@ -205,7 +369,8 @@ async def _detection_worker():
 
 
 def _signal_phase2_complete(
-    session_id: str, error: Exception | None = None,
+    session_id: str,
+    error: Exception | None = None,
 ) -> None:
     """Signal that Phase 2 detection has completed (success or failure).
 
@@ -377,7 +542,9 @@ async def _process_detection_task(task: dict):
             filtered += 1
             _worker_logger.info(
                 "detect: filtered type=%r title=%s allowed_types=%s",
-                c.type, c.title, allowed_types,
+                c.type,
+                c.title,
+                allowed_types,
             )
             continue
 
@@ -471,11 +638,15 @@ async def _process_detection_task(task: dict):
                 fr = await _flush_single_moment(conn, mid)
                 if fr.error:
                     _logger.warning(
-                        "[flush:mid] FAILED moment_id=%d error=%s", mid, fr.error,
+                        "[flush:mid] FAILED moment_id=%d error=%s",
+                        mid,
+                        fr.error,
                     )
                 else:
                     _logger.info(
-                        "[flush:mid] moment_id=%d task_id=%s DONE", mid, fr.task_id,
+                        "[flush:mid] moment_id=%d task_id=%s DONE",
+                        mid,
+                        fr.task_id,
                     )
 
 
@@ -632,6 +803,18 @@ async def daemon_health(verbose: bool = False):
         schema_ver = -1
         db_size = -1
 
+    bible_conn = _connectivity_snapshot()
+    if verbose:
+        # Verbose probes synchronously (bounded to 3s) to return the
+        # DNS → TCP → HTTP breakdown; failures fall back to the cache.
+        try:
+            bible_conn = _health_result_payload(
+                await _probe_connectivity_detailed(),
+                include_steps=True,
+            )
+        except Exception:  # noqa: BLE001 — health must never fail
+            _logger.warning("[connectivity] verbose probe failed", exc_info=True)
+
     result: dict = {
         "status": "ok",
         "pid": os.getpid(),
@@ -639,7 +822,7 @@ async def daemon_health(verbose: bool = False):
         "uptime": int(time.time() - _START_TIME),
         "sessions": {"active": active, "completed": completed},
         "buffer": {"total_turns": turns, "pending_moments": pending},
-        "bible_connectivity": {"reachable": None, "latency_ms": None},
+        "bible_connectivity": bible_conn,
         "sqlite": {
             "integrity": integrity,
             "schema_version": schema_ver,
@@ -784,12 +967,14 @@ async def session_end(req: _SessionEndRequest):
                 phase2_error = str(comp.error)
                 _logger.error(
                     "session/end %s Phase 2 failed: %s",
-                    req.session_id[:8], comp.error,
+                    req.session_id[:8],
+                    comp.error,
                 )
             else:
                 _logger.info(
                     "session/end %s Phase 2 completed at=%s",
-                    req.session_id[:8], comp.completed_at,
+                    req.session_id[:8],
+                    comp.completed_at,
                 )
         except asyncio.TimeoutError:
             comp.cancelled = True
@@ -843,8 +1028,10 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
         conn = _get_db()
         if conn is None:
             return FlushResult(
-                moment_ids=[], flushed_count=0,
-                retryable=True, error="database unavailable",
+                moment_ids=[],
+                flushed_count=0,
+                retryable=True,
+                error="database unavailable",
             )
 
         moments = get_retryable_moments(conn, session_id)
@@ -853,8 +1040,11 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
             return FlushResult(moment_ids=[], flushed_count=0)
 
         moment_ids = [m["id"] for m in moments]
+        flush_start = time.monotonic()
         _logger.info(
-            "[flush] session=%s moments=%d bundling…", session_id[:8], len(moments),
+            "[flush] session=%s moments=%d bundling…",
+            session_id[:8],
+            len(moments),
         )
 
         try:
@@ -885,7 +1075,10 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
             # Write to tempfile for multipart upload
             ts = time.strftime("%Y%m%d-%H%M%S")
             with tempfile.NamedTemporaryFile(
-                suffix=".json", mode="w", delete=False, encoding="utf-8",
+                suffix=".json",
+                mode="w",
+                delete=False,
+                encoding="utf-8",
             ) as tf:
                 json.dump(payload, tf, ensure_ascii=False)
                 tmp_path = tf.name
@@ -903,7 +1096,9 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
             client = BiBLEClient(config)
             try:
                 result = await client.import_memory(
-                    files, kb_index=config.kb_index, tag="memory",
+                    files,
+                    kb_index=config.kb_index,
+                    tag="memory",
                 )
             finally:
                 await client.aclose()
@@ -912,10 +1107,21 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
             mark_moments_submitted(conn, moment_ids, task_id)
             _logger.info(
                 "[flush] session=%s flushed=%d task_id=%s DONE",
-                session_id[:8], len(moments), task_id,
+                session_id[:8],
+                len(moments),
+                task_id,
+            )
+            _record_flush(
+                session_id,
+                len(moments),
+                task_id,
+                "ok",
+                (time.monotonic() - flush_start) * 1000,
+                None,
             )
             return FlushResult(
-                moment_ids=moment_ids, flushed_count=len(moments),
+                moment_ids=moment_ids,
+                flushed_count=len(moments),
                 task_id=task_id,
             )
 
@@ -923,30 +1129,67 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
             _inc_retry(conn, moment_ids)
             retryable = "INVALID_RESPONSE" in str(exc.code) if hasattr(exc, "code") else False
             _logger.error("[flush] session=%s ERROR 4xx code=%s", session_id[:8], exc.code)
+            error = f"BiBLE request error: {exc}"
+            _record_flush(
+                session_id,
+                len(moments),
+                None,
+                "error",
+                (time.monotonic() - flush_start) * 1000,
+                error,
+            )
             return FlushResult(
-                moment_ids=moment_ids, flushed_count=0,
-                retryable=retryable, error=f"BiBLE request error: {exc}",
+                moment_ids=moment_ids,
+                flushed_count=0,
+                retryable=retryable,
+                error=error,
             )
         except BibleUnreachableError as exc:
             _inc_retry(conn, moment_ids)
             _logger.error("[flush] session=%s UNREACHABLE %s", session_id[:8], exc)
+            error = f"BiBLE Atlas unreachable: {exc}"
+            _record_flush(
+                session_id,
+                len(moments),
+                None,
+                "error",
+                (time.monotonic() - flush_start) * 1000,
+                error,
+            )
             return FlushResult(
-                moment_ids=moment_ids, flushed_count=0,
-                retryable=True, error=f"BiBLE Atlas unreachable: {exc}",
+                moment_ids=moment_ids,
+                flushed_count=0,
+                retryable=True,
+                error=error,
             )
         except Exception as exc:
             _inc_retry(conn, moment_ids)
             _logger.error(
-                "[flush] session=%s UNEXPECTED %s", session_id[:8], exc, exc_info=True,
+                "[flush] session=%s UNEXPECTED %s",
+                session_id[:8],
+                exc,
+                exc_info=True,
+            )
+            error = f"Flush failed: {exc}"
+            _record_flush(
+                session_id,
+                len(moments),
+                None,
+                "error",
+                (time.monotonic() - flush_start) * 1000,
+                error,
             )
             return FlushResult(
-                moment_ids=moment_ids, flushed_count=0,
-                retryable=True, error=f"Flush failed: {exc}",
+                moment_ids=moment_ids,
+                flushed_count=0,
+                retryable=True,
+                error=error,
             )
 
 
 async def _flush_single_moment(
-    conn: sqlite3.Connection, moment_id: int,
+    conn: sqlite3.Connection,
+    moment_id: int,
 ) -> FlushResult:
     """Flush a single moment — used by ``mid_session_upload``.
 
@@ -962,7 +1205,8 @@ async def _flush_single_moment(
 
     # Read session_id first (lock-free) to find the right lock key
     row = conn.execute(
-        "SELECT session_id FROM moments WHERE id=?", (moment_id,),
+        "SELECT session_id FROM moments WHERE id=?",
+        (moment_id,),
     ).fetchone()
     if row is None:
         return FlushResult(moment_ids=[], flushed_count=0, error="moment not found")
@@ -973,7 +1217,8 @@ async def _flush_single_moment(
         # Re-read AFTER acquiring lock — batch flush may have already
         # submitted this moment while we were waiting.
         row = conn.execute(
-            "SELECT * FROM moments WHERE id=?", (moment_id,),
+            "SELECT * FROM moments WHERE id=?",
+            (moment_id,),
         ).fetchone()
         if row is None:
             return FlushResult(moment_ids=[], flushed_count=0, error="moment not found")
@@ -981,10 +1226,12 @@ async def _flush_single_moment(
         if m["flushed"] != 0:
             _logger.info(
                 "[flush:mid] moment_id=%d already flushed=%d, skip",
-                moment_id, m["flushed"],
+                moment_id,
+                m["flushed"],
             )
             return FlushResult(moment_ids=[moment_id], flushed_count=0)
 
+        flush_start = time.monotonic()
         try:
             payload = {
                 "moments": [
@@ -1010,7 +1257,10 @@ async def _flush_single_moment(
 
             ts = time.strftime("%Y%m%d-%H%M%S")
             with tempfile.NamedTemporaryFile(
-                suffix=".json", mode="w", delete=False, encoding="utf-8",
+                suffix=".json",
+                mode="w",
+                delete=False,
+                encoding="utf-8",
             ) as tf:
                 json.dump(payload, tf, ensure_ascii=False)
                 tmp_path = tf.name
@@ -1028,7 +1278,9 @@ async def _flush_single_moment(
             client = BiBLEClient(config)
             try:
                 result = await client.import_memory(
-                    files, kb_index=config.kb_index, tag="memory",
+                    files,
+                    kb_index=config.kb_index,
+                    tag="memory",
                 )
             finally:
                 await client.aclose()
@@ -1036,48 +1288,98 @@ async def _flush_single_moment(
             task_id = result.get("task_id", "unknown")
             mark_moments_submitted(conn, [moment_id], task_id)
             _logger.info(
-                "[flush:mid] moment_id=%d task_id=%s DONE", moment_id, task_id,
+                "[flush:mid] moment_id=%d task_id=%s DONE",
+                moment_id,
+                task_id,
+            )
+            _record_flush(
+                session_id,
+                1,
+                task_id,
+                "ok",
+                (time.monotonic() - flush_start) * 1000,
+                None,
             )
             return FlushResult(
-                moment_ids=[moment_id], flushed_count=1, task_id=task_id,
+                moment_ids=[moment_id],
+                flushed_count=1,
+                task_id=task_id,
             )
 
         except BiBLEError as exc:
             _inc_retry(conn, [moment_id])
             retryable = "INVALID_RESPONSE" in str(exc.code) if hasattr(exc, "code") else False
             _logger.error("[flush:mid] moment_id=%d ERROR %s", moment_id, exc)
+            error = f"BiBLE request error: {exc}"
+            _record_flush(
+                session_id,
+                1,
+                None,
+                "error",
+                (time.monotonic() - flush_start) * 1000,
+                error,
+            )
             return FlushResult(
-                moment_ids=[moment_id], flushed_count=0,
-                retryable=retryable, error=f"BiBLE request error: {exc}",
+                moment_ids=[moment_id],
+                flushed_count=0,
+                retryable=retryable,
+                error=error,
             )
         except BibleUnreachableError as exc:
             _inc_retry(conn, [moment_id])
             _logger.error("[flush:mid] moment_id=%d UNREACHABLE %s", moment_id, exc)
+            error = f"BiBLE Atlas unreachable: {exc}"
+            _record_flush(
+                session_id,
+                1,
+                None,
+                "error",
+                (time.monotonic() - flush_start) * 1000,
+                error,
+            )
             return FlushResult(
-                moment_ids=[moment_id], flushed_count=0,
-                retryable=True, error=f"BiBLE Atlas unreachable: {exc}",
+                moment_ids=[moment_id],
+                flushed_count=0,
+                retryable=True,
+                error=error,
             )
         except Exception as exc:
             _inc_retry(conn, [moment_id])
             _logger.error(
-                "[flush:mid] moment_id=%d UNEXPECTED %s", moment_id, exc, exc_info=True,
+                "[flush:mid] moment_id=%d UNEXPECTED %s",
+                moment_id,
+                exc,
+                exc_info=True,
+            )
+            error = f"Flush failed: {exc}"
+            _record_flush(
+                session_id,
+                1,
+                None,
+                "error",
+                (time.monotonic() - flush_start) * 1000,
+                error,
             )
             return FlushResult(
-                moment_ids=[moment_id], flushed_count=0,
-                retryable=True, error=f"Flush failed: {exc}",
+                moment_ids=[moment_id],
+                flushed_count=0,
+                retryable=True,
+                error=error,
             )
 
 
 def _get_session_turn_count(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
-        "SELECT turn_count FROM sessions WHERE session_id=?", (session_id,),
+        "SELECT turn_count FROM sessions WHERE session_id=?",
+        (session_id,),
     ).fetchone()
     return row["turn_count"] if row else 0
 
 
 def _get_session_buffered_chars(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
-        "SELECT buffered_chars FROM sessions WHERE session_id=?", (session_id,),
+        "SELECT buffered_chars FROM sessions WHERE session_id=?",
+        (session_id,),
     ).fetchone()
     return row["buffered_chars"] if row else 0
 
@@ -1164,7 +1466,8 @@ async def turn_user(req: _TurnUserRequest):
 
             recent = get_recent_turns(conn, req.session_id, limit=2)
             last_assistant = next(
-                (t for t in recent if t.get("role") == "assistant"), None,
+                (t for t in recent if t.get("role") == "assistant"),
+                None,
             )
             if last_assistant and _has_proposal_signal(
                 last_assistant.get("content", ""),
@@ -1493,6 +1796,33 @@ async def debug_detection_stats():
         "dedup_hits": _detection_stats["dedup_hits"],
         "avg_latency_ms": round(avg, 1),
     }
+
+
+# ── Phase 3c diagnostic endpoints (always registered, debug-gated at request time)
+
+
+@app.get("/daemon/debug/flush-log")
+async def debug_flush_log(session_id: str, limit: int = 100):
+    """Return recent flush attempts for a session (Phase 3c)."""
+    if not _debug_mode:
+        raise HTTPException(404, "debug mode disabled")
+    limit = max(1, min(limit, _FLUSH_LOG_MAXLEN))
+    flushes = [e for e in _flush_log if e["session_id"] == session_id]
+    return {"session_id": session_id, "flushes": list(reversed(flushes[-limit:]))}
+
+
+@app.get("/daemon/debug/bible-requests")
+async def debug_bible_requests(limit: int = 50, include_health: bool = False):
+    """Return recent BiBLE API requests (Phase 3c).
+
+    Health probes are hidden by default — they run every 30s and would
+    otherwise dominate the ring buffer.  Pass ``include_health=true`` to see
+    them.
+    """
+    if not _debug_mode:
+        raise HTTPException(404, "debug mode disabled")
+    limit = max(1, min(limit, REQUEST_LOG_MAXLEN))
+    return {"requests": get_recent_requests(limit, include_health=include_health)}
 
 
 def _read_port() -> int:

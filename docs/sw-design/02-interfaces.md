@@ -31,7 +31,8 @@ GET /daemon/health
       uptime: int (seconds),
       sessions: {active: int, completed: int},
       buffer: {total_turns: int, pending_moments: int},
-      bible_connectivity: {reachable: bool, latency_ms: int},
+      bible_connectivity: {reachable: bool|null, latency_ms: number|null,
+                           base_url: string, error: string|null, checked_at: string|null},
       sqlite: {integrity: "ok" | "error", schema_version: int, size_bytes: int}
     }
 ```

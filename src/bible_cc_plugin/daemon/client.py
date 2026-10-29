@@ -10,10 +10,15 @@ Design: Phase 3a backlog (2026-06-24-phase-3a-bible-client.md).
 
 from __future__ import annotations
 
+import asyncio
 import json
+import socket
 import time
+from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -21,6 +26,12 @@ from bible_cc_plugin.config import BibleConfig
 from bible_cc_plugin.logging_config import get_logger
 
 _log = get_logger("client")
+
+# Phase 3c: health probes are latency-sensitive — 3s cap (not the client's
+# default connect/read timeouts).
+HEALTH_PROBE_TIMEOUT_S: float = 3.0
+# Ring buffer size for the /daemon/debug/bible-requests diagnostic endpoint.
+REQUEST_LOG_MAXLEN: int = 200
 
 # ---------------------------------------------------------------------------
 # Exception types
@@ -50,7 +61,10 @@ class HealthResult:
     """Outcome of a BiBLE health check."""
 
     reachable: bool
-    latency_ms: float
+    latency_ms: float | None
+    base_url: str = ""
+    error: str | None = None
+    steps: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +85,8 @@ def _parse_json(response: httpx.Response) -> dict[str, Any]:
         body_len = len(response.content) if response.content else 0
         _log.error(
             "[bible:req] non-JSON 2xx response: content-type=%s, body-length=%d",
-            content_type, body_len,
+            content_type,
+            body_len,
         )
         raise BiBLEError(
             code="INVALID_RESPONSE",
@@ -97,7 +112,8 @@ def _safe_json(response: httpx.Response) -> dict[str, Any]:
         body_len = len(response.content) if response.content else 0
         _log.warning(
             "[bible:req] non-JSON response body: content-type=%s, body-length=%d",
-            content_type, body_len,
+            content_type,
+            body_len,
         )
         return {}
 
@@ -105,6 +121,142 @@ def _safe_json(response: httpx.Response) -> dict[str, Any]:
 def _strip_trailing_slash(url: str) -> str:
     """Remove trailing slash so path concatenation is safe."""
     return url.rstrip("/")
+
+
+# ---------------------------------------------------------------------------
+# Request ring buffer (Phase 3c — /daemon/debug/bible-requests)
+# ---------------------------------------------------------------------------
+
+_request_log: deque[dict[str, Any]] = deque(maxlen=REQUEST_LOG_MAXLEN)
+
+
+def _utc_now_iso() -> str:
+    """ISO-8601 UTC timestamp with ``Z`` suffix."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _sanitize_path(path: str) -> str:
+    """Strip query/fragment and cap length — never record secrets."""
+    clean = urlsplit(path).path or path
+    return clean[:200]
+
+
+def _record_request(
+    method: str,
+    path: str,
+    *,
+    status: int | None,
+    latency_ms: float,
+    http_ok: bool,
+    error: str | None = None,
+) -> None:
+    """Append one HTTP-layer entry to the in-memory request ring buffer."""
+    clean = _sanitize_path(path)
+    _request_log.append(
+        {
+            "time": _utc_now_iso(),
+            "method": method,
+            "path": clean,
+            "status": status,
+            "latency_ms": round(latency_ms, 1),
+            "http_ok": http_ok,
+            "is_health": clean == "/health",
+            "error": error,
+        }
+    )
+
+
+def get_recent_requests(limit: int = 50, *, include_health: bool = False) -> list[dict[str, Any]]:
+    """Return recent request-log entries, newest first.
+
+    Health probes (every 30s) would otherwise dominate the 200-entry window;
+    they are hidden unless ``include_health=True``.
+    """
+    entries = [e for e in _request_log if include_health or not e["is_health"]]
+    return list(reversed(entries[-limit:]))
+
+
+def clear_request_log() -> None:
+    """Clear the request ring buffer (test helper)."""
+    _request_log.clear()
+
+
+# ---------------------------------------------------------------------------
+# Connectivity probe helpers (Phase 3c — verbose health)
+# ---------------------------------------------------------------------------
+
+
+def _short_error(exc: Exception) -> str:
+    msg = str(exc).strip()
+    return f"{type(exc).__name__}: {msg[:120]}" if msg else type(exc).__name__
+
+
+def _probe_step_error(exc: Exception) -> str:
+    """Map a probe-stage exception to a short diagnostic label."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timeout"
+    if isinstance(exc, BiBLEError):
+        return f"http {exc.status_code}: {exc.code}"
+    if isinstance(exc, BibleUnreachableError):
+        original = exc.original_error
+        if isinstance(original, httpx.TimeoutException):
+            return "timeout"
+        if isinstance(original, httpx.ConnectError):
+            msg = str(original).lower()
+            if "refused" in msg:
+                return "connection refused"
+            return f"connect error: {str(original)[:120]}"
+        return _short_error(original) if original is not None else "unreachable"
+    if isinstance(exc, socket.gaierror):
+        return "NXDOMAIN"
+    if isinstance(exc, OSError) and "refused" in str(exc).lower():
+        return "connection refused"
+    return _short_error(exc)
+
+
+def _describe_health_error(exc: Exception) -> str:
+    """Human-readable failure reason for the non-verbose health path."""
+    if isinstance(exc, BiBLEError):
+        return f"http {exc.status_code}: {exc.code}"
+    if isinstance(exc, BibleUnreachableError):
+        original = exc.original_error
+        if original is not None:
+            return _probe_step_error(exc)
+        return str(exc)[:160]
+    return _short_error(exc)
+
+
+def _parse_target(base_url: str) -> tuple[str, int]:
+    """Extract (host, port) from a base URL."""
+    parsed = urlsplit(base_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return host, port
+
+
+def _dns_lookup(host: str, port: int) -> list[str]:
+    """Resolve host to distinct addresses (IPv4/IPv6), preserving order."""
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    addrs: list[str] = []
+    for info in infos:
+        addr = info[4][0]
+        if addr not in addrs:
+            addrs.append(addr)
+    return addrs
+
+
+def _tcp_probe(addresses: list[str], port: int, timeout: float) -> str:
+    """Try each resolved address until one connects; return the connected IP."""
+    last_exc: Exception | None = None
+    for addr in addresses:
+        try:
+            with socket.create_connection((addr, port), timeout=timeout):
+                return addr
+        except OSError as exc:
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc
+    raise OSError("no addresses to probe")
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +334,17 @@ class BiBLEClient:
         json_body: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         files: list[tuple[str, str | bytes, str]] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         """Send an HTTP request to BiBLE Atlas.
 
         All public API methods route through here, guaranteeing consistent
         auth, timing, logging, and error translation.
+
+        ``timeout`` overrides the client-wide timeout for this request only.
+        It is passed to httpx **only when not None** — httpx treats
+        ``timeout=None`` as "no timeout", which would silently disable the
+        default connect/read limits.
 
         Returns the raw ``httpx.Response`` — callers parse the body.
         Raises ``BiBLEError`` on 4xx, ``BibleUnreachableError`` on 5xx /
@@ -199,20 +357,34 @@ class BiBLEClient:
         url = f"{self._base_url}{path}"
         start = time.monotonic()
 
+        request_kwargs: dict[str, Any] = {
+            "method": method,
+            "url": url,
+            "json": json_body,
+            "data": data,
+            "files": files,
+            "headers": headers,
+        }
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
+
         try:
-            response = await self._http.request(
-                method=method,
-                url=url,
-                json=json_body,
-                data=data,
-                files=files,
-                headers=headers,
-            )
+            response = await self._http.request(**request_kwargs)
         except httpx.TimeoutException as exc:
             latency = (time.monotonic() - start) * 1000
+            _record_request(
+                method,
+                path,
+                status=None,
+                latency_ms=latency,
+                http_ok=False,
+                error="timeout",
+            )
             _log.error(
                 "[bible:req] %s %s → UNREACHABLE (%.0fms) timeout",
-                method, path, latency,
+                method,
+                path,
+                latency,
             )
             raise BibleUnreachableError(
                 f"Timeout connecting to BiBLE Atlas ({method} {path})",
@@ -225,9 +397,21 @@ class BiBLEClient:
             # ReadError, WriteError, PoolTimeout — all mapped to
             # BibleUnreachableError so callers have a single degradation path.
             latency = (time.monotonic() - start) * 1000
+            _record_request(
+                method,
+                path,
+                status=None,
+                latency_ms=latency,
+                http_ok=False,
+                error=_short_error(exc)[:200],
+            )
             _log.error(
                 "[bible:req] %s %s → UNREACHABLE (%.0fms) %s: %s",
-                method, path, latency, type(exc).__name__, exc,
+                method,
+                path,
+                latency,
+                type(exc).__name__,
+                exc,
             )
             raise BibleUnreachableError(
                 f"BiBLE Atlas unreachable: {type(exc).__name__} ({method} {path})",
@@ -241,51 +425,235 @@ class BiBLEClient:
             body = _safe_json(response)
             code = body.get("error", {}).get("code", "UNKNOWN")
             message = body.get("error", {}).get("message", response.text[:200])
+            _record_request(
+                method,
+                path,
+                status=status,
+                latency_ms=latency,
+                http_ok=False,
+                error=str(code),
+            )
             _log.error(
                 "[bible:req] %s %s → %d (%.0fms) %s",
-                method, path, status, latency, code,
+                method,
+                path,
+                status,
+                latency,
+                code,
             )
             raise BiBLEError(code=code, message=message, status_code=status)
 
         if status >= 500:
+            _record_request(
+                method,
+                path,
+                status=status,
+                latency_ms=latency,
+                http_ok=False,
+                error=f"http {status}",
+            )
             _log.error(
                 "[bible:req] %s %s → %d (%.0fms) server error",
-                method, path, status, latency,
+                method,
+                path,
+                status,
+                latency,
             )
-            raise BibleUnreachableError(
-                f"BiBLE Atlas returned {status} ({method} {path})"
-            )
+            raise BibleUnreachableError(f"BiBLE Atlas returned {status} ({method} {path})")
 
+        _record_request(
+            method,
+            path,
+            status=status,
+            latency_ms=latency,
+            http_ok=True,
+        )
         return response
 
     # ------------------------------------------------------------------
     # Health check
     # ------------------------------------------------------------------
 
-    async def check_health(self) -> HealthResult:
+    async def check_health(
+        self,
+        *,
+        verbose: bool = False,
+        timeout: float | None = None,
+    ) -> HealthResult:
         """Check BiBLE Atlas connectivity.
 
+        ``timeout`` defaults to :data:`HEALTH_PROBE_TIMEOUT_S` (3s) because
+        health probes must stay latency-bounded; pass an explicit value to
+        override.  There is no way to disable the timeout here.
+
         Returns a ``HealthResult`` — never raises (unreachable is
-        expressed as ``reachable=False``, not an exception).
+        expressed as ``reachable=False``, not an exception).  ``latency_ms``
+        is ``None`` on failure; ``error`` carries a short reason.
         """
+        effective_timeout = HEALTH_PROBE_TIMEOUT_S if timeout is None else timeout
+        if verbose:
+            return await self._check_health_verbose(effective_timeout)
+
+        start = time.monotonic()
         try:
-            response = await self._request("GET", "/health")
+            response = await self._request("GET", "/health", timeout=effective_timeout)
             body = _parse_json(response)
-            healthy = body.get("status") == "ok"
-            _log.info(
-                "[bible:req] GET /health → %d (%.0fms) reachable=%s",
-                response.status_code,
-                response.elapsed.total_seconds() * 1000,
-                healthy,
-            )
-            if healthy:
+            latency = (time.monotonic() - start) * 1000
+            status_value = body.get("status")
+            if status_value == "ok":
+                _log.info(
+                    "[bible:req] GET /health → %d (%.0fms) reachable=True",
+                    response.status_code,
+                    latency,
+                )
                 return HealthResult(
                     reachable=True,
-                    latency_ms=response.elapsed.total_seconds() * 1000,
+                    latency_ms=round(latency, 1),
+                    base_url=self._base_url,
                 )
-            return HealthResult(reachable=False, latency_ms=0.0)
-        except (BiBLEError, BibleUnreachableError):
-            return HealthResult(reachable=False, latency_ms=0.0)
+            _log.warning(
+                "[bible:req] GET /health → %d (%.0fms) unreachable unhealthy status=%s",
+                response.status_code,
+                latency,
+                status_value,
+            )
+            return HealthResult(
+                reachable=False,
+                latency_ms=None,
+                base_url=self._base_url,
+                error=f"unhealthy status={status_value}",
+            )
+        except (BiBLEError, BibleUnreachableError) as exc:
+            error = _describe_health_error(exc)
+            _log.error("[bible:req] GET /health → UNREACHABLE %s", error)
+            return HealthResult(
+                reachable=False,
+                latency_ms=None,
+                base_url=self._base_url,
+                error=error,
+            )
+
+    async def _check_health_verbose(self, timeout: float) -> HealthResult:
+        """DNS → TCP → HTTP probe with per-step results, total budget ``timeout``.
+
+        Blocking socket calls run in a worker thread; every stage shares one
+        deadline so the whole probe can never exceed ``timeout``.
+        """
+        host, port = _parse_target(self._base_url)
+        probe_start = time.monotonic()
+        deadline = probe_start + timeout
+        steps: list[dict[str, Any]] = []
+
+        def remaining() -> float:
+            return max(0.001, deadline - time.monotonic())
+
+        def result(reachable: bool, *, error: str | None = None) -> HealthResult:
+            total = (time.monotonic() - probe_start) * 1000
+            return HealthResult(
+                reachable=reachable,
+                latency_ms=round(total, 1) if reachable else None,
+                base_url=self._base_url,
+                error=error,
+                steps=steps,
+            )
+
+        # 1) DNS -------------------------------------------------------
+        dns_start = time.monotonic()
+        try:
+            addresses = await asyncio.wait_for(
+                asyncio.to_thread(_dns_lookup, host, port), timeout=remaining()
+            )
+            dns_latency = (time.monotonic() - dns_start) * 1000
+            steps.append(
+                {
+                    "step": "dns",
+                    "ok": True,
+                    "latency_ms": round(dns_latency, 1),
+                    "detail": ", ".join(addresses[:4]),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 — probe must never raise
+            dns_latency = (time.monotonic() - dns_start) * 1000
+            detail = "NXDOMAIN" if isinstance(exc, socket.gaierror) else _probe_step_error(exc)
+            steps.append(
+                {
+                    "step": "dns",
+                    "ok": False,
+                    "latency_ms": round(dns_latency, 1),
+                    "detail": detail,
+                }
+            )
+            _log.error("[bible:req] health verbose dns failed: %s", detail)
+            return result(False, error=f"dns: {detail}")
+
+        # 2) TCP -------------------------------------------------------
+        tcp_start = time.monotonic()
+        try:
+            connected = await asyncio.wait_for(
+                asyncio.to_thread(_tcp_probe, addresses, port, remaining()),
+                timeout=remaining(),
+            )
+            tcp_latency = (time.monotonic() - tcp_start) * 1000
+            steps.append(
+                {
+                    "step": "tcp",
+                    "ok": True,
+                    "latency_ms": round(tcp_latency, 1),
+                    "detail": f"{connected}:{port}",
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 — probe must never raise
+            tcp_latency = (time.monotonic() - tcp_start) * 1000
+            detail = _probe_step_error(exc)
+            steps.append(
+                {
+                    "step": "tcp",
+                    "ok": False,
+                    "latency_ms": round(tcp_latency, 1),
+                    "detail": detail,
+                }
+            )
+            _log.error("[bible:req] health verbose tcp failed: %s", detail)
+            return result(False, error=f"tcp: {detail}")
+
+        # 3) HTTP ------------------------------------------------------
+        http_start = time.monotonic()
+        try:
+            response = await asyncio.wait_for(
+                self._request("GET", "/health", timeout=remaining()),
+                timeout=remaining(),
+            )
+            body = _parse_json(response)
+            http_latency = (time.monotonic() - http_start) * 1000
+            healthy = body.get("status") == "ok"
+            steps.append(
+                {
+                    "step": "http",
+                    "ok": healthy,
+                    "latency_ms": round(http_latency, 1),
+                    "detail": (
+                        f"status={response.status_code}"
+                        if healthy
+                        else f"unhealthy status={body.get('status')}"
+                    ),
+                }
+            )
+            if healthy:
+                return result(True)
+            return result(False, error=f"unhealthy status={body.get('status')}")
+        except Exception as exc:  # noqa: BLE001 — probe must never raise
+            http_latency = (time.monotonic() - http_start) * 1000
+            detail = _probe_step_error(exc)
+            steps.append(
+                {
+                    "step": "http",
+                    "ok": False,
+                    "latency_ms": round(http_latency, 1),
+                    "detail": detail,
+                }
+            )
+            _log.error("[bible:req] health verbose http failed: %s", detail)
+            return result(False, error=f"http: {detail}")
 
     # ------------------------------------------------------------------
     # Search methods (three domains)
@@ -326,23 +694,22 @@ class BiBLEClient:
         results = data.get("results")
         if not isinstance(results, dict) or domain_key not in results:
             _log.error(
-                "[bible:req] POST %s → %d (%.0fms) INVALID_RESPONSE: "
-                "missing results.%s",
-                path, response.status_code,
+                "[bible:req] POST %s → %d (%.0fms) INVALID_RESPONSE: missing results.%s",
+                path,
+                response.status_code,
                 response.elapsed.total_seconds() * 1000,
                 domain_key,
             )
             raise BiBLEError(
                 code="INVALID_RESPONSE",
-                message=(
-                    f"Search response missing results.{domain_key} "
-                    f"(path={path})"
-                ),
+                message=(f"Search response missing results.{domain_key} (path={path})"),
                 status_code=response.status_code,
             )
         _log.info(
             "[bible:req] POST %s → 200 (%.1fs) total=%d",
-            path, response.elapsed.total_seconds(), total,
+            path,
+            response.elapsed.total_seconds(),
+            total,
         )
         return results[domain_key]
 
@@ -359,10 +726,14 @@ class BiBLEClient:
     ) -> list[dict[str, Any]]:
         """Search the MEMORY domain."""
         return await self._search(
-            "/api/search/memory", "memory",
-            query, tag,
-            top_k=top_k, search_type=search_type,
-            kb_index=kb_index, vector_model=vector_model,
+            "/api/search/memory",
+            "memory",
+            query,
+            tag,
+            top_k=top_k,
+            search_type=search_type,
+            kb_index=kb_index,
+            vector_model=vector_model,
             vector_weight=vector_weight,
         )
 
@@ -379,10 +750,14 @@ class BiBLEClient:
     ) -> list[dict[str, Any]]:
         """Search the KNOWLEDGE_BASE domain.  *tag* is required (no default)."""
         return await self._search(
-            "/api/search/knowledge-base", "knowledge_base",
-            query, tag,
-            top_k=top_k, search_type=search_type,
-            kb_index=kb_index, vector_model=vector_model,
+            "/api/search/knowledge-base",
+            "knowledge_base",
+            query,
+            tag,
+            top_k=top_k,
+            search_type=search_type,
+            kb_index=kb_index,
+            vector_model=vector_model,
             vector_weight=vector_weight,
         )
 
@@ -399,10 +774,14 @@ class BiBLEClient:
     ) -> list[dict[str, Any]]:
         """Search the SKILL domain."""
         return await self._search(
-            "/api/search/skill", "skill",
-            query, tag,
-            top_k=top_k, search_type=search_type,
-            kb_index=kb_index, vector_model=vector_model,
+            "/api/search/skill",
+            "skill",
+            query,
+            tag,
+            top_k=top_k,
+            search_type=search_type,
+            kb_index=kb_index,
+            vector_model=vector_model,
             vector_weight=vector_weight,
         )
 
@@ -460,7 +839,8 @@ class BiBLEClient:
             httpx_files.append(("parser_script", parser_script))
 
         response = await self._request(
-            "POST", "/api/import/memory",
+            "POST",
+            "/api/import/memory",
             data=form_data,
             files=httpx_files,
         )
@@ -507,9 +887,9 @@ class BiBLEClient:
         task_id = data.get("task_id")
         if not task_id:
             _log.error(
-                "[bible:req] POST %s → %d (%.0fms) "
-                "INVALID_RESPONSE: missing task_id",
-                path, response.status_code,
+                "[bible:req] POST %s → %d (%.0fms) INVALID_RESPONSE: missing task_id",
+                path,
+                response.status_code,
                 response.elapsed.total_seconds() * 1000,
             )
             raise BiBLEError(
@@ -538,7 +918,10 @@ class BiBLEClient:
         ``get_download_artifact()`` to retrieve the file.
         """
         return await self._submit_download(
-            "/api/download/memory/file", storage_path, tag, download_name,
+            "/api/download/memory/file",
+            storage_path,
+            tag,
+            download_name,
         )
 
     async def request_skill_download(
@@ -553,7 +936,10 @@ class BiBLEClient:
         ``get_download_artifact()`` to retrieve the file.
         """
         return await self._submit_download(
-            "/api/download/skill/file", storage_path, tag, download_name,
+            "/api/download/skill/file",
+            storage_path,
+            tag,
+            download_name,
         )
 
     # ------------------------------------------------------------------
@@ -567,7 +953,8 @@ class BiBLEClient:
         completed / failed / cancelled) and, when completed, ``artifact_id``.
         """
         response = await self._request(
-            "GET", f"/api/control/admin/tasks/{task_id}",
+            "GET",
+            f"/api/control/admin/tasks/{task_id}",
         )
         data = _parse_json(response)
         status_value = data.get("status")
@@ -575,7 +962,8 @@ class BiBLEClient:
             _log.error(
                 "[bible:req] GET /api/control/admin/tasks/%s → %d (%.0fms) "
                 "INVALID_RESPONSE: missing status",
-                task_id, response.status_code,
+                task_id,
+                response.status_code,
                 response.elapsed.total_seconds() * 1000,
             )
             raise BiBLEError(
@@ -606,7 +994,8 @@ class BiBLEClient:
         *domain* must be ``"memory"`` or ``"skill"``.
         """
         response = await self._request(
-            "GET", f"/api/download/{domain}/artifact/{artifact_id}",
+            "GET",
+            f"/api/download/{domain}/artifact/{artifact_id}",
         )
         content = response.content
         _log.info(
