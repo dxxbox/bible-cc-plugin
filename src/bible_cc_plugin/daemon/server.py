@@ -604,6 +604,7 @@ async def _process_detection_task(task: dict):
                 phase1_anchor_seq if phase == 1 and c.type == "session_start" else None
             ),
             turn_range_end=(phase1_end_seq if phase == 1 and c.type == "session_start" else None),
+            tool_summary=c.tool_summary or None,
         )
         if mid is None:
             dedup += 1
@@ -1105,6 +1106,7 @@ async def _flush_session_moments(session_id: str) -> FlushResult:
                         "moment_type": m["moment_type"],
                         "title": m["title"],
                         "narrative": m["narrative"],
+                        "tool_summary": m["tool_summary"],
                         "content_hash": m["content_hash"],
                         "turn_range_start": m["turn_range_start"],
                         "turn_range_end": m["turn_range_end"],
@@ -1291,6 +1293,7 @@ async def _flush_single_moment(
                         "moment_type": m["moment_type"],
                         "title": m["title"],
                         "narrative": m["narrative"],
+                        "tool_summary": m["tool_summary"],
                         "content_hash": m["content_hash"],
                         "turn_range_start": m["turn_range_start"],
                         "turn_range_end": m["turn_range_end"],

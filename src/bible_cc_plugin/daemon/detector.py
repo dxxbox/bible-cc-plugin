@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover — CI always has the dep
 class MomentCandidate:
     """A key moment detected by the LLM, before content-hash dedup and DB insert."""
 
-    type: str  # "session_start" | "decision" | "accomplishment"
+    type: str  # "session_start" | "decision" | "accomplishment" | "lesson"
     title: str
     narrative: str
     tool_summary: str = ""
@@ -314,17 +314,35 @@ Key moment types:
 - ACCOMPLISHMENT: a task, milestone, or phase was completed, verified,
   and accepted. Progress markers like "X is done" or "phase Y complete"
   qualify.
+- LESSON: the user reported a problem, the agent reasoned to a CONFIRMED
+  root cause, and the fix was verified as effective. Capture the reusable
+  knowledge: why it happened and how to avoid/fix it next time. A mere bug
+  fix without a confirmed root cause is NOT a lesson.
 
-You MUST classify every key moment into exactly one of these three types.
-Do NOT invent other type names. If unsure between DECISION and
-ACCOMPLISHMENT, use DECISION.
+You MUST classify every key moment into exactly one of these four types.
+Do NOT invent other type names. If unsure between LESSON and
+ACCOMPLISHMENT, use LESSON when a root cause was identified and the fix
+verified; use ACCOMPLISHMENT when it is only a completed task.
+
+Titles must be searchable: "<component/topic>: <key conclusion>"
+(e.g. "SwiftBar: image params require Base64, not paths").
+
+Narratives: one short sentence (<=160 chars) — what happened and why it
+matters. Put concrete operational details (commands, file paths, config
+keys, error messages, root-cause evidence) in tool_summary (<=300 chars).
+tool_summary is REQUIRED for LESSON, optional for other types.
 
 Do NOT flag:
-- Intermediate bug fixes or error corrections
-- Exploratory discoveries (unless user explicitly confirms importance)
+- Pure acknowledgements or confirmations with no new knowledge
+  (e.g. "user confirmed it works")
+- Status syncs or progress restatements
+- Intermediate bug fixes UNLESS they satisfy the LESSON criteria
+  (confirmed root cause + verified fix)
 
 Output a single JSON object with this exact structure:
-{"result": "moment" | "none", "moments": [{"type": "...", "title": "...", "narrative": "..."}]}
+{"result": "moment" | "none",
+ "moments": [{"type": "...", "title": "...", "narrative": "...",
+              "tool_summary": "..."}]}
 
 If no key moment occurred, output: {"result": "none"}
 Do NOT include markdown fences or extra text. Output ONLY the JSON object."""
@@ -365,12 +383,24 @@ def build_phase1_prompt(
             "  with stated intent qualifies.",
             "- ACCOMPLISHMENT: a task, milestone, or phase was completed, verified,",
             '  and accepted. Progress markers like "X is done" or "phase Y complete" qualify.',
+            "- LESSON: the user reported a problem, the agent reasoned to a CONFIRMED",
+            "  root cause, and the fix was verified as effective. Capture the reusable",
+            "  knowledge: why it happened and how to avoid/fix it next time. A mere bug",
+            "  fix without a confirmed root cause is NOT a lesson.",
             "",
-            "You MUST classify every key moment into exactly one of these three types.",
-            "Do NOT invent other type names. If unsure between DECISION and",
-            "ACCOMPLISHMENT, use DECISION.",
+            "You MUST classify every key moment into exactly one of these four types.",
+            "Do NOT invent other type names. If unsure between LESSON and",
+            "ACCOMPLISHMENT, use LESSON when a root cause was identified and the fix",
+            "verified; use ACCOMPLISHMENT when it is only a completed task.",
             "",
-            "Do NOT flag intermediate bug fixes or error corrections.",
+            'Titles must be searchable: "<component/topic>: <key conclusion>".',
+            "Narratives: one short sentence (<=160 chars). Put concrete operational",
+            "details (commands, file paths, config keys, error messages, root-cause",
+            "evidence) in tool_summary (<=300 chars; REQUIRED for LESSON).",
+            "",
+            "Do NOT flag pure acknowledgements/confirmations with no new knowledge,",
+            "status syncs, or intermediate bug fixes unless they satisfy the LESSON",
+            "criteria (confirmed root cause + verified fix).",
             "",
             "Recent conversation:",
         ]
@@ -410,13 +440,28 @@ The session has ended. Provide a synthesis.
 Key moment types (SESSION_START excluded from Phase 2):
 - DECISION: the user confirms a choice, approach, or design direction
 - ACCOMPLISHMENT: something was completed, verified, and accepted
+- LESSON: the user reported a problem, the agent reasoned to a CONFIRMED
+  root cause, and the fix was verified as effective. Capture the reusable
+  knowledge (why it happened, how to avoid/fix it next time). A mere bug
+  fix without a confirmed root cause is NOT a lesson.
 
-Do NOT flag intermediate bug fixes or error corrections.
+Titles must be searchable: "<component/topic>: <key conclusion>".
+Narratives: one short sentence (<=160 chars) — what happened and why it
+matters. Put concrete details (commands, file paths, config keys, error
+messages, root-cause evidence) in tool_summary (<=300 chars; REQUIRED for
+LESSON, optional for other types).
+
+Do NOT flag:
+- Pure acknowledgements or confirmations with no new knowledge
+  (e.g. "user confirmed it works")
+- Status syncs or progress restatements
+- Intermediate bug fixes UNLESS they satisfy the LESSON criteria
+  (confirmed root cause + verified fix)
 
 Output a single JSON object:
 {
   "result": "moment" | "none",
-  "moments": [{"type": "...", "title": "...", "narrative": "..."}],
+  "moments": [{"type": "...", "title": "...", "narrative": "...", "tool_summary": "..."}],
   "assessment": "overall summary"
 }
 
@@ -424,6 +469,7 @@ Keep output compact:
 - At most 3 moments.
 - title <= 12 words.
 - narrative: one sentence, <= 160 characters.
+- tool_summary <= 300 characters (required for LESSON).
 - assessment <= 200 characters.
 
 If no new key moment occurred, output: {"result": "none"}
@@ -478,7 +524,9 @@ def build_phase2_prompt(
         "",
         "Output constraints:",
         "- Return at most 3 moments.",
+        '- Titles: "<component/topic>: <key conclusion>", <=12 words.',
         "- Use one short sentence per narrative (<=160 chars).",
+        "- Put concrete details in tool_summary (<=300 chars; required for LESSON).",
         "- Keep assessment <=200 chars.",
         "- Output only valid compact JSON.",
     ]
@@ -826,7 +874,7 @@ def detect_moments(
 
 
 # Valid moment types for Phase 1 (uppercase in prompt, lowercase in storage).
-_VALID_PHASE1_TYPES = {"session_start", "decision", "accomplishment"}
+_VALID_PHASE1_TYPES = {"session_start", "decision", "accomplishment", "lesson"}
 
 
 def _parse_detection_response(text: str) -> list[MomentCandidate]:

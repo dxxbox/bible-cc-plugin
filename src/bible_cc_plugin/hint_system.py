@@ -12,6 +12,7 @@ _LABELS = {
     "decision": "Decision",
     "accomplishment": "Accomplishment",
     "session_start": "Session Start",
+    "lesson": "Lesson",
 }
 
 

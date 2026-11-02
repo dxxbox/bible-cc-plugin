@@ -396,6 +396,27 @@ class TestMomentCRUD:
         assert moment_id is not None
         assert moment_id >= 1
 
+    def test_insert_moment_persists_tool_summary(self, conn_wal):
+        """LESSON moments store concrete operational details in tool_summary."""
+        from bible_cc_plugin.daemon.buffer import compute_content_hash, insert_moment
+
+        ch = compute_content_hash("sess-1", "lesson title", "lesson narrative")
+        details = "cmd: gitproxy off; file: ~/.ssh/config"
+        moment_id = insert_moment(
+            conn_wal,
+            "sess-1",
+            "lesson",
+            "lesson title",
+            "lesson narrative",
+            ch,
+            tool_summary=details,
+        )
+        assert moment_id is not None
+        row = conn_wal.execute(
+            "SELECT tool_summary FROM moments WHERE id=?", (moment_id,)
+        ).fetchone()
+        assert row["tool_summary"] == details
+
     def test_anchor_helpers_update_pending_moment(self, conn_wal):
         from bible_cc_plugin.daemon.buffer import (
             compute_content_hash,

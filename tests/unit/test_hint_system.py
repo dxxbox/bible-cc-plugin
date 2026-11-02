@@ -34,6 +34,14 @@ class TestFormatHint:
         assert "PostgreSQL" in result
         assert "/bible-cc:review" not in result
 
+    def test_lesson_label(self):
+        from bible_cc_plugin.hint_system import format_hint
+
+        m = _make_moment(type="lesson", title="Base64 required")
+        result = format_hint(m, "quote_only")
+        assert "Lesson" in result
+        assert "Base64 required" in result
+
     def test_command_only(self):
         from bible_cc_plugin.hint_system import format_hint
 

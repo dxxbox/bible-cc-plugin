@@ -495,48 +495,26 @@ def insert_moment(
     phase: str = "1",
     turn_range_start: int | None = None,
     turn_range_end: int | None = None,
+    tool_summary: str | None = None,
 ) -> int | None:
     """Insert a key moment, returning id or None on content-hash dedup."""
-    try:
-        _insert_moment_row(
-            conn,
-            _moment_values(
-                session_id,
-                moment_type,
-                title,
-                narrative,
-                content_hash,
-                phase,
-                turn_range_start,
-                turn_range_end,
-            ),
-        )
-        conn.commit()
-        return _last_inserted_moment_id(conn, moment_type, content_hash)
-    except sqlite3.IntegrityError:
-        return _dedup_moment_id(content_hash)
-
-
-def _moment_values(
-    session_id: str,
-    moment_type: str,
-    title: str,
-    narrative: str,
-    content_hash: str,
-    phase: str,
-    turn_range_start: int | None,
-    turn_range_end: int | None,
-) -> tuple:
-    return (
+    values = (
         session_id,
         moment_type,
         title,
         narrative,
+        tool_summary,
         content_hash,
         phase,
         turn_range_start,
         turn_range_end,
     )
+    try:
+        _insert_moment_row(conn, values)
+        conn.commit()
+        return _last_inserted_moment_id(conn, moment_type, content_hash)
+    except sqlite3.IntegrityError:
+        return _dedup_moment_id(content_hash)
 
 
 def _dedup_moment_id(content_hash: str) -> None:
@@ -553,9 +531,9 @@ def _last_inserted_moment_id(conn: sqlite3.Connection, moment_type: str, content
 def _insert_moment_row(conn: sqlite3.Connection, values: tuple) -> None:
     conn.execute(
         "INSERT INTO moments "
-        "(session_id, moment_type, title, narrative, content_hash, phase, "
-        "turn_range_start, turn_range_end) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        "(session_id, moment_type, title, narrative, tool_summary, content_hash, "
+        "phase, turn_range_start, turn_range_end) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         values,
     )
 

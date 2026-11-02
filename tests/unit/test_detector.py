@@ -115,6 +115,18 @@ class TestBuildPhase1Prompt:
         assert "ACCOMPLISHMENT" in prompt
         assert "intermediate" in prompt.lower() or "bug fix" in prompt.lower()
 
+    def test_includes_lesson_type_and_tool_summary(self):
+        """Phase 1 prompt defines LESSON, tool_summary and the new filters."""
+        from bible_cc_plugin.daemon.detector import build_phase1_prompt
+
+        turns = [_make_turn("user", content="hello")]
+        prompt = build_phase1_prompt(turns)
+        assert "LESSON" in prompt
+        assert "tool_summary" in prompt
+        assert "root cause" in prompt.lower()
+        assert "acknowledgement" in prompt.lower() or "acknowledgment" in prompt.lower()
+        assert "<component/topic>" in prompt
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -335,6 +347,23 @@ class TestDetectorNeverCrashes:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+class TestParseDetectionResponse:
+    """_parse_detection_response() accepts new types and tool_summary."""
+
+    def test_lesson_with_tool_summary(self):
+        from bible_cc_plugin.daemon.detector import _parse_detection_response
+
+        text = (
+            '{"result":"moment","moments":[{"type":"lesson",'
+            '"title":"SwiftBar: images need Base64","narrative":"Root cause found.",'
+            '"tool_summary":"cmd: base64 < icon.png"}]}'
+        )
+        candidates = _parse_detection_response(text)
+        assert len(candidates) == 1
+        assert candidates[0].type == "lesson"
+        assert candidates[0].tool_summary == "cmd: base64 < icon.png"
+
+
 class TestBuildPhase2Prompt:
     """build_phase2_prompt() — retrospective prompt with known moments."""
 
@@ -350,6 +379,18 @@ class TestBuildPhase2Prompt:
         prompt = build_phase2_prompt(turns, known)
         assert "ALREADY detected" in prompt or "already detected" in prompt.lower()
         assert "Use Postgres" in prompt
+
+    def test_includes_lesson_type_and_tool_summary(self):
+        """Phase 2 system prompt defines LESSON; user prompt carries tool_summary rule."""
+        from bible_cc_plugin.daemon.detector import (
+            _PHASE2_SYSTEM_PROMPT,
+            build_phase2_prompt,
+        )
+
+        prompt = build_phase2_prompt([_make_turn("user", content="hi")], [])
+        assert "tool_summary" in prompt
+        assert "LESSON" in _PHASE2_SYSTEM_PROMPT
+        assert "root cause" in _PHASE2_SYSTEM_PROMPT.lower()
 
     def test_contains_dont_re_report(self):
         """Prompt instructs LLM NOT to re-report known moments."""

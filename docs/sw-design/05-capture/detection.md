@@ -104,18 +104,24 @@ Key moment types:
 - SESSION_START: the user defines the topic/scope of work
 - DECISION: the user confirms a choice, approach, or design direction
 - ACCOMPLISHMENT: something was completed, verified, and accepted
+- LESSON: the user reported a problem, the agent reasoned to a CONFIRMED
+  root cause, and the fix was verified as effective (reusable knowledge)
 
 Do NOT flag:
-- Intermediate bug fixes or error corrections
-- Exploratory discoveries (unless user explicitly confirms importance)
+- Pure acknowledgements/confirmations with no new knowledge
+- Status syncs or progress restatements
+- Intermediate bug fixes UNLESS they satisfy the LESSON criteria
+  (confirmed root cause + verified fix)
 
 Recent conversation:
 {turns_text}
 
 For each key moment found, provide:
 - type: one of the above
-- title: one-line summary
-- narrative: 2-4 sentences describing what happened and why it matters
+- title: "<component/topic>: <key conclusion>" (searchable, <=12 words)
+- narrative: one short sentence (<=160 chars) — what happened and why it matters
+- tool_summary: concrete operational details (commands, file paths, config
+  keys, error messages, root-cause evidence; <=300 chars; REQUIRED for LESSON)
 
 If no key moment occurred, output: {"result": "none"}
 ```
@@ -137,10 +143,14 @@ Full session transcript:
 Key moment types (subset of mid-session; SESSION_START excluded):
 - DECISION: the user confirms a choice, approach, or design direction
 - ACCOMPLISHMENT: something was completed, verified, and accepted
+- LESSON: the user reported a problem, the agent reasoned to a CONFIRMED
+  root cause, and the fix was verified as effective (reusable knowledge)
 
 Do NOT flag:
-- Intermediate bug fixes or error corrections
-- Exploratory discoveries (unless user explicitly confirms importance)
+- Pure acknowledgements/confirmations with no new knowledge
+- Status syncs or progress restatements
+- Intermediate bug fixes UNLESS they satisfy the LESSON criteria
+  (confirmed root cause + verified fix)
 
 Now identify:
 1. Any ADDITIONAL key moments missed by mid-session detection
@@ -148,7 +158,9 @@ Now identify:
 
 Output constraints:
 - Return at most 3 moments.
+- Titles: "<component/topic>: <key conclusion>", <=12 words.
 - Use one short sentence per narrative (<=160 chars).
+- Put concrete details in tool_summary (<=300 chars; required for LESSON).
 - Keep assessment <=200 chars.
 - Output only valid compact JSON.
 ```
@@ -163,16 +175,22 @@ Output constraints:
   "moments": [
     {
       "type": "decision",
-      "title": "PostgreSQL for auth storage",
-      "narrative": "Team decided to use PostgreSQL for auth. SQLite considered but PostgreSQL chosen for concurrent write support.",
+      "title": "Auth storage: PostgreSQL over SQLite",
+      "narrative": "Team chose PostgreSQL for concurrent writes; SQLite rejected.",
       "tool_summary": "migration executed successfully"
+    },
+    {
+      "type": "lesson",
+      "title": "SwiftBar: image params require Base64",
+      "narrative": "Image params silently failed until Base64 encoding was used; paths render as a question-mark placeholder.",
+      "tool_summary": "file: ~/Library/Application Support/SwiftBar/Plugins/gitproxy.10s.sh; fix: base64 < icons/trident-off.png; docs: SwiftBar README image/templateImage"
     }
   ],
   "assessment": "The session focused on implementing auth module. Key decisions: PostgreSQL, JWT tokens. Rate limiting implemented."
 }
 ```
 
-> Prompt 中 moment type 用大写（`DECISION`）指引 LLM；结构化输出和 `moments` 表存储用小写（`"decision"`）。解析器做大小写归一化。
+> Prompt 中 moment type 用大写（`DECISION`）指引 LLM；结构化输出和 `moments` 表存储用小写（`"decision"`）。解析器做大小写归一化。新增的 `LESSON` 类型存储为 `"lesson"`。
 
 ---
 
