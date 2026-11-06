@@ -59,6 +59,13 @@ POST /daemon/session/flush
   → Used by /bible-cc:push for manual mid-session flush.
   → Request:  {session_id: string}
   → Response: {session_id: string, moments_flushed: int}
+
+POST /daemon/session/poll
+  → Single-shot check of BiBLE task status for submitted moments (flushed=1).
+  → Does NOT change state: queued tasks stay flushed=1 (diagnostic use).
+  → Request:  {session_id: string}
+  → Response: {session_id: string, confirmed: int, failed: int,
+               pending: int, checked_tasks: int}
 ```
 
 ### 1.3 Turn 端点

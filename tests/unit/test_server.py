@@ -2610,3 +2610,136 @@ class TestPhase3cDebugEndpoints:
         monkeypatch.setattr(server_mod, "_debug_mode", True)
         data = client.get("/daemon/debug/bible-requests").json()
         assert data == {"requests": []}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3d — flush result polling (flushed=1 → 2/-1)
+# ---------------------------------------------------------------------------
+
+
+class TestFlushPoll:
+    def _seed_submitted(self, server_mod, session_id: str, task_id: str) -> tuple:
+        from bible_cc_plugin.daemon.buffer import (
+            compute_content_hash,
+            insert_moment,
+            insert_session,
+            mark_moments_submitted,
+        )
+
+        conn = server_mod._get_db()
+        insert_session(conn, session_id)
+        ch = compute_content_hash(session_id, "T", "N")
+        moment_id = insert_moment(conn, session_id, "lesson", "T", "N", ch)
+        mark_moments_submitted(conn, [moment_id], task_id)
+        return conn, moment_id
+
+    @pytest.mark.asyncio
+    async def test_completed_marks_confirmed(self, tmp_path, monkeypatch, httpx_mock):
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        monkeypatch.setattr(server_mod, "_POLL_INTERVAL_S", 0)
+        conn, moment_id = self._seed_submitted(server_mod, "sess-poll-ok", "task-ok")
+
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/api/control/admin/tasks/task-ok",
+            json={"task_id": "task-ok", "status": "completed"},
+        )
+        result = await server_mod._poll_flush_results("sess-poll-ok", max_attempts=1)
+
+        assert result["confirmed"] == 1
+        assert result["failed"] == 0
+        row = conn.execute("SELECT flushed FROM moments WHERE id=?", (moment_id,)).fetchone()
+        assert row["flushed"] == 2
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_failed_marks_failed(self, tmp_path, monkeypatch, httpx_mock):
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        monkeypatch.setattr(server_mod, "_POLL_INTERVAL_S", 0)
+        conn, moment_id = self._seed_submitted(server_mod, "sess-poll-fail", "task-fail")
+
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/api/control/admin/tasks/task-fail",
+            json={"task_id": "task-fail", "status": "failed"},
+        )
+        result = await server_mod._poll_flush_results("sess-poll-fail", max_attempts=1)
+
+        assert result["failed"] == 1
+        row = conn.execute("SELECT flushed FROM moments WHERE id=?", (moment_id,)).fetchone()
+        assert row["flushed"] == -1
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_timeout_marks_failed(self, tmp_path, monkeypatch, httpx_mock):
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        monkeypatch.setattr(server_mod, "_POLL_INTERVAL_S", 0)
+        conn, moment_id = self._seed_submitted(server_mod, "sess-poll-timeout", "task-slow")
+
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/api/control/admin/tasks/task-slow",
+            json={"task_id": "task-slow", "status": "queued"},
+        )
+        result = await server_mod._poll_flush_results("sess-poll-timeout", max_attempts=1)
+
+        assert result["failed"] == 1
+        row = conn.execute("SELECT flushed FROM moments WHERE id=?", (moment_id,)).fetchone()
+        assert row["flushed"] == -1
+
+        conn.close()
+        server_mod._db_conn = None
+
+    @pytest.mark.asyncio
+    async def test_single_check_keeps_pending(self, tmp_path, monkeypatch, httpx_mock):
+        """Manual endpoint single check must not mark queued tasks failed."""
+        monkeypatch.setenv("BIBLE_CC_DB_PATH", str(tmp_path / "daemon.db"))
+        import bible_cc_plugin.daemon.server as server_mod
+
+        server_mod._db_conn = None
+        server_mod._db_error = None
+        server_mod._flush_locks.clear()
+        monkeypatch.setattr(server_mod, "_POLL_INTERVAL_S", 0)
+        conn, moment_id = self._seed_submitted(server_mod, "sess-poll-pending", "task-queued")
+
+        httpx_mock.add_response(
+            method="GET",
+            url="http://localhost:5555/api/control/admin/tasks/task-queued",
+            json={"task_id": "task-queued", "status": "queued"},
+        )
+        result = await server_mod._poll_flush_results(
+            "sess-poll-pending", max_attempts=1, mark_timeout=False
+        )
+
+        assert result["pending"] == 1
+        assert result["failed"] == 0
+        row = conn.execute("SELECT flushed FROM moments WHERE id=?", (moment_id,)).fetchone()
+        assert row["flushed"] == 1
+
+        conn.close()
+        server_mod._db_conn = None
+
+    def test_poll_endpoint_returns_summary(self, client):
+        data = client.post("/daemon/session/poll", json={"session_id": "no-such-session"}).json()
+        assert data["session_id"] == "no-such-session"
+        assert data["confirmed"] == 0
+        assert data["pending"] == 0

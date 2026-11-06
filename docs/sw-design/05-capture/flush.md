@@ -83,7 +83,19 @@ flushed = -1 → flush failed (retry needed)
 
 ### 3.3 结果轮询
 
-异步轮询 BiBLE task status（间隔 5s，最多 60 次，5 分钟总超时）。
+`_poll_flush_results(session_id)`：对 `flushed=1` 的 moments 按 `import_task_id`
+查询 BiBLE task 状态（间隔 5s，最多 60 次，5 分钟总超时）。
+
+- `completed` → `flushed=2`（`mark_moments_confirmed`）
+- `failed` / `cancelled` → `flushed=-1`（`mark_moments_failed`，下次 flush 重试）
+- 轮询超时 → `flushed=-1` + warning 日志
+
+触发点：
+
+- `/session/end` flush 成功后**后台调度**（`_schedule_poll`，不阻塞 hook 的 30s 预算）
+- `POST /daemon/session/poll` 单次检查（`max_attempts=1`，不改状态，用于诊断）
+
+`_poll_flush_results` 返回 `{session_id, confirmed, failed, pending, checked_tasks}`。
 
 ---
 
@@ -94,7 +106,7 @@ flushed = -1 → flush failed (retry needed)
 | BiBLE 不可达 | flushed 保持 0。retry-push 手动重试。 |
 | Import task failed | flushed = -1。log error。 |
 | 轮询超时 | flushed = -1。log warning。 |
-| 连续失败 3 次 | 产出 warning hint（见 `08-operability/failure-paths.md` §F6） |
+| 连续失败 3 次 | warning 日志（CLI hint 待命令层实现，见 `08-operability/failure-paths.md` §F6） |
 
 ---
 

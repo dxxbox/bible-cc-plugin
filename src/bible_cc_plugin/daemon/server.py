@@ -87,6 +87,9 @@ _phase2_events: dict[str, _Phase2Completion] = {}
 # ── Phase 3c connectivity + diagnostics infrastructure ─────────────────────
 _CONNECTIVITY_INTERVAL_S: float = 30.0  # background probe cadence
 _FLUSH_LOG_MAXLEN: int = 100
+_POLL_INTERVAL_S: float = 5.0  # flush-result poll cadence
+_POLL_MAX_ATTEMPTS: int = 60  # 5 minutes total
+_poll_tasks: set[asyncio.Task] = set()  # background poll tasks
 
 
 @dataclass
@@ -986,6 +989,10 @@ async def session_end(req: _SessionEndRequest):
     # Flush all retryable moments (Phase 1 + Phase 2 if completed)
     flush_result = await _flush_session_moments(req.session_id)
 
+    # Confirm submitted tasks in the background (flushed=1 → 2/-1)
+    if flush_result.task_id:
+        _schedule_poll(req.session_id)
+
     # Mark completed AFTER flush
     mark_session_completed(conn, req.session_id)
     _logger.info("session/end %s completed", req.session_id)
@@ -1005,6 +1012,130 @@ async def session_end(req: _SessionEndRequest):
 
 
 # ── Phase 3b flush functions ───────────────────────────────────────────────
+
+
+async def _poll_flush_results(
+    session_id: str,
+    *,
+    max_attempts: int | None = None,
+    mark_timeout: bool = True,
+) -> dict:
+    """Poll BiBLE task status for submitted moments (flushed=1).
+
+    ``max_attempts=1`` + ``mark_timeout=False`` performs a single check
+    without changing state (used by the manual endpoint).
+    """
+    from bible_cc_plugin.daemon.buffer import (
+        get_submitted_moments,
+        mark_moments_confirmed,
+        mark_moments_failed,
+    )
+    from bible_cc_plugin.daemon.client import BiBLEClient
+
+    attempts = _POLL_MAX_ATTEMPTS if max_attempts is None else max_attempts
+    conn = _get_db()
+    if conn is None:
+        return {
+            "session_id": session_id,
+            "confirmed": 0,
+            "failed": 0,
+            "pending": 0,
+            "checked_tasks": 0,
+            "error": "database unavailable",
+        }
+
+    moments = get_submitted_moments(conn, session_id)
+    if not moments:
+        return {
+            "session_id": session_id,
+            "confirmed": 0,
+            "failed": 0,
+            "pending": 0,
+            "checked_tasks": 0,
+        }
+
+    by_task: dict[str, list[int]] = {}
+    confirmed = failed = 0
+    pending = len(moments)
+    for m in moments:
+        task_id = m.get("import_task_id")
+        if task_id:
+            by_task.setdefault(task_id, []).append(m["id"])
+        else:
+            mark_moments_failed(conn, [m["id"]])
+            failed += 1
+            pending -= 1
+
+    client = BiBLEClient(_app_config.bible)
+    try:
+        for task_id, ids in by_task.items():
+            state: str | None = None
+            for attempt in range(attempts):
+                try:
+                    status = await client.get_task_status(task_id)
+                    state = status.get("status")
+                except Exception as exc:  # noqa: BLE001
+                    _logger.warning("[flush:poll] task=%s status query failed: %s", task_id, exc)
+                    state = None
+                if state == "completed":
+                    mark_moments_confirmed(conn, ids)
+                    confirmed += len(ids)
+                    pending -= len(ids)
+                    _logger.info(
+                        "[flush:poll] task=%s → completed → flushed=2 (%d moments)",
+                        task_id,
+                        len(ids),
+                    )
+                    break
+                if state in ("failed", "cancelled"):
+                    mark_moments_failed(conn, ids)
+                    failed += len(ids)
+                    pending -= len(ids)
+                    _logger.warning(
+                        "[flush:poll] task=%s → %s → flushed=-1 (%d moments)",
+                        task_id,
+                        state,
+                        len(ids),
+                    )
+                    break
+                if attempt < attempts - 1:
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+            else:
+                if mark_timeout:
+                    mark_moments_failed(conn, ids)
+                    failed += len(ids)
+                    pending -= len(ids)
+                    _logger.warning(
+                        "[flush:poll] task=%s → poll timeout (%ds) → flushed=-1",
+                        task_id,
+                        int(attempts * _POLL_INTERVAL_S),
+                    )
+                else:
+                    _logger.info("[flush:poll] task=%s still %s (pending)", task_id, state)
+    finally:
+        await client.aclose()
+
+    _logger.info(
+        "[flush:poll] DONE session=%s confirmed=%d failed=%d pending=%d",
+        session_id[:8],
+        confirmed,
+        failed,
+        pending,
+    )
+    return {
+        "session_id": session_id,
+        "confirmed": confirmed,
+        "failed": failed,
+        "pending": pending,
+        "checked_tasks": len(by_task),
+    }
+
+
+def _schedule_poll(session_id: str) -> None:
+    """Fire-and-forget poll; keep a reference so the task is not GC'd."""
+    task = asyncio.create_task(_poll_flush_results(session_id), name=f"flush-poll-{session_id[:8]}")
+    _poll_tasks.add(task)
+    task.add_done_callback(_poll_tasks.discard)
 
 
 def _get_session_created_at(conn: sqlite3.Connection, session_id: str) -> str | None:
@@ -1458,6 +1589,12 @@ async def manual_flush(req: _FlushRequest):
         "task_id": result.task_id,
         "flush_error": result.error,
     }
+
+
+@app.post("/daemon/session/poll")
+async def poll_session_results(req: _FlushRequest):
+    """Single-shot check of BiBLE task status for submitted moments."""
+    return await _poll_flush_results(req.session_id, max_attempts=1, mark_timeout=False)
 
 
 @app.post("/turn/user")

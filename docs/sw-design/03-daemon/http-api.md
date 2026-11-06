@@ -330,6 +330,36 @@ HTTP 状态码：
 
 **调用方**：`/bible-cc:push` 命令。
 
+### 3.4 `POST /daemon/session/poll`
+
+单次检查已提交 moments（`flushed=1`）的 BiBLE task 状态。**不改变状态**（queued 保持 `flushed=1`），用于诊断。
+
+**Request:**
+```json
+{"session_id": "abc123-def456"}
+```
+
+**Response (200):**
+```json
+{
+  "session_id": "abc123-def456",
+  "confirmed": 0,
+  "failed": 0,
+  "pending": 3,
+  "checked_tasks": 1
+}
+```
+
+**内部流程:**
+1. `SELECT * FROM moments WHERE session_id=? AND flushed=1`。
+2. 按 `import_task_id` 分组，逐 task 查询一次 `GET /api/control/admin/tasks/{id}`。
+3. `completed` → `flushed=2`；`failed`/`cancelled` → `flushed=-1`；其他 → 保持 `flushed=1`。
+4. 返回计数（`checked_tasks` = 实际查询的 task 数）。
+
+**后台轮询**：`/session/end` flush 成功后自动调度 `_poll_flush_results`（5s × 60 次，5 分钟），与此端点共用逻辑。
+
+**调用方**：诊断/运维。
+
 ---
 
 ## 4. Turn 端点
@@ -761,6 +791,7 @@ DELETE FROM moments WHERE id = ? AND flushed = 0;
 | `GET /daemon/moments` | ~5ms | 否 | 否 |
 | `DELETE /daemon/moments/{id}` | ~5ms | 否 | 否 |
 | `PUT /daemon/moments/{id}` | ~5ms | 否 | 否 |
+| `POST /daemon/session/poll` | ~3s | 是（单次 task 查询） | BiBLE |
 | `GET /daemon/debug/flush-log` | ~1ms | 否 | 否 |
 | `GET /daemon/debug/bible-requests` | ~1ms | 否 | 否 |
 

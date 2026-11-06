@@ -693,6 +693,48 @@ def increment_retry_count(
     conn.commit()
 
 
+def get_submitted_moments(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> list[dict]:
+    """Return moments awaiting BiBLE task confirmation (flushed=1)."""
+    rows = conn.execute(
+        "SELECT * FROM moments WHERE session_id=? AND flushed=1 ORDER BY id",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_moments_confirmed(
+    conn: sqlite3.Connection,
+    moment_ids: list[int],
+) -> None:
+    """Mark moments as confirmed by BiBLE (flushed=2)."""
+    if not moment_ids:
+        return
+    placeholders = ",".join("?" * len(moment_ids))
+    conn.execute(
+        f"UPDATE moments SET flushed=2 WHERE id IN ({placeholders})",
+        list(moment_ids),
+    )
+    conn.commit()
+
+
+def mark_moments_failed(
+    conn: sqlite3.Connection,
+    moment_ids: list[int],
+) -> None:
+    """Mark moments as failed (flushed=-1); retryable on next flush."""
+    if not moment_ids:
+        return
+    placeholders = ",".join("?" * len(moment_ids))
+    conn.execute(
+        f"UPDATE moments SET flushed=-1 WHERE id IN ({placeholders})",
+        list(moment_ids),
+    )
+    conn.commit()
+
+
 # -- Recovery (Phase 1b) ------------------------------------------------------
 
 

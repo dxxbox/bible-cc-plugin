@@ -47,6 +47,7 @@ case "${1:-}" in
     echo "==> Lint..."; uv run ruff check; uv run ruff format --check
     echo "==> Unit tests..."; uv run pytest tests/unit/ -v
     echo "==> Contract tests..."; uv run pytest tests/contract/ -v
+    echo "==> Integration tests (auto-starts BiBLE test server)..."; uv run pytest tests/integration/ -v
     echo "==> CI PASSED"
     rm -f .mcp.json
     echo "  .mcp.json cleaned up"

@@ -274,14 +274,40 @@ async def _dispatch(client: BiBLEClient, name: str, args: dict) -> dict:
         messages = args.get("messages", [])
         if not messages:
             return {"error": "No messages to save.", "detail": "messages is required."}
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        title = args.get("title") or "Saved memory"
+        abstract = args.get("abstract") or ""
+        overview = "\n".join(f"[{m.get('role', 'user')}] {m.get('content', '')}" for m in messages)[
+            :2000
+        ]
+        meta = {
+            "memory_id": f"bible-cc-save-{int(time.time() * 1000)}",
+            "title": title[:200],
+            "abstract": (abstract or title)[:500],
+            "overview": overview or (abstract or title),
+            "created_at": now,
+            "updated_at": now,
+            "source_client": "bible-cc",
+            "language": "zh",
+        }
         payload = {
             "messages": messages,
-            "title": args.get("title", ""),
-            "abstract": args.get("abstract", ""),
-            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "title": title,
+            "abstract": abstract,
+            "saved_at": now,
         }
-        content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        files = [("memory-save.json", content, "application/json")]
+        files = [
+            (
+                "meta.json",
+                json.dumps(meta, ensure_ascii=False).encode("utf-8"),
+                "application/json",
+            ),
+            (
+                "memory-save.json",
+                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                "application/json",
+            ),
+        ]
         result = await client.import_memory(files)
         return {"task_id": result.get("task_id"), "status": "queued"}
 
