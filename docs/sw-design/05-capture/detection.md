@@ -16,6 +16,8 @@ Stop hook 写入的 assistant 最终文本（`/turn/assistant`）在文本非空
 
 **例外：`AskUserQuestion`。** 用户的选择存储在 tool output 的 `questions/answers` 中（不是 user turn）。daemon 在 `/turn/tool` 收到 `AskUserQuestion` 时立即排队一次 decision-only Phase 1（不受阈值限制）；Phase 1/2 prompt 将该 turn 格式化为 `[Assistant asked via AskUserQuestion]\nQ: ... → A: ...`，长度受 `capture.tool_result_max_chars`（默认 250）约束。无 answers 时仍只输出 `[Used tool: AskUserQuestion]`。
 
+**已知限制：`ExitPlanMode` 计划批准。** Claude Code 的 PostToolUse 数据中，`ExitPlanMode` 的 `tool_arguments` 为空、`tool_output` 仅含 `{plan, isAgent, filePath}`，不含用户的 approved/rejected 结果；该批准以独立系统消息下发，不经过任何 hook。因此「计划批准」类决策**无法自动捕获**。读取 Claude Code 私有 transcript 的绕过方案明确不采用（耦合私有格式、版本易碎、隐私面扩大）。
+
 ### 1.2 流程
 
 ```
