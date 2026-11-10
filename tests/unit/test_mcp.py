@@ -304,3 +304,131 @@ class TestMCPPostponed:
     async def test_knowledge_list_unchanged(self):
         result = await _invoke_tool("bible_knowledge_list", {"tag": "design"})
         assert "not yet available" in result.get("error", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4b — structured call tracking (JSONL)
+# ---------------------------------------------------------------------------
+
+
+def _calls_path():
+    import os
+    from pathlib import Path
+
+    return Path(os.environ["BIBLE_CC_LOG_FILE"]).expanduser().parent / "mcp-calls.jsonl"
+
+
+def _read_calls() -> list[dict]:
+    path = _calls_path()
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+class TestMCPCallRecord:
+    @pytest.mark.asyncio
+    async def test_success_record_fields(self, httpx_mock, monkeypatch):
+        monkeypatch.setenv("BIBLE_ATLAS_BASE_URL", "http://localhost:5555")
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/search/memory",
+            json={"total": 1, "results": {"memory": [{"doc_id": "1", "score": 0.9}]}},
+            status_code=200,
+        )
+        await _invoke_tool("bible_memory_search", {"query": "test", "top_k": 5})
+
+        calls = _read_calls()
+        assert len(calls) == 1
+        record = calls[0]
+        assert set(record) >= {
+            "time",
+            "tool",
+            "args_summary",
+            "result_summary",
+            "latency_ms",
+            "status",
+        }
+        assert record["tool"] == "bible_memory_search"
+        assert record["status"] == "ok"
+        assert record["result_summary"] == "1 hits"
+        assert record["latency_ms"] >= 0
+        assert "query=test" in record["args_summary"]
+
+    @pytest.mark.asyncio
+    async def test_save_record_has_task_id_and_content_len_without_body(
+        self, httpx_mock, monkeypatch
+    ):
+        monkeypatch.setenv("BIBLE_ATLAS_BASE_URL", "http://localhost:5555")
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/import/memory",
+            json={"task_id": "task-save-9", "status": "queued"},
+            status_code=202,
+        )
+        await _invoke_tool(
+            "bible_memory_save",
+            {"messages": [{"role": "user", "content": "SECRET BODY"}], "title": "T"},
+        )
+
+        record = _read_calls()[0]
+        assert record["status"] == "ok"
+        assert record["task_id"] == "task-save-9"
+        assert record["content_len"] > 0
+        assert "SECRET BODY" not in record["args_summary"]
+
+    @pytest.mark.asyncio
+    async def test_postponed_recorded(self):
+        await _invoke_tool("bible_memory_delete", {"storage_path": "/x"})
+
+        record = _read_calls()[0]
+        assert record["tool"] == "bible_memory_delete"
+        assert record["status"] == "postponed"
+
+    @pytest.mark.asyncio
+    async def test_config_error_recorded(self, monkeypatch):
+        monkeypatch.delenv("BIBLE_ATLAS_BASE_URL", raising=False)
+        await _invoke_tool("bible_memory_search", {"query": "x"})
+
+        record = _read_calls()[0]
+        assert record["status"] == "config_error"
+
+    @pytest.mark.asyncio
+    async def test_write_failure_does_not_break_tool(self, httpx_mock, monkeypatch):
+        monkeypatch.setenv("BIBLE_ATLAS_BASE_URL", "http://localhost:5555")
+        httpx_mock.add_response(
+            method="POST",
+            url="http://localhost:5555/api/search/memory",
+            json={"total": 0, "results": {"memory": []}},
+            status_code=200,
+        )
+
+        import bible_cc_plugin.mcp.server as mcp_mod
+
+        def _boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(mcp_mod, "_append_jsonl", _boom)
+        result = await _invoke_tool("bible_memory_search", {"query": "x"})
+        assert result["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_rotation_at_size_threshold(self, httpx_mock, monkeypatch):
+        monkeypatch.setenv("BIBLE_ATLAS_BASE_URL", "http://localhost:5555")
+
+        import bible_cc_plugin.mcp.server as mcp_mod
+
+        monkeypatch.setattr(mcp_mod, "_MCP_CALLS_MAX_BYTES", 10)
+
+        for _ in range(2):
+            httpx_mock.add_response(
+                method="POST",
+                url="http://localhost:5555/api/search/memory",
+                json={"total": 0, "results": {"memory": []}},
+                status_code=200,
+            )
+            await _invoke_tool("bible_memory_search", {"query": "x"})
+
+        path = _calls_path()
+        rotated = path.with_name(path.name + ".1")
+        assert rotated.exists()
+        assert len(path.read_text().splitlines()) == 1

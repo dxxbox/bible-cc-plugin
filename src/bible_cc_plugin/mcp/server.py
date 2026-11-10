@@ -1,10 +1,12 @@
 """MCP Server — BiBLE Atlas tools via stdio transport.
 
-Phase 2: framework skeleton. All 8 tools registered with proper inputSchema.
-Active tools return structured degradation errors (BiBLE not yet connected).
-Postponed tools return "not yet available".
+All 8 tools registered (6 active + 2 postponed).  Active tools call BiBLE
+Atlas through ``client.py``; failures return structured errors instead of
+crashing the server.
 
-Phase 3/4: replace with real BiBLE API calls via client.py.
+Phase 4b: startup diagnostics + structured per-call tracking appended to
+``mcp-calls.jsonl`` next to the daemon log (read by
+``GET /daemon/debug/mcp-calls``).  No HTTP communication with the daemon.
 
 Design: 02-interfaces.md §3, 06-recall/mcp-tools.md.
 """
@@ -65,6 +67,103 @@ _TOOL_MEMORY_DELETE = "bible_memory_delete"
 _TOOL_KNOWLEDGE_LIST = "bible_knowledge_list"
 
 _POSTPONED = {_TOOL_MEMORY_DELETE, _TOOL_KNOWLEDGE_LIST}
+
+# ── Call tracking (Phase 4b) ────────────────────────────────────────────────
+#
+# MCP server and daemon are independent processes (no HTTP between them).
+# Each tool call appends one JSON line; the daemon reads the file tail via
+# GET /daemon/debug/mcp-calls.  Path follows BIBLE_CC_LOG_FILE so the test
+# autouse fixture isolates it to a temp directory without a new env var.
+
+_MCP_CALLS_FILENAME = "mcp-calls.jsonl"
+_MCP_CALLS_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _mcp_calls_path() -> Path:
+    """Return the JSONL call-record path (derived from the daemon log path)."""
+    log_file = os.getenv("BIBLE_CC_LOG_FILE") or str(Path.home() / ".bible-cc" / "daemon.log")
+    return Path(log_file).expanduser().parent / _MCP_CALLS_FILENAME
+
+
+def _utc_now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _summarize_args(name: str, arguments: dict) -> str:
+    """Production-safe, truncated argument summary for logs and JSONL.
+
+    ``bible_memory_save`` never includes message bodies — only title,
+    message count, and total content length.
+    """
+    if name == _TOOL_MEMORY_SAVE:
+        messages = arguments.get("messages") or []
+        total_chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
+        summary = (
+            f"title={arguments.get('title', '')}, "
+            f"messages={len(messages)}, content_len={total_chars}"
+        )
+        return summary[:200]
+
+    parts = []
+    for key, value in arguments.items():
+        if isinstance(value, str) and len(value) > 60:
+            value = value[:60] + "…"
+        parts.append(f"{key}={value}")
+    return ", ".join(parts)[:200]
+
+
+def _input_content_len(name: str, arguments: dict) -> int | None:
+    """Content length for save operations (message bodies), else None."""
+    if name != _TOOL_MEMORY_SAVE:
+        return None
+    messages = arguments.get("messages") or []
+    return sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
+
+
+def _append_jsonl(path: Path, entry: dict) -> None:
+    """Append one JSON line, rotating to ``.1`` past the size threshold."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.exists() and path.stat().st_size > _MCP_CALLS_MAX_BYTES:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:
+        pass
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _record_mcp_call(
+    *,
+    tool: str,
+    args_summary: str,
+    result_summary: str,
+    latency_ms: int,
+    status: str,
+    task_id: str | None = None,
+    content_len: int | None = None,
+) -> None:
+    """Best-effort append of one structured call record."""
+    record = {
+        "time": _utc_now_iso(),
+        "tool": tool,
+        "args_summary": args_summary,
+        "result_summary": result_summary,
+        "latency_ms": latency_ms,
+        "status": status,
+    }
+    if task_id:
+        record["task_id"] = task_id
+    if content_len is not None:
+        record["content_len"] = content_len
+    try:
+        _append_jsonl(_mcp_calls_path(), record)
+    except Exception as exc:  # best-effort — never break the tool call
+        _logger.debug("mcp call record failed: %s", exc)
+
 
 # ── Tool definitions (inputSchema per 06-recall/mcp-tools.md §1) ────────────
 
@@ -168,10 +267,31 @@ async def _handle_tool(name: str, arguments: dict) -> list:
     """Dispatch tool call → list of TextContent.
 
     Logging format per Phase 4 F4.6:
-      [mcp:tool] bible_memory_search(query="...", top_k=5) → 0 hits (0.3s)
-      [mcp:tool] ERROR: bible_memory_search → reason (0.1s)
+      [mcp:tool] bible_memory_search(query=test, top_k=5) → 1 hits (300ms)
+      [mcp:tool] ERROR: bible_memory_search → reason (100ms)
+
+    Every outcome is also appended to ``mcp-calls.jsonl`` (Phase 4b).
     """
     start = time.monotonic()
+    args_summary = _summarize_args(name, arguments)
+    input_content_len = _input_content_len(name, arguments)
+
+    def _record(
+        status: str,
+        result_summary: str,
+        *,
+        task_id: str | None = None,
+        content_len: int | None = None,
+    ) -> None:
+        _record_mcp_call(
+            tool=name,
+            args_summary=args_summary,
+            result_summary=result_summary,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            status=status,
+            task_id=task_id,
+            content_len=input_content_len if content_len is None else content_len,
+        )
 
     # Postponed tools — permanent "not yet available"
     if name in _POSTPONED:
@@ -181,6 +301,7 @@ async def _handle_tool(name: str, arguments: dict) -> list:
             name,
             elapsed_ms,
         )
+        _record("postponed", "not yet available")
         return _json_content(
             {
                 "error": f"Tool '{name}' is not yet available.",
@@ -198,6 +319,7 @@ async def _handle_tool(name: str, arguments: dict) -> list:
             name,
             elapsed_ms,
         )
+        _record("config_error", "BIBLE_ATLAS_BASE_URL not set")
         return _json_content(
             {
                 "error": "BiBLE Atlas not configured.",
@@ -221,6 +343,7 @@ async def _handle_tool(name: str, arguments: dict) -> list:
             getattr(exc, "code", "?"),
             elapsed_ms,
         )
+        _record("error", f"BiBLEError [{getattr(exc, 'code', '?')}]")
         return _degradation_error(exc)
     except BibleUnreachableError as exc:
         elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -229,17 +352,34 @@ async def _handle_tool(name: str, arguments: dict) -> list:
             name,
             elapsed_ms,
         )
+        _record("error", "unreachable")
+        return _degradation_error(exc)
+    except Exception as exc:  # unexpected — never escape to stdio
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        _logger.error(
+            "[mcp:tool] ERROR: %s → unexpected %r (%dms)",
+            name,
+            exc,
+            elapsed_ms,
+        )
+        _record("error", f"unexpected: {type(exc).__name__}")
         return _degradation_error(exc)
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
     result_summary = _summarize_result(name, result)
+    task_id = result.get("task_id") if isinstance(result, dict) else None
+    output_content_len = None
+    if isinstance(result, dict) and isinstance(result.get("content"), str):
+        output_content_len = len(result["content"])
+    status = "error" if isinstance(result, dict) and result.get("error") else "ok"
     _logger.info(
         "[mcp:tool] %s(%s) → %s (%dms)",
         name,
-        ", ".join(f"{k}={repr(v)[:60]}" for k, v in arguments.items()),
+        args_summary,
         result_summary,
         elapsed_ms,
     )
+    _record(status, result_summary, task_id=task_id, content_len=output_content_len)
     return _json_content(result)
 
 
@@ -422,6 +562,8 @@ def _degradation_error(exc: Exception) -> list:
 
 def _summarize_result(name: str, result: dict) -> str:
     """Produce a compact log summary for the result."""
+    if isinstance(result, dict) and result.get("error"):
+        return f"error: {str(result['error'])[:80]}"
     if "total" in result:
         return f"{result['total']} hits"
     if "task_id" in result:
@@ -445,14 +587,14 @@ def main():
     """`uv run python -m bible_cc_plugin.mcp.server`"""
     base_url = os.getenv("BIBLE_ATLAS_BASE_URL", "")
 
-    _logger.info("[mcp:server] starting on stdio — %d tools registered", len(TOOLS))
-    _logger.info("[mcp:server] BiBLE base_url=%s", base_url or "<not configured>")
+    _logger.info("[mcp:server] starting on stdio transport")
     _logger.info(
-        "[mcp:server] tools: %s",
+        "[mcp:server] registered %d tools: %s",
+        len(TOOLS),
         ", ".join(t["name"] for t in TOOLS),
     )
 
-    # Best-effort BiBLE health check at startup
+    # Best-effort BiBLE health check at startup (sync, 3s cap, never blocks).
     if base_url:
         try:
             import httpx
@@ -460,13 +602,33 @@ def main():
             r = httpx.get(f"{base_url.rstrip('/')}/health", timeout=3)
             if r.status_code == 200:
                 latency = int(r.elapsed.total_seconds() * 1000)
-                _logger.info("[mcp:server] BiBLE health=OK (%dms)", latency)
+                _logger.info(
+                    "[mcp:server] BiBLE base_url=%s, health=OK (%dms)",
+                    base_url,
+                    latency,
+                )
             else:
-                _logger.warning("[mcp:server] BiBLE health=HTTP %d (%s)", r.status_code, base_url)
+                _logger.warning(
+                    "[mcp:server] BiBLE base_url=%s, health=HTTP %d",
+                    base_url,
+                    r.status_code,
+                )
+                _logger.warning(
+                    "[mcp:server] WARNING: tools will return structured errors until BiBLE recovers"
+                )
         except Exception as e:
-            _logger.warning("[mcp:server] BiBLE health=UNREACHABLE (%s)", e)
+            _logger.warning(
+                "[mcp:server] BiBLE base_url=%s, health=UNREACHABLE (%s)",
+                base_url,
+                e,
+            )
+            _logger.warning(
+                "[mcp:server] WARNING: tools will return structured errors until BiBLE recovers"
+            )
     else:
-        _logger.warning("[mcp:server] BiBLE health=SKIP (base_url not configured)")
+        _logger.warning(
+            "[mcp:server] BiBLE base_url=<not configured> — tools will return config errors"
+        )
 
     from mcp.server.fastmcp import FastMCP
 

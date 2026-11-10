@@ -2254,5 +2254,50 @@ async def debug_bible_requests(limit: int = 50, include_health: bool = False):
     return {"requests": get_recent_requests(limit, include_health=include_health)}
 
 
+# ── Phase 4b diagnostic endpoint: MCP call records ───────────────────────
+
+_MCP_CALLS_FILENAME = "mcp-calls.jsonl"
+_MCP_CALLS_MAX_LIMIT = 500
+
+
+def _mcp_calls_path() -> Path:
+    """JSONL call-record path, derived from the daemon log file location."""
+    log_file = _app_config.logging.file or "~/.bible-cc/daemon.log"
+    return Path(log_file).expanduser().parent / _MCP_CALLS_FILENAME
+
+
+def _read_jsonl_tail(path: Path, limit: int) -> list[dict]:
+    """Read the last *limit* valid JSON objects from *path* (newest first)."""
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        _logger.warning("mcp-calls read failed: %s", exc)
+        return []
+
+    calls: list[dict] = []
+    for line in reversed(lines):
+        if len(calls) >= limit:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            calls.append(json.loads(line))
+        except json.JSONDecodeError:
+            _logger.debug("mcp-calls: skipping malformed line")
+    return calls
+
+
+@app.get("/daemon/debug/mcp-calls")
+async def debug_mcp_calls(limit: int = 50):
+    """Return recent MCP server tool calls (Phase 4b, debug mode only)."""
+    if not _debug_mode:
+        raise HTTPException(404, "debug mode disabled")
+    limit = max(1, min(limit, _MCP_CALLS_MAX_LIMIT))
+    return {"calls": _read_jsonl_tail(_mcp_calls_path(), limit)}
+
+
 def _read_port() -> int:
     return _config.daemon.port

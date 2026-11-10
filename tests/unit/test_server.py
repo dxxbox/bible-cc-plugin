@@ -2846,3 +2846,46 @@ class TestConsultNormalization:
 
         # Cross-domain same doc_id is kept — dedup key includes domain.
         assert len([h for h in hits if h["doc_id"] == "m1"]) == 2
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4b: GET /daemon/debug/mcp-calls
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDebugMcpCalls:
+    def test_requires_debug_mode(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_debug_mode", False)
+        r = client.get("/daemon/debug/mcp-calls")
+        assert r.status_code == 404
+        assert r.json()["error"]["code"] == "NOT_FOUND"
+
+    def test_missing_file_returns_empty(self, client, monkeypatch):
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+        r = client.get("/daemon/debug/mcp-calls")
+        assert r.status_code == 200
+        assert r.json() == {"calls": []}
+
+    def test_reads_tail_newest_first_skips_bad_lines(self, client, monkeypatch):
+        import json
+        import os
+        from pathlib import Path
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_debug_mode", True)
+
+        log_path = Path(os.environ["BIBLE_CC_LOG_FILE"])
+        calls_path = log_path.parent / "mcp-calls.jsonl"
+        lines = [json.dumps({"tool": f"t{i}", "status": "ok"}) for i in range(5)]
+        lines.insert(2, "{bad json")
+        calls_path.write_text("\n".join(lines) + "\n")
+
+        r = client.get("/daemon/debug/mcp-calls?limit=3")
+        assert r.status_code == 200
+        calls = r.json()["calls"]
+        assert [c["tool"] for c in calls] == ["t4", "t3", "t2"]
