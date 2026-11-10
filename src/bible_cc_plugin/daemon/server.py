@@ -1945,6 +1945,14 @@ async def consult(req: _ConsultRequest):
         from bible_cc_plugin.daemon.detector import summarize_query
 
         turns = list(reversed(get_recent_turns(conn, req.session_id, limit=_CONSULT_TURN_WINDOW)))
+        if not turns:
+            context = (
+                "<relevant-memories>\n"
+                "[consult] no query provided and no conversation context to summarize.\n"
+                "</relevant-memories>"
+            )
+            return {"context": context, "query_used": "", "hits": []}
+
         llm_start = time.monotonic()
         try:
             summarized = await asyncio.to_thread(summarize_query, turns, _app_config.detection)
@@ -2004,6 +2012,12 @@ async def consult(req: _ConsultRequest):
             _logger.warning("[consult] %s_search failed: %s", domain, result)
             continue
         items, elapsed_ms = result
+        if isinstance(items, list):
+            # Defensive per-domain cap: BiBLE honours top_k, but the endpoint
+            # guarantees the contract even if a server (or a mock) does not.
+            items = items[:limit]
+        else:
+            items = []
         domain_results.append((domain, items))
         _logger.info(
             "[consult] %s_search → %d hits (%.0fms)",
