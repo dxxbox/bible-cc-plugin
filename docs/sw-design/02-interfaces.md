@@ -115,6 +115,7 @@ POST /daemon/consult
       skill:     doc_id←doc_id|id, section_id="", section_title←name,
                  content←content|description
       knowledge: doc_id/section_id/section_title/content passed through
+                 (section_title falls back to title)
   → Dedup by (domain, doc_id, section_id); score desc; per-domain cap = limit,
     no global truncation. Partial failures are skipped; all-domain failure returns 200
     with hits=[] and an "unreachable" hint inside context.

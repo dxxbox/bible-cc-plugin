@@ -64,12 +64,12 @@
 **响应**:
 ```json
 {
-  "context": "## memory\n- Postgres migration plan: ...\n## knowledge\n- ...",
+  "context": "<relevant-memories>\n<hit domain=\"memory\" doc_id=\"mem-1\" section_id=\"\" title=\"Postgres migration plan\">...</hit>\n</relevant-memories>",
   "query_used": "PostgreSQL migration",
   "hits": [
-    {"domain": "memory", "doc_id": "mem-1", "section_id": "1", "section_title": "Postgres migration plan", "content": "...", "score": 0.92},
+    {"domain": "memory", "doc_id": "mem-1", "section_id": "", "section_title": "Postgres migration plan", "content": "...", "score": 0.92},
     {"domain": "knowledge", "doc_id": "kb-3", "section_id": "2", "section_title": "Postgres best practices", "content": "...", "score": 0.85},
-    {"domain": "skill", "doc_id": "sk-2", "section_id": "1", "section_title": "Database migration script", "content": "...", "score": 0.78}
+    {"domain": "skill", "doc_id": "sk-2", "section_id": "", "section_title": "Database migration script", "content": "...", "score": 0.78}
   ]
 }
 ```

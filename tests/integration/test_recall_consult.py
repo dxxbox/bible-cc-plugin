@@ -190,6 +190,29 @@ class TestConsultMocked:
         knowledge.assert_awaited_once()
         skill.assert_awaited_once()
 
+    def test_consult_slow_domain_times_out(self, consult_env, monkeypatch):
+        import asyncio
+
+        async def _slow(*args, **kwargs):
+            await asyncio.sleep(0.5)
+            return [{"doc_id": "slow", "title": "S", "score": 0.9}]
+
+        memory = AsyncMock(side_effect=_slow)
+        knowledge = AsyncMock(return_value=[{"doc_id": "d1", "section_id": "1", "score": 0.8}])
+        skill = AsyncMock(return_value=[{"doc_id": "s1", "name": "N", "score": 0.7}])
+        _patch_searches(monkeypatch, memory=memory, knowledge=knowledge, skill=skill)
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        monkeypatch.setattr(server_mod, "_CONSULT_SEARCH_TIMEOUT_S", 0.05)
+
+        _, client = consult_env
+        r = client.post("/daemon/consult", json={"session_id": "s", "query": "x"})
+        assert r.status_code == 200
+
+        data = r.json()
+        assert {h["domain"] for h in data["hits"]} == {"knowledge", "skill"}
+
     def test_consult_parallel_isolation(self, consult_env, monkeypatch):
         from bible_cc_plugin.daemon.client import BibleUnreachableError
 

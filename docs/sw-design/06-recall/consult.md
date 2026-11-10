@@ -65,16 +65,20 @@ Prompt:
 ## 4. 并行搜索
 
 ```python
-domains = [("memory", "memory"), ("knowledge-base", tag), ("skill", "skill")]
+domains = ["memory", "knowledge", "skill"]
 tag = config.search.default_knowledge_tag  # default "design"
-tasks = [search(domain, tag, query, top_k=limit, base_url, token)
-         for domain, tag in domains]
+tag_map = {"memory": "memory", "knowledge": tag, "skill": "skill"}
+tasks = [
+    _timed_search(domain, search(domain, tag_map[domain], query, top_k=limit,
+                                  base_url, token))
+    for domain in domains
+]
 results = await asyncio.gather(*tasks, return_exceptions=True)
 
 # gather preserves order: zip() maps exceptions back to their domain.
 for domain, result in zip(domains, results):
     if isinstance(result, BaseException):
-        skipped.append(domain)
+        skipped.append(domain)  # includes per-domain 10s timeout
         continue
     items, elapsed_ms = result
     hits.extend(normalize(domain, items[:limit]))
@@ -90,6 +94,7 @@ for h in sorted(hits, key=lambda x: x["score"], reverse=True):
 ```
 
 - 单域失败 → 跳过，其余域正常合并。
+- 每个域搜索由 `asyncio.wait_for(..., timeout=10.0)` 限制（并行执行）；总最坏 ≈ LLM 5s + 10s = 15s。
 - 所有域失败 → HTTP 200、`hits=[]`、context 内 "BiBLE Atlas unreachable" 提示。
 - 不做 `search.default_min_score` 过滤（Phase 4 范围外，与 MCP 工具行为一致）。
 

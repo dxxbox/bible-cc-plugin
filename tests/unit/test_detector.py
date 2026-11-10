@@ -745,3 +745,14 @@ class TestSummarizeQuery:
 
         monkeypatch.delenv("DETECTOR_TEST_MODE", raising=False)
         assert detector.summarize_query([], _default_config()) is None
+
+    def test_long_conversation_keeps_newest_turn(self):
+        """The newest turn must survive the prompt budget (it defines 'recent')."""
+        from bible_cc_plugin.daemon.detector import build_summarize_query_prompt
+
+        turns = [_make_turn("user", f"OLD-{i}-" + "x" * 480) for i in range(10)]
+        turns.append(_make_turn("user", "NEWEST-MARKER"))
+
+        prompt = build_summarize_query_prompt(turns)
+
+        assert "NEWEST-MARKER" in prompt

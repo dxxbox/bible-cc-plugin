@@ -110,7 +110,7 @@
 **MCP 启动诊断**：
 ```
 [mcp:server] starting on stdio transport
-[mcp:server] registered 6 tools: bible_memory_search, bible_memory_save, bible_memory_get, bible_knowledge_search, bible_skill_search, bible_skill_get
+[mcp:server] registered 8 tools: bible_memory_search, bible_memory_save, bible_memory_get, bible_knowledge_search, bible_skill_search, bible_skill_get, bible_memory_delete, bible_knowledge_list
 [mcp:server] BiBLE base_url=http://localhost:5555, health=OK (15ms)
 ```
 

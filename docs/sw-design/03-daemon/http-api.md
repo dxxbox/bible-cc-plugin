@@ -572,7 +572,7 @@ HTTP 状态码：
 |---|---|---|---|---|
 | `memory` | `doc_id` 或 `id` | `""` | `title` | `content` → `overview` → `abstract` |
 | `skill` | `doc_id` 或 `id` | `""` | `name` | `content` → `description` |
-| `knowledge` | `doc_id` | `section_id` | `section_title` | `content` |
+| `knowledge` | `doc_id` | `section_id` | `section_title`（`title` 兜底） | `content` |
 
 去重键 `(domain, doc_id, section_id)`；结果按 score 降序；每个域的结果在端点侧再截断到 `limit`（服务端不遵守 top_k 时仍保证契约）。
 
@@ -582,7 +582,7 @@ HTTP 状态码：
    - 从 SQLite 取当前 session 最近 10 个 turns（正序）。
    - 无 turns → 直接返回 200、`hits=[]`、context 内含 "no conversation context" 提示。
    - LLM 归纳（`detector.summarize_query`，5s 硬超时，`DETECTOR_TEST_MODE` 返回 `"test search query"`）。
-   - 归纳失败 → 回退到全表最近一条非空 user turn 内容（截断 500 字符）。
+   - 归纳失败 → 回退到**当前 session** 全表最近一条非空 user turn 内容（截断 500 字符）。
    - 仍无 → 200、`hits=[]`、context 内含提示。
 3. 并行调用 BiBLE 三域 search（`asyncio.gather(return_exceptions=True)`，单 client）：
    ```
@@ -815,6 +815,7 @@ MCP server 最近 tool 调用（读取 `mcp-calls.jsonl`，与 daemon.log 同目
 ```
 
 - 路径：`<logging.file 的目录>/mcp-calls.jsonl`（默认 `~/.bible-cc/mcp-calls.jsonl`）。
+- MCP 侧按 `BIBLE_CC_LOG_FILE` env 推导路径；若仅在 `~/.bible-cc/config.json` 自定义 `logging.file`，需同时导出该 env（否则两端目录不一致，端点会读到空文件）。
 - `status`：`ok | error | postponed | config_error`；`task_id` / `content_len` 仅在适用时出现。
 - 最新在前；文件不存在或不可读 → 空数组；坏 JSON 行跳过。
 - 只读当前文件，不读轮转后的 `.1`。

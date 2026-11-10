@@ -148,6 +148,6 @@ F4b.1 (启动诊断) ──► F4b.2 (调用追踪) ──► F4b.3 (debug 端�
 ## 产出文件
 
 ```
-src/bible_cc_plugin/mcp/server.py        ← (修改: 启动诊断 + 调用追踪 + 上报)
+src/bible_cc_plugin/mcp/server.py        ← (修改: 启动诊断 + JSONL 调用追踪)
 src/bible_cc_plugin/daemon/server.py     ← (修改: debug/mcp-calls 端点)
 ```

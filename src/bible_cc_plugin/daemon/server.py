@@ -1810,6 +1810,7 @@ _CONSULT_DOMAINS = ("memory", "knowledge", "skill")
 _CONSULT_TURN_WINDOW = 10
 _CONSULT_MIN_LIMIT = 1
 _CONSULT_MAX_LIMIT = 50
+_CONSULT_SEARCH_TIMEOUT_S = 10.0  # per-domain cap (parallel) → worst case ~15s with LLM
 
 
 def _normalize_hit(domain: str, item: dict) -> dict:
@@ -1905,9 +1906,9 @@ def _consult_search_coro(client, domain: str, query: str, limit: int, knowledge_
 
 
 async def _timed_search(domain: str, coro) -> tuple[list[dict], float]:
-    """Await one domain search and return (items, elapsed_ms)."""
+    """Await one domain search (bounded) and return (items, elapsed_ms)."""
     start = time.monotonic()
-    items = await coro
+    items = await asyncio.wait_for(coro, timeout=_CONSULT_SEARCH_TIMEOUT_S)
     return items, (time.monotonic() - start) * 1000
 
 

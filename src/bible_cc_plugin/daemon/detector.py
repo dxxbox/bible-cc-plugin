@@ -867,7 +867,9 @@ def build_summarize_query_prompt(turns: list[dict]) -> str:
     """
     lines: list[str] = []
     total = 0
-    for turn in turns:
+    # Walk newest → oldest so the budget keeps the most recent turns, then
+    # reverse back to chronological order for the prompt.
+    for turn in reversed(turns):
         text = (turn.get("content") or "").strip()
         tool = (turn.get("tool_name") or "").strip()
         if tool:
@@ -883,6 +885,7 @@ def build_summarize_query_prompt(turns: list[dict]) -> str:
 
     if not lines:
         return ""
+    lines.reverse()
     return (
         "Recent conversation:\n"
         + "\n".join(lines)
