@@ -6,6 +6,7 @@ Uses stub mode (DETECTOR_TEST_MODE=true) and mock to avoid real API calls.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -756,3 +757,65 @@ class TestSummarizeQuery:
         prompt = build_summarize_query_prompt(turns)
 
         assert "NEWEST-MARKER" in prompt
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AskUserQuestion decisions (Q/A lives in tool output, not a user turn)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestAskUserQuestionPrompt:
+    @staticmethod
+    def _ask_turn(output: dict) -> dict:
+        turn = _make_turn("assistant")
+        turn["tool_name"] = "AskUserQuestion"
+        turn["tool_output"] = json.dumps(output, ensure_ascii=False)
+        return turn
+
+    @staticmethod
+    def _ecc_output() -> dict:
+        question = "Phase 4 收尾裁决：ECC 嵌套摘要会话导致重复 moment。如何处理？"
+        return {
+            "questions": [{"question": question, "header": "ECC 重复"}],
+            "answers": {question: "C1′ + C2′（推荐）"},
+        }
+
+    def test_phase1_prompt_includes_question_and_answer(self):
+        from bible_cc_plugin.daemon.detector import build_phase1_prompt
+
+        prompt = build_phase1_prompt(
+            [_make_turn("user", "继续"), self._ask_turn(self._ecc_output())]
+        )
+
+        assert "[Assistant asked via AskUserQuestion]" in prompt
+        assert "Q: Phase 4 收尾裁决" in prompt
+        assert "A: C1′ + C2′（推荐）" in prompt
+
+    def test_phase2_prompt_includes_question_and_answer(self):
+        from bible_cc_plugin.daemon.detector import build_phase2_prompt
+
+        prompt = build_phase2_prompt(
+            [_make_turn("user", "继续"), self._ask_turn(self._ecc_output())],
+            [],
+        )
+
+        assert "[Assistant asked via AskUserQuestion]" in prompt
+        assert "A: C1′ + C2′（推荐）" in prompt
+
+    def test_unanswered_question_uses_plain_tool_marker(self):
+        from bible_cc_plugin.daemon.detector import build_phase1_prompt
+
+        output = {"questions": [{"question": "UNANSWERED-QUESTION"}], "answers": {}}
+        prompt = build_phase1_prompt([self._ask_turn(output)])
+
+        assert "[Used tool: AskUserQuestion]" in prompt
+        assert "UNANSWERED-QUESTION" not in prompt
+
+    def test_system_prompts_mention_ask_user_question(self):
+        from bible_cc_plugin.daemon.detector import (
+            _PHASE1_SYSTEM_PROMPT,
+            _PHASE2_SYSTEM_PROMPT,
+        )
+
+        assert "AskUserQuestion" in _PHASE1_SYSTEM_PROMPT
+        assert "AskUserQuestion" in _PHASE2_SYSTEM_PROMPT

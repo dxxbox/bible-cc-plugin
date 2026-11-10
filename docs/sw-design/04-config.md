@@ -98,7 +98,7 @@ Env override: `BIBLE_CC_DAEMON_PORT`, `BIBLE_CC_DB_PATH`
 | `mid_session_upload` | bool | `false` | Phase 1 检测到的 moment 是否立即上传 BiBLE |
 | `hint_format` | string | `"quote_with_command"` | moment hint 的展示格式：`"quote_with_command"` / `"quote_only"` / `"command_only"` / `"narrative"` |
 | `stop_hint_wait_seconds` | float | `3.5` | Stop hook 中 detection 入队后的 hint poll 等待窗口（秒） |
-| `tool_result_max_chars` | int | `250` | 保留给未来可配置 tool output 检测的摘要上限；默认策略不使用 |
+| `tool_result_max_chars` | int | `250` | `AskUserQuestion` Q/A 注入 detection prompt 的截断上限；其他工具输出默认不使用 |
 
 约束：
 - 阈值触发策略：以 `commit_threshold_turns` 和 `commit_threshold_chars` 中**先到达者**为准触发检测。

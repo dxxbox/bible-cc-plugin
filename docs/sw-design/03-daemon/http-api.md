@@ -450,6 +450,8 @@ HTTP 状态码：
 
 缓冲 tool 调用信息。完整输出存入 SQLite，默认不触发 Phase 1 detection。
 
+**例外：`AskUserQuestion`** —— 用户答案在 tool output 中，daemon 收到后立即排队一次 decision-only Phase 1（`queued: true`），且 Phase 1/2 prompt 注入 `Q: ... → A: ...`（受 `capture.tool_result_max_chars` 截断）。
+
 **Request:**
 ```json
 {
@@ -468,10 +470,12 @@ HTTP 状态码：
 }
 ```
 
+（`AskUserQuestion` 时 `queued: true`：立即排队 decision-only Phase 1。）
+
 **内部流程:**
 1. 同 `/turn/user` steps 1-3，但 role='assistant'，且写入 `tool_name`、`tool_arguments`（JSON string）、`tool_output`。
 2. 无机械截断——完整 `output` 存入 `tool_output` 列。
-3. 默认不触发 Phase 1 detection；detection prompt 只保留 `tool_name`，排除 `tool_arguments` / `tool_output`。
+3. 默认不触发 Phase 1 detection；detection prompt 只保留 `tool_name`，排除 `tool_arguments` / `tool_output`。**例外**：`AskUserQuestion` 立即排队 decision-only Phase 1，且 prompt 注入压缩后的 Q/A（受 `capture.tool_result_max_chars` 截断）。
 
 **返回时间:** <10ms（仅 SQLite insert）。
 

@@ -119,10 +119,11 @@ sessions 表中的 `turn_count` / `buffered_chars` 是全生命周期计数器�
 ```
 完整 output → turns 表存储
 Phase 1/2 detection prompt → 默认排除 arguments/output，只保留 tool_name
-未来配置白名单 → 可选择允许特定工具 output 进入 detection
+例外 AskUserQuestion → Q/A 注入 prompt（受 capture.tool_result_max_chars 截断），
+                      /turn/tool 收到时立即排队 decision-only Phase 1
 ```
 
-**不机械截断。** 完整 output 保留供 review、诊断和未来可配置 detection 策略使用；默认 detection 不读取 tool output。
+**不机械截断。** 完整 output 保留供 review、诊断和未来可配置 detection 策略使用；默认 detection 不读取 tool output（`AskUserQuestion` 例外）。
 
 ---
 

@@ -14,6 +14,8 @@ Stop hook 写入的 assistant 最终文本（`/turn/assistant`）在文本非空
 
 `turn-tool.output` 和 `turn-tool.arguments` 默认不触发 Phase 1 detection，也不进入 detection prompt。工具输出仍完整存储，供人工 review、未来配置白名单或其他非默认流程使用。
 
+**例外：`AskUserQuestion`。** 用户的选择存储在 tool output 的 `questions/answers` 中（不是 user turn）。daemon 在 `/turn/tool` 收到 `AskUserQuestion` 时立即排队一次 decision-only Phase 1（不受阈值限制）；Phase 1/2 prompt 将该 turn 格式化为 `[Assistant asked via AskUserQuestion]\nQ: ... → A: ...`，长度受 `capture.tool_result_max_chars`（默认 250）约束。无 answers 时仍只输出 `[Used tool: AskUserQuestion]`。
+
 ### 1.2 流程
 
 ```
@@ -38,11 +40,11 @@ Stop hook 写入的 assistant 最终文本（`/turn/assistant`）在文本非空
 | 数据 | Hook | 状态 |
 |------|------|------|
 | 用户消息 | UserPromptSubmit → `prompt` 字段 | ✅ 已捕获 |
-| 工具调用 + 输出 | PostToolUse → `tool_name` + `tool_arguments` + `tool_output` | ✅ 已捕获；arguments/output 默认不进 detection |
+| 工具调用 + 输出 | PostToolUse → `tool_name` + `tool_arguments` + `tool_output` | ✅ 已捕获；arguments/output 默认不进 detection（`AskUserQuestion` Q/A 例外） |
 | Assistant 文本回复 | Stop → `last_assistant_message` 字段 | ✅ 已捕获 |
 
 Claude Code `Stop` hook stdin 提供 `last_assistant_message`，由 hook bridge 写入 `/turn/assistant`。
-Detection prompt 因此默认基于 user 消息 + assistant 最终文本 + tool name（不含 tool arguments/output）。
+Detection prompt 因此默认基于 user 消息 + assistant 最终文本 + tool name（不含 tool arguments/output），唯一例外是 `AskUserQuestion` 的 Q/A（受 `tool_result_max_chars` 截断）。
 
 ### 1.3 异步模型
 
@@ -77,7 +79,7 @@ daemon 内部内存队列（`asyncio.Queue`），非 Celery。
 ### 2.2 流程
 
 ```
-1. 取 session 的所有 turns（tool arguments/output 默认排除，只保留 tool name）
+1. 取 session 的所有 turns（tool arguments/output 默认排除，只保留 tool name；`AskUserQuestion` 例外，注入 Q/A）
 2. 取 Phase 1 已检测 moments
 3. 构建 prompt（§3.2）——含已知 moments 列表
 4. LLM call（max_tokens=1024, temperature=0.0）

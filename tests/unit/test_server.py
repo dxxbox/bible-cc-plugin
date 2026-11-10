@@ -48,9 +48,20 @@ def client(tmp_path, monkeypatch):
     """Return a TestClient pointed at a temporary SQLite database."""
     db_path = str(tmp_path / "daemon.db")
     monkeypatch.setenv("BIBLE_CC_DB_PATH", db_path)
+
+    def _fake_detect(
+        turns,
+        known_moments,
+        phase,
+        config,
+        session_start_only=False,
+        tool_result_max_chars=250,
+    ):
+        return []
+
     monkeypatch.setattr(
         "bible_cc_plugin.daemon.detector.detect_moments",
-        lambda turns, known_moments, phase, config, session_start_only=False: [],
+        _fake_detect,
     )
 
     import bible_cc_plugin.daemon.server as server_mod
@@ -841,7 +852,14 @@ class TestDetectionPipeline:
 
         from bible_cc_plugin.daemon.detector import MomentCandidate
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [MomentCandidate(type="decision", title="T", narrative="N")]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -889,7 +907,14 @@ class TestDetectionPipeline:
 
         captured = []
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             captured.extend(turns)
             return []
 
@@ -937,7 +962,14 @@ class TestDetectionPipeline:
 
         captured = []
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             captured.extend(turns)
             return []
 
@@ -988,7 +1020,14 @@ class TestDetectionPipeline:
 
         captured = []
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             captured.extend(turns)
             return []
 
@@ -1038,7 +1077,14 @@ class TestDetectionPipeline:
 
         from bible_cc_plugin.daemon.detector import MomentCandidate
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [MomentCandidate(type="decision", title="D", narrative="N")]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1081,7 +1127,14 @@ class TestDetectionPipeline:
         insert_session(conn, "s-phase2-filter")
         insert_turn_user(conn, "s-phase2-filter", "start work")
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [
                 MomentCandidate(
                     type="session_start",
@@ -1142,7 +1195,14 @@ class TestDetectionPipeline:
             ]
         )
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [next(detections)]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1200,7 +1260,14 @@ class TestDetectionPipeline:
             ]
         )
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [next(detections)]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1259,7 +1326,14 @@ class TestDetectionPipeline:
             ]
         )
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [next(detections)]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1329,7 +1403,14 @@ class TestDetectionPipeline:
             ]
         )
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [next(detections)]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1379,7 +1460,14 @@ class TestDetectionPipeline:
         conn = server_mod._get_db()
         insert_session(conn, "s1")
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return []
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1409,7 +1497,14 @@ class TestDetectionPipeline:
         server_mod._app_config.capture.enabled = False
         call_count = 0
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             nonlocal call_count
             call_count += 1
             return []
@@ -1441,7 +1536,14 @@ class TestDetectionPipeline:
 
         from bible_cc_plugin.daemon.detector import MomentCandidate
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [MomentCandidate(type="bug_fix", title="F", narrative="N")]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -1490,7 +1592,14 @@ class TestPhase2Detection:
         insert_session(conn, "p2-s1")
         insert_turn_user(conn, "p2-s1", "hello")
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [
                 MomentCandidate(type="decision", title="New1", narrative="N1"),
                 MomentCandidate(type="accomplishment", title="New2", narrative="N2"),
@@ -1536,7 +1645,14 @@ class TestPhase2Detection:
         # Same candidate returned twice → dedup
         same = MomentCandidate(type="decision", title="Only Once", narrative="Same")
 
-        def mock_detect(turns, known_moments, phase, config, session_start_only=False):
+        def mock_detect(
+            turns,
+            known_moments,
+            phase,
+            config,
+            session_start_only=False,
+            tool_result_max_chars=250,
+        ):
             return [same, same]
 
         with patch("bible_cc_plugin.daemon.detector.detect_moments", mock_detect):
@@ -2889,3 +3005,97 @@ class TestDebugMcpCalls:
         assert r.status_code == 200
         calls = r.json()["calls"]
         assert [c["tool"] for c in calls] == ["t4", "t3", "t2"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AskUserQuestion → immediate decision detection
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestTurnToolAskUserQuestion:
+    def test_ask_user_question_queues_decision_detection(self, client):
+        import asyncio
+        import json
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        old_queue = server_mod._detection_queue
+        server_mod._detection_queue = asyncio.Queue()
+        try:
+            client.post("/session/start", json={"session_id": "s-ask"})
+            output = json.dumps(
+                {
+                    "questions": [{"question": "Which option?"}],
+                    "answers": {"Which option?": "Option B"},
+                }
+            )
+            r = client.post(
+                "/turn/tool",
+                json={
+                    "session_id": "s-ask",
+                    "tool_name": "AskUserQuestion",
+                    "arguments": {"questions": [{"question": "Which option?"}]},
+                    "output": output,
+                },
+            )
+            assert r.status_code == 200
+            data = r.json()
+            assert data["queued"] is True
+
+            task = server_mod._detection_queue.get_nowait()
+            assert task["session_id"] == "s-ask"
+            assert task["phase"] == 1
+            assert task["moment_types"] == ["decision"]
+            assert task["max_seq"] == data["turn_id"]
+        finally:
+            server_mod._detection_queue = old_queue
+
+    def test_other_tool_does_not_queue_detection(self, client):
+        import asyncio
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        old_queue = server_mod._detection_queue
+        server_mod._detection_queue = asyncio.Queue()
+        try:
+            client.post("/session/start", json={"session_id": "s-bash"})
+            r = client.post(
+                "/turn/tool",
+                json={
+                    "session_id": "s-bash",
+                    "tool_name": "Bash",
+                    "arguments": {"command": "ls"},
+                    "output": "file.txt",
+                },
+            )
+            assert r.status_code == 200
+            assert r.json()["queued"] is False
+            assert server_mod._detection_queue.empty()
+        finally:
+            server_mod._detection_queue = old_queue
+
+    def test_capture_disabled_does_not_queue(self, client, monkeypatch):
+        import asyncio
+        import json
+
+        import bible_cc_plugin.daemon.server as server_mod
+
+        old_queue = server_mod._detection_queue
+        server_mod._detection_queue = asyncio.Queue()
+        try:
+            client.post("/session/start", json={"session_id": "s-ask-off"})
+            monkeypatch.setattr(server_mod._app_config.capture, "enabled", False)
+            r = client.post(
+                "/turn/tool",
+                json={
+                    "session_id": "s-ask-off",
+                    "tool_name": "AskUserQuestion",
+                    "arguments": {"questions": []},
+                    "output": json.dumps({"questions": [], "answers": {"q": "a"}}),
+                },
+            )
+            assert r.status_code == 200
+            assert r.json()["queued"] is False
+            assert server_mod._detection_queue.empty()
+        finally:
+            server_mod._detection_queue = old_queue

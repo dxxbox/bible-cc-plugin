@@ -144,7 +144,7 @@ def validate_inject_fallback(cls, v: str) -> str:
 | `mid_session_upload` | `bool` | `False` | — | — | `True` 时 Phase 1 moment 立即 flush。 |
 | `hint_format` | `str` | `"quote_with_command"` | `"quote_with_command"` \| `"quote_only"` \| `"command_only"` \| `"narrative"` | — | 非法值回退到 `"command_only"`。 |
 | `stop_hint_wait_seconds` | `float` | `3.5` | 0.0–30.0 | — | Stop hook 中 detection 入队后的 hint poll 等待窗口（秒）。超时后写入 hint_watch 兜底。 |
-| `tool_result_max_chars` | `int` | `250` | 0–4000 | — | 保留给未来可配置 tool output 检测；默认策略不使用。 |
+| `tool_result_max_chars` | `int` | `250` | 0–4000 | — | 注入 detection prompt 的 `AskUserQuestion` Q/A 截断上限；其他工具输出默认不使用。 |
 
 ```python
 HINT_FORMATS = {"quote_with_command", "quote_only", "command_only", "narrative"}

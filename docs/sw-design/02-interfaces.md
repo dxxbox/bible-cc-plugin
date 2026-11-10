@@ -82,11 +82,14 @@ POST /turn/assistant
   → Response: {turn_id: int, queued: bool} — returns immediately, detection runs async.
 
 POST /turn/tool
-  → Buffers a tool invocation (name, arguments, full output). Does not queue Phase 1 by default.
+  → Buffers a tool invocation (name, arguments, full output). Does not queue Phase 1
+    by default — EXCEPT AskUserQuestion, which queues a decision-only Phase 1 pass
+    immediately (the user's answers live in the tool output, not a user turn).
   → Daemon stores FULL tool output in turns table (no mechanical truncation).
   → Detection prompts include only tool_name; arguments/output are excluded by default.
+    Exception: AskUserQuestion Q/A is injected (capped by capture.tool_result_max_chars).
   → Request:  {session_id: string, tool_name: string, arguments: object, output: string}
-  → Response: {turn_id: int, queued: false} — returns immediately.
+  → Response: {turn_id: int, queued: bool} — true only for AskUserQuestion; returns immediately.
 ```
 
 ### 1.4 Context 端点

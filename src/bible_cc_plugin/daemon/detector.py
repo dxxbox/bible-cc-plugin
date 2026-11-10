@@ -345,6 +345,11 @@ do NOT guess what was chosen. Narratives must state only facts visible in
 the transcript — never claim the user chose something the transcript does
 not show.
 
+AskUserQuestion answers: a line "[Assistant asked via AskUserQuestion]"
+followed by "Q: ... → A: ..." records an explicit user choice. Treat it as
+a DECISION when the user chose among alternatives. Never invent an answer
+that is not in the transcript.
+
 Output a single JSON object with this exact structure:
 {"result": "moment" | "none",
  "moments": [{"type": "...", "title": "...", "narrative": "...",
@@ -354,10 +359,70 @@ If no key moment occurred, output: {"result": "none"}
 Do NOT include markdown fences or extra text. Output ONLY the JSON object."""
 
 
+_ASK_USER_QUESTION_MAX_CHARS = 250
+_ASK_USER_QUESTION_QUESTION_MAX_CHARS = 120
+
+
+def _format_qa_pair(question: str, answer) -> str:
+    """Format one Q → A pair on a single line."""
+    q_short = " ".join(question.split())[:_ASK_USER_QUESTION_QUESTION_MAX_CHARS]
+    if isinstance(answer, list):
+        a_short = ", ".join(str(a) for a in answer)
+    else:
+        a_short = str(answer)
+    a_short = " ".join(a_short.split())
+    return f"Q: {q_short} → A: {a_short}"
+
+
+def _format_ask_user_question(
+    turn: dict,
+    max_chars: int = _ASK_USER_QUESTION_MAX_CHARS,
+) -> str | None:
+    """Format an AskUserQuestion turn's Q/A pairs for detection prompts.
+
+    The user's answers live in the tool output rather than a user turn, so
+    they must be surfaced explicitly for DECISION detection.  Returns None
+    when the output has no answers or cannot be parsed.
+    """
+    raw = turn.get("tool_output") or ""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    answers = data.get("answers")
+    if not isinstance(answers, dict) or not answers:
+        return None
+
+    parts: list[str] = []
+    questions = data.get("questions")
+    if isinstance(questions, list):
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            q_text = str(q.get("question") or "").strip()
+            if q_text not in answers:
+                continue
+            parts.append(_format_qa_pair(q_text, answers[q_text]))
+    if not parts:
+        for q_text, answer in answers.items():
+            parts.append(_format_qa_pair(str(q_text), answer))
+
+    text = "; ".join(parts)[:max_chars].rstrip()
+    if not text:
+        return None
+    return f"[Assistant asked via AskUserQuestion]\n{text}"
+
+
 def build_phase1_prompt(
     turns: list[dict],
     *,
     session_start_only: bool = False,
+    tool_result_max_chars: int = _ASK_USER_QUESTION_MAX_CHARS,
 ) -> str:
     """Build the Phase 1 detection prompt from recent turns (detection.md §3.1).
 
@@ -414,6 +479,10 @@ def build_phase1_prompt(
             "facts visible in the transcript — never claim the user chose something",
             "the transcript does not show.",
             "",
+            "AskUserQuestion answers: a line '[Assistant asked via AskUserQuestion]'",
+            "with Q/A pairs records an explicit user decision — report it as DECISION",
+            "when the user chose among alternatives.",
+            "",
             "Recent conversation:",
         ]
     if any(t.get("session_start_anchor") for t in turns):
@@ -432,8 +501,10 @@ def build_phase1_prompt(
         if role == "user":
             lines.append(t.get("content", ""))
         elif t.get("tool_name"):
-            # Tool outputs are stored verbatim but excluded from detection prompts.
-            lines.append(f"[Used tool: {t['tool_name']}]")
+            # Tool outputs are excluded from detection prompts, except
+            # AskUserQuestion: its Q/A pairs carry the user's explicit choice.
+            ask_line = _format_ask_user_question(t, tool_result_max_chars)
+            lines.append(ask_line or f"[Used tool: {t['tool_name']}]")
         else:
             # Assistant text reply (future compatibility — detection.md §1.2.1)
             lines.append(t.get("content", ""))
@@ -450,7 +521,8 @@ You are reviewing a COMPLETE conversation between a user and an AI agent.
 The session has ended. Provide a synthesis.
 
 Key moment types (SESSION_START excluded from Phase 2):
-- DECISION: the user confirms a choice, approach, or design direction
+- DECISION: the user confirms a choice, approach, or design direction.
+  AskUserQuestion Q/A lines are explicit choices — report them as DECISION.
 - ACCOMPLISHMENT: something was completed, verified, and accepted
 - LESSON: the user reported a problem, the agent reasoned to a CONFIRMED
   root cause, and the fix was verified as effective. Capture the reusable
@@ -492,6 +564,8 @@ def build_phase2_prompt(
     all_turns: list[dict],
     known_moments: list[MomentCandidate],
     max_input_chars: int = 32000,
+    *,
+    tool_result_max_chars: int = _ASK_USER_QUESTION_MAX_CHARS,
 ) -> str:
     """Build the Phase 2 retrospective prompt (detection.md §3.2).
 
@@ -579,7 +653,8 @@ def build_phase2_prompt(
         if role == "user":
             body = t.get("content", "")
         elif t.get("tool_name"):
-            header += f"\n[Used tool: {t['tool_name']}]"
+            ask_line = _format_ask_user_question(t, tool_result_max_chars)
+            header += "\n" + (ask_line or f"[Used tool: {t['tool_name']}]")
             body = ""
         else:
             body = t.get("content", "")
@@ -962,6 +1037,7 @@ def detect_moments(
     config: DetectionConfig,
     *,
     session_start_only: bool = False,
+    tool_result_max_chars: int = _ASK_USER_QUESTION_MAX_CHARS,
 ) -> list[MomentCandidate]:
     """Unified entry point for Phase 1 and Phase 2 detection.
 
@@ -978,13 +1054,18 @@ def detect_moments(
     """
     try:
         if phase == 1:
-            prompt = build_phase1_prompt(turns, session_start_only=session_start_only)
+            prompt = build_phase1_prompt(
+                turns,
+                session_start_only=session_start_only,
+                tool_result_max_chars=tool_result_max_chars,
+            )
             return call_detection_llm(prompt, config, phase=1)
         else:
             prompt = build_phase2_prompt(
                 turns,
                 known_moments or [],
                 max_input_chars=config.retrospective_max_input_chars,
+                tool_result_max_chars=tool_result_max_chars,
             )
             return call_detection_llm(prompt, config, phase=2)
     except Exception:

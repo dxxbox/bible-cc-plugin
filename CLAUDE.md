@@ -207,7 +207,7 @@ The `moments` table has `content_hash TEXT UNIQUE NOT NULL`. Before inserting an
 - `mid_session_detection` (default `true`): run async detection from user turns and Stop hook assistant final text; tool turns are stored but do not trigger detection by default
 - `mid_session_upload` (default `false`): if `true`, upload each moment to BiBLE immediately when detected. If `false`, moments accumulate as `flushed=0` and are uploaded as a group on session end
 - `hint_format`: how the CLI hint is presented when a key moment is detected mid-session
-- `tool_result_max_chars` (default `250`): reserved for future configurable tool-output detection. Current default detection excludes tool arguments/output from prompts while still storing full tool output verbatim for review and diagnostics.
+- `tool_result_max_chars` (default `250`): cap for the `AskUserQuestion` Q/A excerpt injected into detection prompts — the only tool output included by default. All other tool arguments/output are excluded from prompts while still stored verbatim for review and diagnostics. `AskUserQuestion` also queues a decision-only Phase 1 pass immediately on `/turn/tool`.
 - `inject_fallback` (default `empty`): behavior when local buffer is empty during context injection. `empty` — return an empty `<relevant-memories>` block. `skip` — return nothing, continue silently.
 
 ## Review Command (`/bible-cc:review`)

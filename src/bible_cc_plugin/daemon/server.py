@@ -504,6 +504,7 @@ async def _process_detection_task(task: dict):
         phase,
         config,
         session_start_only=_ss_only,
+        tool_result_max_chars=_app_config.capture.tool_result_max_chars,
     )
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -1725,6 +1726,23 @@ async def turn_tool(req: _TurnToolRequest):
     _logger.debug("turn/tool %s seq=%d tool=%s", req.session_id, turn_id, req.tool_name)
 
     queued = False
+    if (
+        req.tool_name == "AskUserQuestion"
+        and _app_config.capture.enabled
+        and _app_config.capture.mid_session_detection
+    ):
+        # The user's answers live in the tool output, not a user turn. Queue a
+        # decision-only Phase 1 pass immediately so the choice is captured
+        # without waiting for the normal threshold.
+        await _detection_queue.put(
+            {
+                "session_id": req.session_id,
+                "phase": 1,
+                "max_seq": turn_id,
+                "moment_types": ["decision"],
+            }
+        )
+        queued = True
     return {"turn_id": turn_id, "queued": queued}
 
 
