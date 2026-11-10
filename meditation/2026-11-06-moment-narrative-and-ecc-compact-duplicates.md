@@ -2,7 +2,7 @@
 
 > 日期：2026-11-06
 > 范围：Phase 3d 收尾后的观测数据（v0.28.0），不涉及 Phase 4 设计裁决
-> 状态：W1+P1 已实施；#102 已修正；#109/#116 等重复问题 **暂不修改**，Phase 4 末尾重提
+> 状态：W1+P1 已实施；#102 已修正；#109/#116 等重复问题已于 2026-11-10（Phase 4 收尾）实施 C1′/C2′ 修复
 
 ---
 
@@ -148,21 +148,20 @@ ECC PreCompact / Stop 条件触发
 
 残余风险：C1′ 依赖 ECC 内部环境变量约定；若 ECC 未来改名，问题会回归。第二层防御可在 daemon 侧匹配 ECC 模板首行（仅兜底，不推荐做主判据，模板会随版本变化）。
 
-### 2.7 本次决定
+### 2.7 本次决定（2026-11-10 更新）
 
-- **暂不修改 #109/#116 等重复问题**，不实施 C1′/C2′。
-- 在 **Phase 4 末尾**重新提出并裁决。
-- 期间避免触发全局 flush，防止 86 条重复写入 BiBLE（当前 BiBLE 不可达，数据仍在本地）。
+- **已实施 C1′/C2′**（Phase 4 收尾裁决）：见 §3 的执行记录。
+- 期间未触发全局 flush，重复数据未写入 BiBLE。
 
 ---
 
-## 3. Phase 4 末尾重提清单
+## 3. Phase 4 末尾重提清单（执行记录）
 
-1. 裁决并实施 **C1′**：`hook.py` 环境变量跳过 ECC 嵌套会话；补 pytest（设置两个环境变量之一 → 不发起任何 HTTP 调用、返回 0；正常环境仍走原逻辑）。
-2. 裁决并实施 **C2′**：先 `sqlite3 ~/.bible-cc/daemon.db ".backup '<backup>'"`，再删除 86 个重复 moments；确认是否连同 10 个假 sessions/turns 删除。
-3. 验证：下次 ECC 触发摘要时，daemon.log 应出现 skip 日志，且不再新增 session。
-4. 单独裁决 **C3**（crash recovery 误判）与 **C4**（compact 分段 / Phase 2 全量历史）。
-5. 可选：向上游 ECC 提议 `--settings '{"disableAllHooks": true}'`。
+1. ✅ **C1′ 已实施**：`scripts/hook.py` 新增 `_is_ecc_nested_summary()`；`main()` 在读完 stdin、配置/日志初始化后、分发前命中 `ECC_LLM_SUMMARY_SUBPROCESS=1` 或 `ECC_SKIP_LLM_SUMMARY=1` 时记录 skip 日志并 `return`（进程退出 0）。新增 3 个单测：两个 marker 各自跳过、正常环境仍分发。
+2. ✅ **C2′ 已实施**：备份 `~/.bible-cc/daemon.db.bak-20261110-145347`（14M）；删除 11 个嵌套会话的 **91** 条重复 moments（全部 `flushed=0`，比记录的 86 条又多出 5 条，说明泄漏持续）。**保留 sessions/turns 供追溯**；11 个嵌套会话当时均已是 `completed`，不会触发 crash recovery 复检。
+3. ⏳ **待观察**：下次 ECC 触发摘要时，daemon.log 应出现 `skipped: ECC nested summary subprocess`，且不再新增 session。
+4. ⏳ **仍待裁决**：**C3**（crash recovery 误判）与 **C4**（compact 分段 / Phase 2 全量历史）。
+5. ⏳ 可选：向上游 ECC 提议 `--settings '{"disableAllHooks": true}'`。
 
 ---
 

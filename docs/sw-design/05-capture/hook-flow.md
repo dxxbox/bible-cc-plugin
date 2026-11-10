@@ -134,6 +134,7 @@ Phase 1/2 detection prompt → 默认排除 arguments/output，只保留 tool_na
 | capture.enabled = false | 正常写入 turn，不触发检测 |
 | bypass session | 不写入 turn，返回 {queued: false, bypassed: true} |
 | 空 message | 写入 turn，不递增阈值计数器 |
+| ECC 嵌套摘要子进程（`ECC_LLM_SUMMARY_SUBPROCESS` / `ECC_SKIP_LLM_SUMMARY`） | `hook.py` `main()` 读完 stdin 后整体跳过，不发起任何 HTTP 调用 |
 
 ---
 

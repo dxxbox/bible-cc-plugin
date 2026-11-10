@@ -1,10 +1,48 @@
 """2a.1: unit tests for hook bridge action handlers."""
 
 import argparse
+import io
 import json
+import sys
 from unittest.mock import MagicMock, patch
 
 import httpx
+
+
+class TestEccNestedSummarySkip:
+    """C1′: hooks must be inert inside ECC's nested summary subprocesses."""
+
+    def _run_main(self, monkeypatch, extra_env: dict | None = None) -> list:
+        from bible_cc_plugin.scripts import hook as hook_mod
+
+        for key in ("ECC_LLM_SUMMARY_SUBPROCESS", "ECC_SKIP_LLM_SUMMARY"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in (extra_env or {}).items():
+            monkeypatch.setenv(key, value)
+
+        monkeypatch.setattr(sys, "argv", ["hook", "turn-user", "--session-id", "s1"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(json.dumps({"session_id": "s1", "prompt": "summarize"})),
+        )
+
+        called: list = []
+        monkeypatch.setattr(hook_mod, "_handle_turn_user", lambda *a, **k: called.append(True))
+        hook_mod.main()
+        return called
+
+    def test_skips_when_llm_summary_subprocess_marker_set(self, monkeypatch):
+        called = self._run_main(monkeypatch, {"ECC_LLM_SUMMARY_SUBPROCESS": "1"})
+        assert called == []
+
+    def test_skips_when_skip_llm_summary_marker_set(self, monkeypatch):
+        called = self._run_main(monkeypatch, {"ECC_SKIP_LLM_SUMMARY": "1"})
+        assert called == []
+
+    def test_normal_environment_still_dispatches(self, monkeypatch):
+        called = self._run_main(monkeypatch)
+        assert called == [True]
 
 
 class TestHookSessionStart:

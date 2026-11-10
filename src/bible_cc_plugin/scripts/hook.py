@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -52,6 +53,19 @@ def _tail_log(path: Path, lines: int = 20) -> str:
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _is_ecc_nested_summary() -> bool:
+    """Return True inside ECC's nested LLM-summary subprocess.
+
+    ECC (2.x) spawns ``claude --model haiku -p`` for session summaries and
+    marks the child with ``ECC_LLM_SUMMARY_SUBPROCESS=1`` /
+    ``ECC_SKIP_LLM_SUMMARY=1``.  Claude Code runs plugin hooks in those
+    nested sessions too; capturing their summarization prompt as a real
+    conversation produces duplicate moments.
+    """
+    markers = ("ECC_LLM_SUMMARY_SUBPROCESS", "ECC_SKIP_LLM_SUMMARY")
+    return any(os.getenv(name, "") in ("1", "true", "yes") for name in markers)
 
 
 def _parse_daemon_error_body(response: httpx.Response) -> tuple[str, str]:
@@ -829,6 +843,15 @@ def main() -> None:
     except Exception as e:
         _logger.error("config load failed: %s", e)
         sys.exit(0)
+
+    # 3.5 ECC nested summary subprocess → skip every hook (stdin already read).
+    if _is_ecc_nested_summary():
+        _logger.info(
+            "hook=%s skipped: ECC nested summary subprocess "
+            "(ECC_LLM_SUMMARY_SUBPROCESS/ECC_SKIP_LLM_SUMMARY set)",
+            args.action,
+        )
+        return
 
     # 4. Merge: CLI 优先（测试覆盖），stdin 兜底（Claude Code hook 数据）
     session_id = args.session_id or stdin_data.get("session_id", "")
