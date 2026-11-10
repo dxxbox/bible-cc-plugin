@@ -843,6 +843,115 @@ def _build_phase2_compact_retry_prompt(prompt: str, max_chars: int | None = None
     return prefix + prompt[:remaining].rstrip() + marker
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4a: query synthesis for /daemon/consult
+# ══════════════════════════════════════════════════════════════════════════════
+
+_SUMMARIZE_QUERY_TIMEOUT_S = 5.0
+_SUMMARIZE_QUERY_MAX_CHARS = 4000
+_SUMMARIZE_QUERY_TURN_MAX_CHARS = 500
+_SUMMARIZE_QUERY_OUTPUT_MAX_CHARS = 500
+
+_SUMMARIZE_QUERY_SYSTEM_PROMPT = (
+    "You summarize conversations into a single search query. "
+    "Output ONLY the search query string — no explanation, no quotes."
+)
+
+
+def build_summarize_query_prompt(turns: list[dict]) -> str:
+    """Build the query-synthesis prompt from chronologically ordered turns.
+
+    *turns* must be oldest → newest.  Tool turns contribute a short
+    ``[Used tool: name]`` marker; user/assistant text is truncated per turn.
+    Returns an empty string when no usable turn is present.
+    """
+    lines: list[str] = []
+    total = 0
+    for turn in turns:
+        text = (turn.get("content") or "").strip()
+        tool = (turn.get("tool_name") or "").strip()
+        if tool:
+            line = f"[Used tool: {tool}]"
+        elif turn.get("role") in ("user", "assistant") and text:
+            line = f"[{turn['role']}] {text[:_SUMMARIZE_QUERY_TURN_MAX_CHARS]}"
+        else:
+            continue
+        if total + len(line) + 1 > _SUMMARIZE_QUERY_MAX_CHARS:
+            break
+        lines.append(line)
+        total += len(line) + 1
+
+    if not lines:
+        return ""
+    return (
+        "Recent conversation:\n"
+        + "\n".join(lines)
+        + "\n\nGenerate a concise search query (<=50 words) to find relevant "
+        "memories, knowledge, and skills.\nSearch query:"
+    )
+
+
+def summarize_query(turns: list[dict], config: DetectionConfig) -> str | None:
+    """Synthesize a search query from recent conversation turns.
+
+    Synchronous (callers wrap in ``asyncio.to_thread``).  Never raises —
+    returns ``None`` on any failure.
+
+    ``DETECTOR_TEST_MODE`` short-circuits before constructing a client.
+    """
+    if os.getenv("DETECTOR_TEST_MODE", "") in ("1", "true", "yes"):
+        return "test search query"
+
+    if not _anthropic_available:
+        _logger.warning("summarize_query skipped — anthropic SDK not installed")
+        return None
+
+    prompt = build_summarize_query_prompt(turns)
+    if not prompt:
+        return None
+
+    try:
+        client = _create_client().with_options(
+            timeout=_SUMMARIZE_QUERY_TIMEOUT_S,
+            max_retries=0,
+        )
+        start = time.monotonic()
+        response = client.messages.create(
+            model=config.model,
+            max_tokens=128,
+            temperature=0.0,
+            thinking={"type": "disabled"},
+            system=_SUMMARIZE_QUERY_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+    except Exception as exc:
+        _logger.warning("summarize_query failed: %s", exc)
+        return None
+
+    text_parts: list[str] = []
+    for block in response.content or []:
+        block_text = getattr(block, "text", "")
+        if block_text:
+            text_parts.append(str(block_text).strip())
+    query = " ".join(" ".join(text_parts).split())[:_SUMMARIZE_QUERY_OUTPUT_MAX_CHARS]
+    if not query:
+        _logger.warning("summarize_query returned empty text")
+        return None
+
+    usage = getattr(response, "usage", None)
+    input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+    output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+    _logger.info(
+        "query synthesis LLM: model=%s latency=%dms input_tokens=%d output_tokens=%d",
+        config.model,
+        elapsed_ms,
+        input_tokens,
+        output_tokens,
+    )
+    return query
+
+
 def detect_moments(
     turns: list[dict],
     known_moments: list[MomentCandidate] | None,

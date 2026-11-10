@@ -879,6 +879,13 @@ class _TurnToolRequest(BaseModel):
     output: str = ""
 
 
+class _ConsultRequest(BaseModel):
+    session_id: str
+    query: str | None = None
+    domains: list[str] | None = None
+    limit: int = 5
+
+
 # ── Session / Turn endpoints (Phase 1b, 02-interfaces.md §1.2-1.4) ──────
 
 
@@ -1795,6 +1802,234 @@ async def context_inject(req: _ContextInjectRequest):
         include_crash_recovery_moments=_config.injection.crash_recovery_moments,
     )
     return {"context": ctx, "sources": sources}
+
+
+# ── Consult endpoint (Phase 4a) ──────────────────────────────────────────
+
+_CONSULT_DOMAINS = ("memory", "knowledge", "skill")
+_CONSULT_TURN_WINDOW = 10
+_CONSULT_MIN_LIMIT = 1
+_CONSULT_MAX_LIMIT = 50
+
+
+def _normalize_hit(domain: str, item: dict) -> dict:
+    """Normalize a BiBLE-native search hit to the consult schema (D1)."""
+    try:
+        score = float(item.get("score") or 0.0)
+    except (TypeError, ValueError):
+        score = 0.0
+
+    doc_id = item.get("doc_id") or item.get("id") or ""
+    if domain == "memory":
+        section_id = ""
+        section_title = item.get("title") or ""
+        content = item.get("content") or item.get("overview") or item.get("abstract") or ""
+    elif domain == "skill":
+        section_id = ""
+        section_title = item.get("name") or ""
+        content = item.get("content") or item.get("description") or ""
+    else:
+        section_id = item.get("section_id") or ""
+        section_title = item.get("section_title") or item.get("title") or ""
+        content = item.get("content") or ""
+
+    return {
+        "domain": domain,
+        "doc_id": str(doc_id),
+        "section_id": str(section_id),
+        "section_title": str(section_title),
+        "content": str(content),
+        "score": score,
+    }
+
+
+def _merge_hits(domain_results: list[tuple[str, list[dict]]]) -> list[dict]:
+    """Normalize, sort by score desc, dedup by (domain, doc_id, section_id)."""
+    hits: list[dict] = []
+    for domain, items in domain_results:
+        for item in items:
+            if isinstance(item, dict):
+                hits.append(_normalize_hit(domain, item))
+
+    hits.sort(key=lambda h: h["score"], reverse=True)
+
+    seen: set[tuple[str, str, str]] = set()
+    merged: list[dict] = []
+    for hit in hits:
+        key = (hit["domain"], hit["doc_id"], hit["section_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(hit)
+    return merged
+
+
+def _build_consult_context(hits: list[dict], token_budget: int) -> str:
+    """Build a <relevant-memories> block from merged consult hits."""
+    from bible_cc_plugin.daemon.injector import apply_token_budget
+
+    if not hits:
+        return "<relevant-memories></relevant-memories>"
+
+    parts = []
+    for hit in hits:
+        parts.append(
+            f'<hit domain="{hit["domain"]}" doc_id="{hit["doc_id"]}" '
+            f'section_id="{hit["section_id"]}" title="{hit["section_title"]}">'
+            f"{hit['content']}</hit>"
+        )
+    return apply_token_budget("\n".join(parts), token_budget)
+
+
+def _latest_user_turn_content(conn, session_id: str) -> str | None:
+    """Return the latest non-empty user turn content for *session_id*."""
+    row = conn.execute(
+        "SELECT content FROM turns "
+        "WHERE session_id=? AND role='user' AND length(trim(content))>0 "
+        "ORDER BY seq DESC LIMIT 1",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    content = (row["content"] or "").strip()
+    return content or None
+
+
+def _consult_search_coro(client, domain: str, query: str, limit: int, knowledge_tag: str):
+    """Return the client coroutine for one consult domain."""
+    if domain == "memory":
+        return client.search_memory(query, "memory", top_k=limit)
+    if domain == "knowledge":
+        return client.search_knowledge_base(query, knowledge_tag, top_k=limit)
+    return client.search_skill(query, "skill", top_k=limit)
+
+
+async def _timed_search(domain: str, coro) -> tuple[list[dict], float]:
+    """Await one domain search and return (items, elapsed_ms)."""
+    start = time.monotonic()
+    items = await coro
+    return items, (time.monotonic() - start) * 1000
+
+
+@app.post("/daemon/consult")
+async def consult(req: _ConsultRequest):
+    """User-initiated cross-domain search (02-interfaces.md §1.4, Phase 4a)."""
+    start = time.monotonic()
+    session = req.session_id[:8]
+
+    if req.domains:
+        invalid = [d for d in req.domains if d not in _CONSULT_DOMAINS]
+        if invalid:
+            raise HTTPException(400, f"invalid domain(s): {', '.join(invalid)}")
+        requested = set(req.domains)
+        domains = [d for d in _CONSULT_DOMAINS if d in requested]
+    else:
+        domains = list(_CONSULT_DOMAINS)
+
+    limit = max(_CONSULT_MIN_LIMIT, min(req.limit, _CONSULT_MAX_LIMIT))
+    query_used = (req.query or "").strip()
+
+    if query_used:
+        _logger.info("[consult] session=%s query=%r → direct search", session, query_used)
+    else:
+        conn = _get_db()
+        if conn is None:
+            context = (
+                "<relevant-memories>\n"
+                "[consult] daemon database unavailable; pass a query explicitly.\n"
+                "</relevant-memories>"
+            )
+            return {"context": context, "query_used": "", "hits": []}
+
+        from bible_cc_plugin.daemon.buffer import get_recent_turns
+        from bible_cc_plugin.daemon.detector import summarize_query
+
+        turns = list(reversed(get_recent_turns(conn, req.session_id, limit=_CONSULT_TURN_WINDOW)))
+        llm_start = time.monotonic()
+        try:
+            summarized = await asyncio.to_thread(summarize_query, turns, _app_config.detection)
+        except Exception as exc:  # summarize_query never raises; defensive
+            _logger.warning("[consult] query summarization raised: %s", exc)
+            summarized = None
+        _logger.info(
+            "[consult] session=%s LLM latency=%dms",
+            session,
+            int((time.monotonic() - llm_start) * 1000),
+        )
+
+        query_used = (summarized or "").strip()
+        if not query_used:
+            fallback = _latest_user_turn_content(conn, req.session_id) or ""
+            query_used = fallback[:500]
+            if query_used:
+                _logger.info("[consult] session=%s LLM fallback → latest user turn", session)
+            else:
+                context = (
+                    "<relevant-memories>\n"
+                    "[consult] no query provided and no conversation context to summarize.\n"
+                    "</relevant-memories>"
+                )
+                return {"context": context, "query_used": "", "hits": []}
+        else:
+            _logger.info("[consult] session=%s query=%r → LLM summarization", session, query_used)
+
+    domain_results: list[tuple[str, list[dict]]] = []
+    failed_domains: list[str] = []
+
+    from bible_cc_plugin.daemon.client import BiBLEClient
+
+    client = BiBLEClient(_app_config.bible)
+    try:
+        coros = [
+            _timed_search(
+                domain,
+                _consult_search_coro(
+                    client,
+                    domain,
+                    query_used,
+                    limit,
+                    _app_config.search.default_knowledge_tag,
+                ),
+            )
+            for domain in domains
+        ]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+    finally:
+        await client.aclose()
+
+    # gather preserves input order — zip maps exceptions back to their domain.
+    for domain, result in zip(domains, results):
+        if isinstance(result, BaseException):
+            failed_domains.append(domain)
+            _logger.warning("[consult] %s_search failed: %s", domain, result)
+            continue
+        items, elapsed_ms = result
+        domain_results.append((domain, items))
+        _logger.info(
+            "[consult] %s_search → %d hits (%.0fms)",
+            domain,
+            len(items),
+            elapsed_ms,
+        )
+
+    hits = _merge_hits(domain_results)
+    if hits:
+        context = _build_consult_context(hits, _app_config.injection.token_budget)
+        _logger.info("[consult] merged: %d hits, top_score=%.2f", len(hits), hits[0]["score"])
+    elif failed_domains and len(failed_domains) == len(domains):
+        context = (
+            "<relevant-memories>\n"
+            "[consult] BiBLE Atlas unreachable for all requested domains; no results.\n"
+            "</relevant-memories>"
+        )
+        _logger.warning("[consult] all domains failed: %s", ", ".join(failed_domains))
+    else:
+        from bible_cc_plugin.daemon.injector import build_empty_context
+
+        context = build_empty_context(_app_config.injection.inject_fallback)
+
+    _logger.info("[consult] DONE (total=%dms)", int((time.monotonic() - start) * 1000))
+    return {"context": context, "query_used": query_used, "hits": hits}
 
 
 # ── Moment management (Phase 2a.4) ────────────────────────────────────────

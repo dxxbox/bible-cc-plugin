@@ -2743,3 +2743,106 @@ class TestFlushPoll:
         assert data["session_id"] == "no-such-session"
         assert data["confirmed"] == 0
         assert data["pending"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4a: consult hit normalization + merge
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestConsultNormalization:
+    def test_memory_hit_normalization(self):
+        from bible_cc_plugin.daemon.server import _normalize_hit
+
+        hit = _normalize_hit(
+            "memory",
+            {"id": "m1", "title": "T", "abstract": "A", "score": 0.8},
+        )
+        assert hit == {
+            "domain": "memory",
+            "doc_id": "m1",
+            "section_id": "",
+            "section_title": "T",
+            "content": "A",
+            "score": 0.8,
+        }
+
+    def test_memory_content_priority(self):
+        from bible_cc_plugin.daemon.server import _normalize_hit
+
+        hit = _normalize_hit(
+            "memory",
+            {"doc_id": "m1", "title": "T", "content": "C", "overview": "O", "abstract": "A"},
+        )
+        assert hit["content"] == "C"
+
+        hit2 = _normalize_hit(
+            "memory",
+            {"doc_id": "m2", "title": "T", "overview": "O", "abstract": "A"},
+        )
+        assert hit2["content"] == "O"
+
+    def test_skill_hit_normalization(self):
+        from bible_cc_plugin.daemon.server import _normalize_hit
+
+        hit = _normalize_hit(
+            "skill",
+            {"id": "s1", "name": "N", "description": "D", "score": 0.7},
+        )
+        assert hit["doc_id"] == "s1"
+        assert hit["section_id"] == ""
+        assert hit["section_title"] == "N"
+        assert hit["content"] == "D"
+
+    def test_knowledge_hit_passthrough(self):
+        from bible_cc_plugin.daemon.server import _normalize_hit
+
+        hit = _normalize_hit(
+            "knowledge",
+            {
+                "doc_id": "d1",
+                "section_id": "1.2",
+                "section_title": "S",
+                "content": "C",
+                "score": 0.9,
+            },
+        )
+        assert hit == {
+            "domain": "knowledge",
+            "doc_id": "d1",
+            "section_id": "1.2",
+            "section_title": "S",
+            "content": "C",
+            "score": 0.9,
+        }
+
+    def test_merge_dedup_and_sort(self):
+        from bible_cc_plugin.daemon.server import _merge_hits
+
+        domain_results = [
+            (
+                "memory",
+                [
+                    {"doc_id": "m1", "title": "low", "score": 0.4},
+                    {"doc_id": "m1", "title": "high", "score": 0.9},
+                    {"doc_id": "m2", "title": "other", "score": 0.6},
+                ],
+            ),
+            (
+                "knowledge",
+                [
+                    {"doc_id": "d1", "section_id": "1", "score": 0.8},
+                    {"doc_id": "m1", "section_id": "2", "score": 0.5},
+                ],
+            ),
+        ]
+        hits = _merge_hits(domain_results)
+
+        assert [h["score"] for h in hits] == [0.9, 0.8, 0.6, 0.5]
+
+        memory_m1 = [h for h in hits if h["domain"] == "memory" and h["doc_id"] == "m1"]
+        assert len(memory_m1) == 1
+        assert memory_m1[0]["score"] == 0.9
+
+        # Cross-domain same doc_id is kept — dedup key includes domain.
+        assert len([h for h in hits if h["doc_id"] == "m1"]) == 2

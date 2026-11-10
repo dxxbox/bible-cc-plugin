@@ -688,3 +688,60 @@ class TestPureAcknowledgment:
         call_kwargs = mock_client.messages.create.call_args.kwargs
         assert call_kwargs["thinking"] == {"type": "disabled"}
         assert call_kwargs["max_tokens"] == 1024
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4a: summarize_query
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSummarizeQuery:
+    def test_test_mode_returns_fixed_query(self, monkeypatch):
+        from bible_cc_plugin.daemon.detector import summarize_query
+
+        monkeypatch.setenv("DETECTOR_TEST_MODE", "1")
+        turns = [_make_turn("user", "How do we deploy?")]
+        assert summarize_query(turns, _default_config()) == "test search query"
+
+    def test_success_returns_single_line_query(self, monkeypatch):
+        from bible_cc_plugin.daemon import detector
+
+        monkeypatch.delenv("DETECTOR_TEST_MODE", raising=False)
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="  PostgreSQL\n migration  ")]
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage = SimpleNamespace(input_tokens=10, output_tokens=3)
+
+        mock_client = MagicMock()
+        mock_client.with_options.return_value = mock_client
+        mock_client.messages.create.return_value = mock_response
+
+        with patch.object(detector, "_create_client", return_value=mock_client):
+            result = detector.summarize_query(
+                [_make_turn("user", "Use PostgreSQL for auth")],
+                _default_config(),
+            )
+
+        assert result == "PostgreSQL migration"
+        kwargs = mock_client.messages.create.call_args.kwargs
+        assert kwargs["max_tokens"] == 128
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["thinking"] == {"type": "disabled"}
+        mock_client.with_options.assert_called_once_with(timeout=5.0, max_retries=0)
+
+    def test_failure_returns_none(self, monkeypatch):
+        from bible_cc_plugin.daemon import detector
+
+        monkeypatch.delenv("DETECTOR_TEST_MODE", raising=False)
+        mock_client = MagicMock()
+        mock_client.with_options.return_value = mock_client
+        mock_client.messages.create.side_effect = RuntimeError("boom")
+
+        with patch.object(detector, "_create_client", return_value=mock_client):
+            assert detector.summarize_query([_make_turn("user", "x")], _default_config()) is None
+
+    def test_empty_turns_returns_none(self, monkeypatch):
+        from bible_cc_plugin.daemon import detector
+
+        monkeypatch.delenv("DETECTOR_TEST_MODE", raising=False)
+        assert detector.summarize_query([], _default_config()) is None
