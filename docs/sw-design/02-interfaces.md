@@ -100,11 +100,25 @@ POST /context/inject
   → Response: {context: string, sources: {turns: int, moments: int, crash_recovery: int}}
 
 POST /daemon/consult
-  → User-initiated cross-domain search. Client makes parallel calls to three domain search endpoints and merges results (see §2.2).
-  → If query is empty/null: daemon calls LLM to summarize conversation into a query.
-  → Request:  {session_id: string, query?: string}
+  → User-initiated cross-domain search. Daemon makes parallel calls to three domain search
+    endpoints and merges results (see §2.2).
+  → If query is empty/null: LLM summarizes the recent conversation into a query; on failure
+    fall back to the latest non-empty user turn; with no turns return an explanatory context
+    and empty hits (HTTP 200 — never 503).
+  → Request:  {session_id: string, query?: string,
+               domains?: ["memory"|"knowledge"|"skill"], limit?: int = 5 (per-domain top_k)}
   → Response: {context: string, query_used: string,
                hits: [{domain, doc_id, section_id, section_title, content, score}]}
+  → hits are NORMALIZED to this shape for every domain (native fields differ per domain):
+      memory:    doc_id←doc_id|id, section_id="", section_title←title,
+                 content←content|overview|abstract
+      skill:     doc_id←doc_id|id, section_id="", section_title←name,
+                 content←content|description
+      knowledge: doc_id/section_id/section_title/content passed through
+  → Dedup by (domain, doc_id, section_id); score desc; per-domain cap = limit,
+    no global truncation. Partial failures are skipped; all-domain failure returns 200
+    with hits=[] and an "unreachable" hint inside context.
+  → Timing: ~10s typical (LLM ≤5s + parallel search), worst ~15s.
 ```
 
 ### 1.5 Moments 端点（review 命令用）

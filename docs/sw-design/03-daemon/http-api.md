@@ -543,44 +543,69 @@ HTTP 状态码：
 ```json
 {
   "session_id": "abc123-def456",
-  "query": "What was that decision about PostgreSQL?"
+  "query": "What was that decision about PostgreSQL?",
+  "domains": ["memory", "knowledge", "skill"],
+  "limit": 5
 }
 ```
+
+- `query`：可选。为空时走 LLM 归纳。
+- `domains`：可选，子集 `{"memory","knowledge","skill"}`；缺省/空数组 = 全部三域；非法值 → 400。
+- `limit`：可选，默认 5，clamp 1..50。作为**每域 top_k**；合并后不做全局截断（最多返回 `limit × domains` 条）。
 
 **Response (200):**
 ```json
 {
-  "context": "<relevant-memories>...combined search results...</relevant-memories>",
+  "context": "<relevant-memories>\n<hit domain=\"memory\" doc_id=\"mem-1\" section_id=\"\" title=\"PostgreSQL Decision\">...</hit>\n</relevant-memories>",
   "query_used": "PostgreSQL decision auth storage",
   "hits": [
-    {"domain": "MEMORY", "id": "doc_1", "title": "PostgreSQL Decision", "snippet": "...", "score": 0.92},
-    {"domain": "KNOWLEDGE_BASE", "id": "doc_2", "title": "PostgreSQL Auth Patterns", "snippet": "...", "score": 0.85}
+    {"domain": "memory", "doc_id": "mem-1", "section_id": "", "section_title": "PostgreSQL Decision", "content": "...", "score": 0.92},
+    {"domain": "knowledge", "doc_id": "doc_2", "section_id": "1.2", "section_title": "PostgreSQL Auth Patterns", "content": "...", "score": 0.85},
+    {"domain": "skill", "doc_id": "skill-1", "section_id": "", "section_title": "db-migration", "content": "...", "score": 0.78}
   ]
 }
 ```
 
+**hit 归一化（三域原生字段异构，consult 层统一）:**
+
+| domain | doc_id | section_id | section_title | content |
+|---|---|---|---|---|
+| `memory` | `doc_id` 或 `id` | `""` | `title` | `content` → `overview` → `abstract` |
+| `skill` | `doc_id` 或 `id` | `""` | `name` | `content` → `description` |
+| `knowledge` | `doc_id` | `section_id` | `section_title` | `content` |
+
+去重键 `(domain, doc_id, section_id)`；结果按 score 降序；每个域的结果在端点侧再截断到 `limit`（服务端不遵守 top_k 时仍保证契约）。
+
 **内部流程:**
-1. 如果 `query` 为空/null：
-   - 从 SQLite 取当前 session 最近 turns。
-   - 用 conversation summary prompt 调用 LLM → 生成 search query。
-   - **此 LLM 调用可能阻塞。** timeout 由 command 调用方控制。
-2. 并行调用 BiBLE 三域 search（通过 `client.py`）：
+1. 校验 `domains` 并收敛 `limit`。
+2. 如果 `query` 为空：
+   - 从 SQLite 取当前 session 最近 10 个 turns（正序）。
+   - 无 turns → 直接返回 200、`hits=[]`、context 内含 "no conversation context" 提示。
+   - LLM 归纳（`detector.summarize_query`，5s 硬超时，`DETECTOR_TEST_MODE` 返回 `"test search query"`）。
+   - 归纳失败 → 回退到全表最近一条非空 user turn 内容（截断 500 字符）。
+   - 仍无 → 200、`hits=[]`、context 内含提示。
+3. 并行调用 BiBLE 三域 search（`asyncio.gather(return_exceptions=True)`，单 client）：
    ```
-   POST {base_url}/api/search/memory    {query, tag="memory", top_k=8}
-   POST {base_url}/api/search/knowledge-base  {query, tag=<from_config>, top_k=8}
-   POST {base_url}/api/search/skill    {query, tag="skill", top_k=8}
+   POST {base_url}/api/search/memory            {query, tag="memory", top_k=limit}
+   POST {base_url}/api/search/knowledge-base    {query, tag=<search.default_knowledge_tag>, top_k=limit}
+   POST {base_url}/api/search/skill             {query, tag="skill", top_k=limit}
    ```
-3. 合并结果，按 score 降序排列，取 top_k。
-4. 过滤低于 `search.default_min_score`（默认 0.35）的结果。
-5. 构建 `<relevant-memories>` XML block。
+4. 归一化 + 合并 + `(domain, doc_id, section_id)` 去重 + score 降序。
+5. 构建 `<relevant-memories>` XML block（复用 `injector.apply_token_budget`）。
 6. 返回。
 
-**错误:**
-| 场景 | Code | HTTP |
-|------|------|------|
-| BiBLE 不可达 | `BIBLE_UNREACHABLE` | 503 |
-| query 生成 LLM 失败 | `INTERNAL_ERROR` | 500 |
-| session_id 缺失 | `SESSION_NOT_FOUND` | 400 |
+**错误 / 降级:**
+
+| 场景 | 行为 |
+|------|------|
+| 单个域搜索失败 | 跳过该域，其余正常，HTTP 200 |
+| 全部域失败（BiBLE 不可达） | HTTP 200、`hits=[]`、context 含 "BiBLE Atlas unreachable" 提示（不返回 503） |
+| LLM 归纳失败 | 回退最近 user turn（HTTP 200） |
+| 空 query 且无任何 turn | HTTP 200、`hits=[]`、context 内含提示 |
+| `session_id` 缺失 | 422，envelope `BAD_REQUEST` |
+| `domains` 含非法值 | 400，envelope `BAD_REQUEST` |
+
+本阶段**不**应用 `search.default_min_score` 过滤（与 MCP 工具当前行为保持一致）。
 
 **调用方**：`/bible-cc:consult` 命令。
 
@@ -706,7 +731,7 @@ DELETE FROM moments WHERE id = ? AND flushed = 0;
 
 ## 7. Debug 端点（仅 `BIBLE_CC_DEBUG=1`）
 
-所有 `/daemon/debug/*` 端点沿用 Phase 1d 约定：非 debug 模式返回 404 `{"error":{"code":"NOT_FOUND","message":"debug mode disabled"}}`。Phase 3c 的两个端点采用**请求时检查**（始终注册），因此 `--debug` 启动或手动设置 `BIBLE_CC_DEBUG=1` 即可访问。
+所有 `/daemon/debug/*` 端点沿用 Phase 1d 约定：非 debug 模式返回 404 `{"error":{"code":"NOT_FOUND","message":"debug mode disabled"}}`。Phase 3c/4b 的三个端点（flush-log、bible-requests、mcp-calls）采用**请求时检查**（始终注册），因此 `--debug` 启动或手动设置 `BIBLE_CC_DEBUG=1` 即可访问。
 
 ### 7.1 `GET /daemon/debug/flush-log`
 
@@ -767,7 +792,35 @@ DELETE FROM moments WHERE id = ? AND flushed = 0;
 - 只覆盖**本 daemon 进程**发起的调用；MCP server 是独立进程，其调用不在此列表中。
 - 最新在前；无记录时返回空数组。
 
-### 7.3 其他 debug 端点
+### 7.3 `GET /daemon/debug/mcp-calls`
+
+MCP server 最近 tool 调用（读取 `mcp-calls.jsonl`，与 daemon.log 同目录）。MCP 与 daemon 无 HTTP 通信，仅通过该文件交换。
+
+**Request:** query `limit`（可选，默认 50，clamp 1..500）。
+
+**Response (200):**
+```json
+{
+  "calls": [
+    {
+      "time": "2026-11-10T10:00:00Z",
+      "tool": "bible_memory_search",
+      "args_summary": "query=PostgreSQL, top_k=5",
+      "result_summary": "5 hits",
+      "latency_ms": 300,
+      "status": "ok"
+    }
+  ]
+}
+```
+
+- 路径：`<logging.file 的目录>/mcp-calls.jsonl`（默认 `~/.bible-cc/mcp-calls.jsonl`）。
+- `status`：`ok | error | postponed | config_error`；`task_id` / `content_len` 仅在适用时出现。
+- 最新在前；文件不存在或不可读 → 空数组；坏 JSON 行跳过。
+- 只读当前文件，不读轮转后的 `.1`。
+- 仅 debug 模式可访问；非 debug → 404。
+
+### 7.4 其他 debug 端点
 
 `GET /daemon/debug/schema`、`/tables/{name}`、`/turns`、`/detections`、`/detections/stats` 为 Phase 1d/2b 交付，行为不变（前三个仅在导入时 debug 模式注册；后两个请求时检查）。
 
@@ -787,13 +840,14 @@ DELETE FROM moments WHERE id = ? AND flushed = 0;
 | `POST /turn/assistant` | <10ms | 否（检测异步） | 否 |
 | `POST /turn/tool` | <10ms | 否 | 否 |
 | `POST /context/inject` | ~10ms | 否 | 否 |
-| `POST /daemon/consult` | ~5s | 是（三域并行 search） | BiBLE + LLM |
+| `POST /daemon/consult` | ~10s（最坏 ~15s） | 是（LLM ≤5s + 三域并行 search） | BiBLE + LLM |
 | `GET /daemon/moments` | ~5ms | 否 | 否 |
 | `DELETE /daemon/moments/{id}` | ~5ms | 否 | 否 |
 | `PUT /daemon/moments/{id}` | ~5ms | 否 | 否 |
 | `POST /daemon/session/poll` | ~3s | 是（单次 task 查询） | BiBLE |
 | `GET /daemon/debug/flush-log` | ~1ms | 否 | 否 |
 | `GET /daemon/debug/bible-requests` | ~1ms | 否 | 否 |
+| `GET /daemon/debug/mcp-calls` | ~1ms | 否 | 否（读本地 JSONL） |
 
 ---
 

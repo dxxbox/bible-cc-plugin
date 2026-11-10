@@ -59,7 +59,7 @@
 3. Query 非空 → 直接用
 4. 并行调用 `client.search_memory()` + `client.search_knowledge()` + `client.search_skill()`
 5. 合并结果，按 score 降序排列
-6. 返回 `{query_used, hits: [{domain, id, title, snippet, score}]}`
+6. 返回 `{context, query_used, hits: [{domain, doc_id, section_id, section_title, content, score}]}`（跨域归一化字段）
 
 **响应**:
 ```json
@@ -100,7 +100,7 @@ Search query:
 **关键行为**:
 - 只取最近 10 个 turns（避免 token 浪费）
 - 使用 `DETECTOR_TEST_MODE` 时返回固定 query（"test search query"）
-- LLM 调用失败 → fallback 到空 query → 返回错误提示用户手动输入 query
+- LLM 调用失败 → 回退到最近一条非空 user turn 内容作为 query；无 turn 时返回空 hits + 提示（HTTP 200）
 - 超时 5s（consult 不应等太久）
 
 ### F4a.3 — Consult 诊断日志
@@ -151,7 +151,7 @@ F4a.1 (consult 核心) ──► F4a.2 (LLM 归纳) ──► F4a.3 (诊断日�
 - [ ] 单个域搜索失败不影响其他域（isolation）
 - [ ] `domains` 参数可限制搜索范围（如只搜 memory）
 - [ ] `limit` 参数控制每域返回数量
-- [ ] LLM 归纳失败 → fallback 错误提示（不 crash）
+- [ ] LLM 归纳失败 → 回退最近 user turn（不 crash）
 - [ ] stderr 输出 consult 分解日志（每域耗时、合并结果）
 - [ ] `DETECTOR_TEST_MODE` 时 LLM 归纳返回固定 query
 

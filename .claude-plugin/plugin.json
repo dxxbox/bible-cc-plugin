@@ -1,6 +1,6 @@
 {
   "name": "bible-cc",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "description": "BiBLE Atlas memory + knowledge broker for Claude Code",
   "author": {"name": "BiBLE"},
   "hooks": "./hooks/hooks.json",

@@ -82,10 +82,10 @@
 实现：
 - `tests/contract/test_mcp_tools.py`：使用 BiBLE test server
   - 每个 tool：验证 inputSchema 字段与 BiBLE API 参数一致
-  - `bible_memory_search("test", limit=3)` → 验证 response 结构（title, snippet, score, id）
+  - `bible_memory_search("test", top_k=3)` → 验证 response 结构（BiBLE 原生结果字段）
   - `bible_memory_save(...)` → 验证 task_id 返回
   - Error: BiBLE 不可达 → 验证 tool 返回 structured error（不抛异常）
-- Tool list：验证 6 个工具全部注册，无多余工具
+- Tool list：验证 8 个工具（6 active + 2 postponed）全部注册，无多余工具
 
 ### F4.6 — Debuggability：MCP 调用追踪 + Consult 查询分解
 

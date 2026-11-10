@@ -254,17 +254,21 @@ User story: The model did not automatically find context, so the user runs `/bib
 Sunny path:
 
 1. With explicit query, `/daemon/consult` calls memory, knowledge-base, and skill search in parallel.
-2. Results are normalized to `{domain, id, title, snippet, score}`.
-3. Results are merged by descending score.
+2. Results are normalized to
+   `{domain, doc_id, section_id, section_title, content, score}` (native fields differ per domain).
+3. Results are merged by descending score and deduped by `(domain, doc_id, section_id)`;
+   `limit` caps each domain's results (no global truncation).
 4. Response includes `context`, `query_used`, and `hits`.
 
 Rainy paths:
 
-- Query is empty: LLM query summarizer stub produces query, then search runs.
-- Query summarizer fails: endpoint returns structured error and does not call BiBLE.
-- One domain returns error: response includes successful domains and diagnostic for failed domain if policy allows partial results.
-- All domains unreachable: returns `BIBLE_UNREACHABLE`.
-- All domains return empty: context is valid empty recall block, not an exception.
+- Query is empty: LLM query summarizer stub produces `"test search query"`, then search runs.
+- Query summarizer fails: endpoint falls back to the latest non-empty user turn; with no turns
+  it returns HTTP 200 with empty hits and an explanatory context (no BiBLE search).
+- One domain returns error: response includes successful domains (failed domain skipped, HTTP 200).
+- All domains unreachable: HTTP 200 with `hits=[]` and an "unreachable" hint inside `context`
+  (never `BIBLE_UNREACHABLE`/503).
+- All domains return empty: context is a valid empty recall block, not an exception.
 
 Assertions:
 

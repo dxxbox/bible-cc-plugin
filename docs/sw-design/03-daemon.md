@@ -79,7 +79,7 @@ Daemon 是 bible-cc-plugin 的核心持久进程。它是一个基于 FastAPI + 
 - 所有 `/turn/*` 端点立即返回（non-blocking）。Phase 1 detection 是异步队列任务。
 - **Phase 1 检测阈值**：默认 `capture.commit_threshold_turns=4`, `capture.commit_threshold_chars=2000`。以先到达者为准触发检测。这些值在 `04-config/schema.md` 中定义，daemon 实现从 config 读取。
 - `/session/end` 会阻塞等待 LLM（Phase 2 retrospective）完成。timeout 由 Stop hook 的 30s 控制。
-- `/daemon/consult` 在 query 为空时也会调 LLM（conversation summarization → search query synthesis），该 LLM 调用同样可能阻塞。timeout 由调用方（command）控制。
+- `/daemon/consult` 在 query 为空时也会调 LLM（conversation summarization → search query synthesis），该 LLM 调用同样可能阻塞：**端点侧强制 5s 超时**（`max_retries=0`），调用方（command）timeout 作为兜底。
 - `/context/inject` 只能查本地 SQLite。禁止在此端点内调用 BiBLE API。
 
 ### 2.4 端口冲突

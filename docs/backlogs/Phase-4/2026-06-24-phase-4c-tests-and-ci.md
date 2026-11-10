@@ -67,10 +67,10 @@
 - `test_tool_list_stable` — 验证 tool 列表不含多余/缺失工具
 
 **`tests/contract/test_consult_api.py`**（新建，4 个测试）:
-- `test_consult_response_schema` — 验证 `{query_used, hits: [{domain, id, title, snippet, score}]}`
+- `test_consult_response_schema` — 验证 `{context, query_used, hits: [{domain, doc_id, section_id, section_title, content, score}]}`（归一化字段）
 - `test_consult_empty_query_schema` — 空 query 时 `query_used` 不为空（LLM 已生成）
 - `test_consult_hit_fields` — 每个 hit 的必需字段不因 domain 变化
-- `test_consult_error_schema` — BiBLE 不可达时返回 structured error
+- `test_consult_error_schema` — BiBLE 不可达时返回 HTTP 200、`hits=[]`、context 含 unreachable 提示（非 503）
 
 ### F4c.3 — CI 扩展
 
@@ -80,7 +80,7 @@
 | **优先级** | P0 — CD 集成测试 |
 | **依赖** | Phase 3d CI、BiBLE test server |
 
-**`dev.sh ci` 扩展**：在 Phase 3d 基础上增加 MCP server 集成测试（stdio subprocess mode）+ consult 集成测试 + recall 合约测试（`test_consult_api.py`）。
+**`dev.sh ci` 已覆盖**：Phase 3d 的 `ci` 已全量运行 `tests/unit`、`tests/contract`、`tests/integration`，新增的 MCP/consult 测试放入这些目录即自动纳入，**无需修改 `dev.sh`**。
 
 ---
 
@@ -122,5 +122,5 @@ tests/integration/test_mcp_server.py     ← (修改: +4 个测试)
 tests/integration/test_recall_consult.py ← (新文件: 7 个测试)
 tests/contract/test_mcp_tools.py         ← (修改: +3 个测试)
 tests/contract/test_consult_api.py       ← (新文件: 4 个测试)
-scripts/dev.sh                           ← (修改: ci 函数扩展)
+scripts/dev.sh                           ← (无需修改: ci 已跑三目录全量)
 ```

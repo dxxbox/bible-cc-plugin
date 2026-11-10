@@ -99,8 +99,8 @@
     {
       "time": "2026-06-24T15:30:00Z",
       "tool": "bible_memory_search",
-      "args": {"query": "PostgreSQL", "top_k": 5},
-      "result": "5 hits",
+      "args_summary": "query=PostgreSQL, top_k=5",
+      "result_summary": "5 hits",
       "latency_ms": 300,
       "status": "ok"
     }
@@ -108,7 +108,7 @@
 }
 ```
 
-> **注意**: MCP server 上报到 daemon 使用 best-effort——上报失败（daemon 不可达）时 MCP tool 调用不受影响。日志仍写入文件作为兜底。
+> **注意**: MCP 调用记录写入本地 JSONL 为 best-effort——写文件失败不影响 tool 调用，`[mcp:tool]` 日志仍写入 daemon.log 作为兜底。**MCP 与 daemon 之间没有 HTTP 通信。**
 
 ---
 
@@ -141,7 +141,7 @@ F4b.1 (启动诊断) ──► F4b.2 (调用追踪) ──► F4b.3 (debug 端�
 
 ### Debug 端点
 - [ ] `GET /daemon/debug/mcp-calls?limit=50` 返回 MCP 调用历史
-- [ ] MCP server 上报失败不影响 tool 调用（best-effort）
+- [ ] JSONL 写入失败不影响 tool 调用（best-effort）
 
 ---
 

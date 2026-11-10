@@ -253,7 +253,7 @@ async def lifespan(app: FastAPI):  # pragma: no cover — tested via integration
         _worker_logger.info("detection worker stopped")
 
 
-app = FastAPI(title="bible-cc-daemon", version="0.23.0", lifespan=lifespan)
+app = FastAPI(title="bible-cc-daemon", version="0.29.0", lifespan=lifespan)
 
 _logger.info("daemon starting on port %s", _config.daemon.port)
 

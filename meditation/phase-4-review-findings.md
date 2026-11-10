@@ -86,3 +86,5 @@
 - 不做字段映射；`snippet` 由下游命令按需从 `content` 截断。
 - 去重键：`(domain, doc_id, section_id)`。
 - SW design `consult.md` 与 4a backlog 同步更新。
+
+> **2026-11-10 更新（已被本次实施取代部分内容）**：实施前核对真实 V4 API 与 test-mode fixture 后发现三域原生字段**异构**——memory 只有 `doc_id/title/abstract/overview`（无 content/section_id/section_title），skill 有 `doc_id/name/description/content`（无 section_title），test-mode fixture 还用 `id` 而非 `doc_id`。因此 hits 改为**归一化统一 schema**（memory/skill 映射到 `doc_id/section_id/section_title/content`，见 `docs/sw-design/06-recall/consult.md` §2）。原「不做字段映射」不再适用。
