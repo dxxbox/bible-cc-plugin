@@ -168,3 +168,12 @@ tests/
 │   ├── test_mcp_server.py      ← F4.3 (MCP server + BiBLE test)
 │   └── test_recall_consult.py  ← F4.3 (consult endpoint + BiBLE test)
 ```
+
+---
+
+## Phase 4 末尾待办（延后裁决）
+
+- **ECC 嵌套摘要会话导致的重复 moment（#109/#116 等）**：暂不修改，Phase 4 收尾时重新提出并裁决
+  C1′（`hook.py` 识别 `ECC_LLM_SUMMARY_SUBPROCESS=1` / `ECC_SKIP_LLM_SUMMARY=1` 并跳过）+
+  C2′（备份后清理 86 个重复 moments）。
+  详见 [`meditation/2026-11-06-moment-narrative-and-ecc-compact-duplicates.md`](../../../meditation/2026-11-06-moment-narrative-and-ecc-compact-duplicates.md)。

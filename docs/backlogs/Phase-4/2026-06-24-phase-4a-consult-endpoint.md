@@ -64,16 +64,17 @@
 **响应**:
 ```json
 {
+  "context": "## memory\n- Postgres migration plan: ...\n## knowledge\n- ...",
   "query_used": "PostgreSQL migration",
   "hits": [
-    {"domain": "memory", "id": "mem-1", "title": "Postgres migration plan", "snippet": "...", "score": 0.92},
-    {"domain": "knowledge", "id": "kb-3", "title": "Postgres best practices", "snippet": "...", "score": 0.85},
-    {"domain": "skill", "id": "sk-2", "title": "Database migration script", "snippet": "...", "score": 0.78}
+    {"domain": "memory", "doc_id": "mem-1", "section_id": "1", "section_title": "Postgres migration plan", "content": "...", "score": 0.92},
+    {"domain": "knowledge", "doc_id": "kb-3", "section_id": "2", "section_title": "Postgres best practices", "content": "...", "score": 0.85},
+    {"domain": "skill", "doc_id": "sk-2", "section_id": "1", "section_title": "Database migration script", "content": "...", "score": 0.78}
   ]
 }
 ```
 
-**并行搜索**: 使用 `concurrent.futures.ThreadPoolExecutor`（3 个 worker）并行发出三个 `client.search_*()` 调用。每个调用独立 timeout（默认 10s）。单个域搜索失败不影响其他域。
+**并行搜索**: 使用 `asyncio.gather(*tasks, return_exceptions=True)` 并行发出三个 `client.search_*()` 调用（client 是 async）。单个域搜索失败不影响其他域（返回异常项被跳过）。
 
 ### F4a.2 — LLM 归纳对话生成 Query
 

@@ -952,6 +952,108 @@ class TestPhase1DetectionWindow:
             "Follow-up prompt",
         ]
 
+    def test_terse_reply_pulls_in_preceding_assistant_question(self, conn_wal):
+        """A bare "A" is meaningless without the question it answers.
+
+        Intent: moment #102 (2026-11-06) — the window anchored on "A" alone,
+        so the detector claimed every adjudication chose option A.
+        """
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_assistant,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s6")
+        session_seq["s6"] = 0
+        insert_turn_assistant(conn_wal, "s6", "Choose A, B, or C for the schema")
+        insert_turn_user(conn_wal, "s6", "A")
+        insert_turn_tool(conn_wal, "s6", "Edit", {}, "edit-1")
+        trigger_seq = insert_turn_assistant(conn_wal, "s6", "Adjudication complete")
+
+        turns = get_phase1_detection_window(conn_wal, "s6", limit=8, max_seq=trigger_seq)
+
+        assert [t["content"] or t["tool_output"] for t in turns] == [
+            "Choose A, B, or C for the schema",
+            "A",
+            "edit-1",
+            "Adjudication complete",
+        ]
+
+    def test_long_user_message_does_not_pull_previous_assistant(self, conn_wal):
+        """Self-contained user messages keep the window tool-focused."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_assistant,
+            insert_turn_user,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s7")
+        session_seq["s7"] = 0
+        insert_turn_assistant(conn_wal, "s7", "Old unrelated question")
+        trigger_seq = insert_turn_user(conn_wal, "s7", "This decision is self-contained")
+
+        turns = get_phase1_detection_window(conn_wal, "s7", limit=8, max_seq=trigger_seq)
+
+        assert [t["content"] for t in turns] == ["This decision is self-contained"]
+
+    def test_terse_reply_trigger_does_not_duplicate_question(self, conn_wal):
+        """include_previous_user windows already span the question — no prepend."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_assistant,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s8")
+        session_seq["s8"] = 0
+        insert_turn_user(conn_wal, "s8", "First decision")
+        insert_turn_tool(conn_wal, "s8", "Read", {}, "first-tool")
+        insert_turn_assistant(conn_wal, "s8", "Choose A or B")
+        trigger_seq = insert_turn_user(conn_wal, "s8", "OK")
+
+        turns = get_phase1_detection_window(
+            conn_wal,
+            "s8",
+            limit=8,
+            max_seq=trigger_seq,
+            include_previous_user=True,
+        )
+
+        assert [t["content"] or t["tool_output"] for t in turns] == [
+            "First decision",
+            "first-tool",
+            "Choose A or B",
+            "OK",
+        ]
+
+    def test_terse_reply_ignores_tool_turns_as_context(self, conn_wal):
+        """Only assistant *text* turns can supply the missing question."""
+        from bible_cc_plugin.daemon.buffer import (
+            get_phase1_detection_window,
+            insert_session,
+            insert_turn_tool,
+            insert_turn_user,
+            session_seq,
+        )
+
+        insert_session(conn_wal, "s9")
+        session_seq["s9"] = 0
+        insert_turn_tool(conn_wal, "s9", "Read", {}, "tool-0")
+        trigger_seq = insert_turn_user(conn_wal, "s9", "A")
+
+        turns = get_phase1_detection_window(conn_wal, "s9", limit=8, max_seq=trigger_seq)
+
+        assert [t["content"] or t["tool_output"] for t in turns] == ["A"]
+
 
 class TestNullByteDelimiter:
     """意图: hash 安全性——\\0 分隔符防止字段拼接碰撞。"""

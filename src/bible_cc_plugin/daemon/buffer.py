@@ -291,6 +291,9 @@ def get_recent_turns(conn: sqlite3.Connection, session_id: str, limit: int = 3) 
     return result
 
 
+_TERSE_REPLY_MAX_CHARS = 10
+
+
 def get_phase1_detection_window(
     conn: sqlite3.Connection,
     session_id: str,
@@ -305,6 +308,9 @@ def get_phase1_detection_window(
     the tool activity that followed it. A plain "last N turns" window can be
     filled entirely by assistant tool calls, causing the detector to miss
     user-confirmed decisions.
+
+    Terse user replies (<=10 chars, e.g. "A", "OK") also pull in the most
+    recent preceding assistant text turn so the answer keeps its question.
 
     ``max_seq`` freezes the window at queue time so a lagging background worker
     does not drift into a later user prompt.
@@ -363,15 +369,21 @@ def get_phase1_detection_window(
             "ORDER BY seq DESC LIMIT 1",
             (session_id, max_seq),
         ).fetchone()
-        if include_previous_user and latest_user is not None and latest_user["seq"] == max_seq:
-            previous_user = conn.execute(
-                "SELECT role, content, tool_name, tool_output, seq "
-                "FROM turns WHERE session_id=? AND role='user' AND seq<? "
-                "ORDER BY seq DESC LIMIT 1",
-                (session_id, max_seq),
-            ).fetchone()
-            if previous_user is not None:
-                latest_user = previous_user
+    reply_user = latest_user
+    if (
+        max_seq is not None
+        and include_previous_user
+        and latest_user is not None
+        and latest_user["seq"] == max_seq
+    ):
+        previous_user = conn.execute(
+            "SELECT role, content, tool_name, tool_output, seq "
+            "FROM turns WHERE session_id=? AND role='user' AND seq<? "
+            "ORDER BY seq DESC LIMIT 1",
+            (session_id, max_seq),
+        ).fetchone()
+        if previous_user is not None:
+            latest_user = previous_user
     if latest_user is None:
         if max_seq is None:
             return list(reversed(get_recent_turns(conn, session_id, limit=limit)))
@@ -383,7 +395,24 @@ def get_phase1_detection_window(
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
-    after_limit = max(limit - 1, 0)
+    # A terse reply ("A", "OK") is meaningless without the assistant message
+    # it answers; include it when the normal window would exclude it.
+    context_turn = None
+    if (
+        reply_user is not None
+        and latest_user["seq"] == reply_user["seq"]
+        and len((reply_user["content"] or "").strip()) <= _TERSE_REPLY_MAX_CHARS
+    ):
+        context_turn = conn.execute(
+            "SELECT role, content, tool_name, tool_output, seq "
+            "FROM turns WHERE session_id=? AND role='assistant' "
+            "AND (tool_name IS NULL OR tool_name='') "
+            "AND length(trim(content))>0 AND seq<? "
+            "ORDER BY seq DESC LIMIT 1",
+            (session_id, reply_user["seq"]),
+        ).fetchone()
+
+    after_limit = max(limit - 1 - (1 if context_turn is not None else 0), 0)
     if max_seq is None:
         rows_after = conn.execute(
             "SELECT role, content, tool_name, tool_output, seq "
@@ -399,6 +428,8 @@ def get_phase1_detection_window(
             (session_id, latest_user["seq"], max_seq, after_limit),
         ).fetchall()
     result = [dict(latest_user)] + [dict(r) for r in reversed(rows_after)]
+    if context_turn is not None:
+        result.insert(0, dict(context_turn))
     _logger.debug(
         "get_phase1_detection_window: session=%s limit=%d → %d turns",
         session_id[:8],

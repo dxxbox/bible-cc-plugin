@@ -10,12 +10,16 @@
 
 用户消息阈值到达（≥ `commit_threshold_turns` 或 ≥ `commit_threshold_chars`，先到达者为准），且 `mid_session_detection=true`。
 
+Stop hook 写入的 assistant 最终文本（`/turn/assistant`）在文本非空且阈值满足时也会触发 Phase 1 —— 用于捕获工具密集活动后收尾总结中的 DECISION / ACCOMPLISHMENT。
+
 `turn-tool.output` 和 `turn-tool.arguments` 默认不触发 Phase 1 detection，也不进入 detection prompt。工具输出仍完整存储，供人工 review、未来配置白名单或其他非默认流程使用。
 
 ### 1.2 流程
 
 ```
-1. 从 turns 表取最近 2-3 turns（覆盖上下文）
+1. 构建检测窗口：以最新 user turn 为锚，加入其后最多 7 个 turns（共 8）；
+   若该 user 消息为简答（≤10 字符，如 "A" / "OK"），向前补入最近一条
+   assistant 文本 turn，确保回答不与其问题分离
 2. 构建 prompt（见 §3.1）
 3. LLM call（model from detection config, max_tokens=1024, temperature=0.0, thinking=disabled）
 4. 解析结构化输出
@@ -52,7 +56,7 @@ daemon 内部内存队列（`asyncio.Queue`），非 Celery。
 
 ### 1.4 重叠窗口去重
 
-滑动窗口有重叠（last 2-3 turns）。`DECISION` / `ACCOMPLISHMENT`
+检测窗口有重叠（锚定 user turn + 其后 turns）。`DECISION` / `ACCOMPLISHMENT`
 使用 content-hash 去重（Layer 2）覆盖此场景。
 
 `SESSION_START` 使用 user-turn anchor 去重：Phase 1 窗口中第一个 user turn
@@ -112,6 +116,12 @@ Do NOT flag:
 - Status syncs or progress restatements
 - Intermediate bug fixes UNLESS they satisfy the LESSON criteria
   (confirmed root cause + verified fix)
+
+Terse replies: if the user's message is a short answer (a single letter or
+number, "OK", "yes") and the question it answers is NOT in the transcript,
+do NOT guess what was chosen. Narratives must state only facts visible in
+the transcript — never claim the user chose something the transcript does
+not show.
 
 Recent conversation:
 {turns_text}

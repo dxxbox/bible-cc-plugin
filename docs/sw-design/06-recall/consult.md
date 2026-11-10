@@ -18,9 +18,10 @@
 ```
 1. 有 query? → Yes: 直接用; No: LLM 归纳对话生成 query（≤50 words, blocking）
 2. 并行调 BiBLE V4 三域 search（asyncio.gather）
-3. 合并结果: score 降序 → doc_id 去重 → 截断到 top_k
+3. 合并结果: score 降序 → (domain, doc_id, section_id) 去重 → 截断到 top_k
 4. 构建 <relevant-memories> → 注入
-5. 返回 {context, query_used, hits}
+5. 返回 {context, query_used, hits}；hits 使用 BiBLE 原生字段
+   {domain, doc_id, section_id, section_title, content, score}
 ```
 
 ---

@@ -339,6 +339,12 @@ Do NOT flag:
 - Intermediate bug fixes UNLESS they satisfy the LESSON criteria
   (confirmed root cause + verified fix)
 
+Terse replies: if the user's message is a short answer (a single letter or
+number, "OK", "yes") and the question it answers is NOT in the transcript,
+do NOT guess what was chosen. Narratives must state only facts visible in
+the transcript — never claim the user chose something the transcript does
+not show.
+
 Output a single JSON object with this exact structure:
 {"result": "moment" | "none",
  "moments": [{"type": "...", "title": "...", "narrative": "...",
@@ -401,6 +407,12 @@ def build_phase1_prompt(
             "Do NOT flag pure acknowledgements/confirmations with no new knowledge,",
             "status syncs, or intermediate bug fixes unless they satisfy the LESSON",
             "criteria (confirmed root cause + verified fix).",
+            "",
+            "Terse replies: if the user's message is a short answer (a single letter",
+            'or number, "OK", "yes") and the question it answers is NOT in the',
+            "transcript, do NOT guess what was chosen. Narratives must state only",
+            "facts visible in the transcript — never claim the user chose something",
+            "the transcript does not show.",
             "",
             "Recent conversation:",
         ]

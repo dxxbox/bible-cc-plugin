@@ -103,7 +103,8 @@ POST /daemon/consult
   → User-initiated cross-domain search. Client makes parallel calls to three domain search endpoints and merges results (see §2.2).
   → If query is empty/null: daemon calls LLM to summarize conversation into a query.
   → Request:  {session_id: string, query?: string}
-  → Response: {context: string, query_used: string, hits: [{domain, id, title, snippet, score}]}
+  → Response: {context: string, query_used: string,
+               hits: [{domain, doc_id, section_id, section_title, content, score}]}
 ```
 
 ### 1.5 Moments 端点（review 命令用）

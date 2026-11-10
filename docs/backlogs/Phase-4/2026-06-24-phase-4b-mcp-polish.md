@@ -88,7 +88,7 @@
 | **优先级** | P0 |
 | **依赖** | F4b.2（调用追踪） |
 
-**实现方式**: MCP server 在每次 tool 调用时，通过 HTTP POST 将调用记录上报到 daemon。Daemon 维护 MCP 调用 ring buffer（`collections.deque`，maxlen=100）。
+**实现方式**（A1 裁决：共享 JSONL，无 HTTP 通信）: MCP server 每次 tool 调用追加一行 JSON 到 `~/.bible-cc/mcp-calls.jsonl`（字段：`time, tool, args_summary, result_summary, latency_ms, status, task_id?, content_len?`）。Daemon 的 `GET /daemon/debug/mcp-calls?limit=50` 读取该文件尾部 N 行返回。写文件 best-effort（失败不影响 tool 调用）；文件超过 5MB 时 MCP 侧重命名为 `.1`。**符合 CLAUDE.md「MCP server and daemon are independent」**。
 
 **新增端点**: `GET /daemon/debug/mcp-calls?limit=50`
 

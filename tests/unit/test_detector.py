@@ -127,6 +127,23 @@ class TestBuildPhase1Prompt:
         assert "acknowledgement" in prompt.lower() or "acknowledgment" in prompt.lower()
         assert "<component/topic>" in prompt
 
+    def test_forbids_guessing_terse_reply_attribution(self):
+        """A terse reply without its question must not be attributed to the user.
+
+        Intent: moment #102 (2026-11-06) — the detector saw only "A" and
+        narrated "user chose option A" for all three adjudications.
+        """
+        from bible_cc_plugin.daemon.detector import (
+            _PHASE1_SYSTEM_PROMPT,
+            build_phase1_prompt,
+        )
+
+        prompt = build_phase1_prompt([_make_turn("user", content="A")])
+        assert "Terse replies" in prompt
+        assert "do NOT guess" in prompt
+        assert "Terse replies" in _PHASE1_SYSTEM_PROMPT
+        assert "do NOT guess" in _PHASE1_SYSTEM_PROMPT
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 
