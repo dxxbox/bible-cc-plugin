@@ -222,7 +222,7 @@ def _write_and_test(
 
     print("\nSetup complete.")
     print("Daemon will auto-start on next SessionStart.")
-    print("Or start manually: uv run python scripts/daemon.py start")
+    print("Or start manually: uv run python -m bible_cc_plugin.scripts.daemon start")
 
 
 # ---------------------------------------------------------------------------
